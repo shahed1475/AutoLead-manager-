@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+build/
+*.js.map
+
+# Logs
+*.log
+logs/
+
+# Database & data
+backend/data/leads.db
+backend/data/*.db
+
+# Browser automation data
+scraper-engine/browser-data/
+browser-data/
+
+# Environment secrets (keep .env files tracked for reference but ignore secrets)
+# (we keep .env tracked since they only have localhost config, no real secrets)
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Claude internal
+.claude/
