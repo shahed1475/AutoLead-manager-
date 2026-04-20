@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Wand2, RefreshCw, Send, MessageSquare,
   Mail, Clock, CheckCircle2, Zap, BookOpen, Save,
   Globe, Phone, AtSign, Copy, CheckSquare2, Square,
-  AlertTriangle, Bot, Layers, Sparkles, X,
+  AlertTriangle, Bot, Layers, Sparkles, X, Sparkle,
 } from 'lucide-react'
 import { aiApi, leadsApi, campaignApi, settingsApi } from '../api/client'
 import toast from 'react-hot-toast'
@@ -58,12 +58,31 @@ function copyToClipboard(text) {
   )
 }
 
+// ── Skeleton shimmer while AI is generating ───────────────────────────────────
+
+function SkeletonLines({ lines = 4 }) {
+  return (
+    <div className="space-y-2 animate-pulse py-1">
+      {Array.from({ length: lines }).map((_, i) => (
+        <div
+          key={i}
+          className="h-3 rounded bg-slate-700/50"
+          style={{ width: `${85 - (i % 3) * 12}%` }}
+        />
+      ))}
+    </div>
+  )
+}
+
 // ── LeadCard ──────────────────────────────────────────────────────────────────
 
 function LeadCard({ lead, checked, onCheck }) {
   const qc = useQueryClient()
 
-  const [tab, setTab] = useState('whatsapp')
+  const [tab, setTab]               = useState('whatsapp')
+  const [justUpdated, setJustUpdated] = useState(false)
+  const updatedTimer                = useRef(null)
+
   const [drafts, setDrafts] = useState({
     whatsapp:      lead.ai_whatsapp_msg  ?? '',
     email_subject: lead.ai_email_subject ?? '',
@@ -88,7 +107,6 @@ function LeadCard({ lead, checked, onCheck }) {
     [qc],
   )
 
-  // Sync fresh regen data into local drafts
   function applyRegenResult(data) {
     setDrafts((d) => ({
       whatsapp:      data.ai_whatsapp_msg  !== undefined ? (data.ai_whatsapp_msg  ?? '') : d.whatsapp,
@@ -103,8 +121,15 @@ function LeadCard({ lead, checked, onCheck }) {
 
   const regenMut = useMutation({
     mutationFn: (type) => aiApi.generate(lead.id, type),
-    onSuccess:  (data) => { applyRegenResult(data); toast.success('Regenerated') },
-    onError:    (e)    => toast.error(e.message),
+    onSuccess: (data) => {
+      applyRegenResult(data)
+      // Flash "Updated!" for 2.5 s
+      setJustUpdated(true)
+      clearTimeout(updatedTimer.current)
+      updatedTimer.current = setTimeout(() => setJustUpdated(false), 2500)
+      toast.success('Messages updated', { icon: '✨', duration: 2000 })
+    },
+    onError: (e) => toast.error(e.message),
   })
 
   const skipMut = useMutation({
@@ -115,7 +140,6 @@ function LeadCard({ lead, checked, onCheck }) {
 
   const sendMut = useMutation({
     mutationFn: async () => {
-      // Persist edits to DB before sending
       await leadsApi.update(lead.id, {
         ai_whatsapp_msg:  drafts.whatsapp,
         ai_email_subject: drafts.email_subject,
@@ -125,59 +149,51 @@ function LeadCard({ lead, checked, onCheck }) {
         ai_follow_up_2:   drafts.follow_up_2,
         ai_follow_up_3:   drafts.follow_up_3,
       })
-
-      if (tab === 'followup') {
-        return campaignApi.sendFollowup(lead.id, lead.channel || 'EMAIL')
-      }
+      if (tab === 'followup') return campaignApi.sendFollowup(lead.id, lead.channel || 'EMAIL')
       const channel = tab === 'whatsapp' ? 'WHATSAPP' : lead.channel || 'EMAIL'
       return leadsApi.resend(lead.id, channel)
     },
     onSuccess: (result) => {
-      if (result?.success === false) {
-        toast.error(result.error || 'Send failed')
-      } else {
-        toast.success(`Sent to ${lead.business_name}`)
-        invalidate()
-      }
+      if (result?.success === false) toast.error(result.error || 'Send failed')
+      else { toast.success(`Sent to ${lead.business_name}`); invalidate() }
     },
     onError: (e) => toast.error(e.message),
   })
 
-  const isBusy     = regenMut.isPending || sendMut.isPending || skipMut.isPending
-  const hasContent = hasAi(lead) || Object.values(drafts).some(Boolean)
+  const isGenerating = regenMut.isPending
+  const isBusy       = regenMut.isPending || sendMut.isPending || skipMut.isPending
+  const hasContent   = hasAi(lead) || Object.values(drafts).some(Boolean)
 
-  // Current tab char count
-  const currentCharCount =
-    tab === 'email'    ? charLabel(drafts.email_body)   :
-    tab === 'followup' ? charLabel(drafts.follow_up_1)  :
-                         charLabel(drafts.whatsapp)
-
-  // Tab-level content indicator
   function tabHas(tabId) {
     if (tabId === 'whatsapp') return !!drafts.whatsapp
     if (tabId === 'email')    return !!(drafts.email_subject || drafts.email_body)
     return !!(drafts.follow_up_1 || drafts.follow_up_2 || drafts.follow_up_3)
   }
 
+  const copyTabText = () => {
+    const text =
+      tab === 'email'    ? `${drafts.email_subject}\n\n${drafts.email_body}` :
+      tab === 'whatsapp' ? drafts.whatsapp : drafts.follow_up_1
+    copyToClipboard(text)
+  }
+
   return (
     <div className={clsx(
-      'card overflow-hidden transition-all duration-200 group',
-      checked && 'ring-1 ring-brand-500/40 border-brand-500/30',
+      'card overflow-hidden transition-all duration-300',
+      checked     && 'ring-1 ring-brand-500/40 border-brand-500/30',
+      justUpdated && 'ring-2 ring-emerald-500/30 border-emerald-500/20',
     )}>
+
       {/* ── Card header ──────────────────────────────────────────── */}
       <div className="flex items-start gap-3 px-4 py-3 border-b border-slate-700/40 bg-slate-800/30">
-        {/* Checkbox */}
         <button
           onClick={onCheck}
           className="mt-0.5 shrink-0 text-slate-600 hover:text-brand-400 transition-colors"
         >
-          {checked
-            ? <CheckSquare2 size={16} className="text-brand-400" />
-            : <Square size={16} />}
+          {checked ? <CheckSquare2 size={16} className="text-brand-400" /> : <Square size={16} />}
         </button>
 
         <div className="flex-1 min-w-0">
-          {/* Name + badges */}
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-semibold text-slate-100 text-sm truncate max-w-[200px]">
               {lead.business_name}
@@ -195,35 +211,32 @@ function LeadCard({ lead, checked, onCheck }) {
                 {lead.channel}
               </span>
             )}
-            {anyDraft && (
+            {justUpdated && (
+              <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-medium animate-pulse">
+                <CheckCircle2 size={9} /> Updated
+              </span>
+            )}
+            {!justUpdated && anyDraft && (
               <span className="flex items-center gap-1 text-[10px] text-amber-400/90">
-                <span className="w-1 h-1 rounded-full bg-amber-400 inline-block" />
-                edited
+                <span className="w-1 h-1 rounded-full bg-amber-400 inline-block" /> edited
               </span>
             )}
           </div>
 
-          {/* Contact meta */}
           <div className="flex items-center gap-3 mt-1.5 text-[11px] text-slate-500 flex-wrap">
             {lead.email && (
               <span className="flex items-center gap-1 max-w-[200px] truncate">
-                <AtSign size={9} className="shrink-0" />
-                {lead.email}
+                <AtSign size={9} className="shrink-0" />{lead.email}
               </span>
             )}
             {lead.phone && (
               <span className="flex items-center gap-1">
-                <Phone size={9} />
-                {lead.phone}
+                <Phone size={9} />{lead.phone}
               </span>
             )}
             {lead.website && (
-              <a
-                href={lead.website}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-1 hover:text-slate-300 transition-colors max-w-[160px] truncate"
-              >
+              <a href={lead.website} target="_blank" rel="noreferrer"
+                className="flex items-center gap-1 hover:text-slate-300 transition-colors max-w-[160px] truncate">
                 <Globe size={9} className="shrink-0" />
                 {lead.website.replace(/^https?:\/\//, '').replace(/\/$/, '')}
               </a>
@@ -231,35 +244,36 @@ function LeadCard({ lead, checked, onCheck }) {
           </div>
         </div>
 
-        {/* Skip */}
         <button
           onClick={() => skipMut.mutate()}
           disabled={isBusy}
           title="Skip lead"
-          className="p-1.5 rounded-lg text-slate-600 hover:text-red-400 hover:bg-red-500/10
-                     disabled:opacity-30 transition-all shrink-0"
+          className="p-1.5 rounded-lg text-slate-600 hover:text-red-400 hover:bg-red-500/10 disabled:opacity-30 transition-all shrink-0"
         >
           <X size={14} />
         </button>
       </div>
 
-      {/* ── No AI messages yet ───────────────────────────────────── */}
+      {/* ── Empty state ──────────────────────────────────────────── */}
       {!hasContent ? (
-        <div className="px-4 py-5 flex items-center justify-between gap-4">
-          <p className="text-xs text-slate-500">No AI messages generated yet.</p>
+        <div className="px-4 py-7 flex flex-col items-center gap-3 text-center">
+          <div className="w-10 h-10 rounded-full bg-violet-500/10 border border-violet-500/20 flex items-center justify-center">
+            <Wand2 size={18} className="text-violet-400/60" />
+          </div>
+          <p className="text-xs text-slate-500">No AI messages yet for this lead.</p>
           <button
             onClick={() => regenMut.mutate('all')}
             disabled={regenMut.isPending}
-            className="btn-secondary text-xs shrink-0"
+            className="btn-primary text-xs py-2 px-5"
           >
             {regenMut.isPending
-              ? <><RefreshCw size={11} className="animate-spin" /> Generating…</>
-              : <><Wand2 size={11} /> Generate All</>}
+              ? <><RefreshCw size={12} className="animate-spin" /> Generating messages…</>
+              : <><Wand2 size={12} /> Generate All Messages</>}
           </button>
         </div>
       ) : (
         <>
-          {/* ── Message tabs ─────────────────────────────────────── */}
+          {/* ── Tab bar ──────────────────────────────────────────── */}
           <div className="flex border-b border-slate-700/40 bg-slate-900/30">
             {MSG_TABS.map(({ id, label, Icon }) => (
               <button
@@ -274,136 +288,158 @@ function LeadCard({ lead, checked, onCheck }) {
               >
                 <Icon size={11} />
                 {label}
-                {tabHas(id) && tab !== id && (
-                  <span className="absolute top-1.5 right-1 w-1 h-1 rounded-full bg-emerald-500" />
+                {/* green dot = has content on inactive tab */}
+                {tabHas(id) && tab !== id && !isGenerating && (
+                  <span className="absolute top-1.5 right-0.5 w-1 h-1 rounded-full bg-emerald-500" />
+                )}
+                {/* pulse dot = currently generating */}
+                {isGenerating && (
+                  <span className="absolute top-1.5 right-0.5 w-1 h-1 rounded-full bg-violet-400 animate-pulse" />
                 )}
               </button>
             ))}
 
-            {/* Char count */}
-            <div className="ml-auto flex items-center pr-3 gap-2">
-              <span className="text-[10px] text-slate-700 font-mono tabular-nums">
-                {currentCharCount}
-              </span>
-              {/* Copy current tab content */}
-              {tab !== 'followup' && (
+            {/* Tab toolbar: char count + copy + individual regen */}
+            <div className="ml-auto flex items-center pr-2 gap-1">
+              {!isGenerating && tab !== 'followup' && (
+                <span className="text-[10px] text-slate-700 font-mono tabular-nums px-1">
+                  {tab === 'email' ? charLabel(drafts.email_body) : charLabel(drafts.whatsapp)}
+                </span>
+              )}
+              {!isGenerating && (
                 <button
-                  onClick={() => {
-                    const text =
-                      tab === 'email'
-                        ? `${drafts.email_subject}\n\n${drafts.email_body}`
-                        : drafts.whatsapp
-                    copyToClipboard(text)
-                  }}
-                  title="Copy message"
-                  className="text-slate-700 hover:text-slate-400 transition-colors"
+                  onClick={copyTabText}
+                  title="Copy current tab"
+                  className="p-1.5 rounded text-slate-700 hover:text-slate-400 transition-colors"
                 >
-                  <Copy size={11} />
+                  <Copy size={10} />
                 </button>
               )}
+              {/* Individual tab regen — small secondary icon */}
+              <button
+                onClick={() => regenMut.mutate(MSG_TABS.find(t => t.id === tab)?.regenType || 'all')}
+                disabled={isBusy}
+                title={`Regenerate ${tab} only`}
+                className="p-1.5 rounded text-slate-700 hover:text-slate-400 disabled:opacity-30 transition-colors"
+              >
+                <RefreshCw size={10} className={isGenerating ? 'animate-spin text-violet-400' : ''} />
+              </button>
             </div>
           </div>
 
           {/* ── Tab content ──────────────────────────────────────── */}
           <div className="p-4">
             {tab === 'whatsapp' && (
-              <textarea
-                value={drafts.whatsapp}
-                onChange={(e) => setDrafts((d) => ({ ...d, whatsapp: e.target.value }))}
-                placeholder="WhatsApp message — click Regenerate to create one."
-                rows={5}
-                className="input w-full resize-y text-[12px] leading-relaxed font-mono"
-              />
+              isGenerating
+                ? <SkeletonLines lines={5} />
+                : <textarea
+                    value={drafts.whatsapp}
+                    onChange={(e) => setDrafts((d) => ({ ...d, whatsapp: e.target.value }))}
+                    placeholder="WhatsApp message will appear here after generation."
+                    rows={5}
+                    className="input w-full resize-y text-[12px] leading-relaxed font-mono"
+                  />
             )}
 
             {tab === 'email' && (
-              <div className="space-y-2.5">
-                <div>
-                  <label className="label text-[10px]">Subject Line</label>
-                  <input
-                    value={drafts.email_subject}
-                    onChange={(e) => setDrafts((d) => ({ ...d, email_subject: e.target.value }))}
-                    placeholder="Email subject line…"
-                    className="input w-full text-xs"
-                  />
-                  <p className="text-[10px] text-slate-700 mt-1 font-mono text-right">
-                    {charLabel(drafts.email_subject)}
-                  </p>
-                </div>
-                <div>
-                  <label className="label text-[10px]">Email Body</label>
-                  <textarea
-                    value={drafts.email_body}
-                    onChange={(e) => setDrafts((d) => ({ ...d, email_body: e.target.value }))}
-                    placeholder="Email body — click Regenerate to create one."
-                    rows={6}
-                    className="input w-full resize-y text-[12px] leading-relaxed font-mono"
-                  />
-                </div>
-              </div>
+              isGenerating
+                ? <div className="space-y-3">
+                    <SkeletonLines lines={1} />
+                    <SkeletonLines lines={6} />
+                  </div>
+                : <div className="space-y-2.5">
+                    <div>
+                      <label className="label text-[10px]">Subject Line</label>
+                      <input
+                        value={drafts.email_subject}
+                        onChange={(e) => setDrafts((d) => ({ ...d, email_subject: e.target.value }))}
+                        placeholder="Email subject line…"
+                        className="input w-full text-xs"
+                      />
+                      <p className="text-[10px] text-slate-700 mt-1 font-mono text-right">
+                        {charLabel(drafts.email_subject)}
+                      </p>
+                    </div>
+                    <div>
+                      <label className="label text-[10px]">Email Body</label>
+                      <textarea
+                        value={drafts.email_body}
+                        onChange={(e) => setDrafts((d) => ({ ...d, email_body: e.target.value }))}
+                        placeholder="Email body will appear here after generation."
+                        rows={6}
+                        className="input w-full resize-y text-[12px] leading-relaxed font-mono"
+                      />
+                    </div>
+                  </div>
             )}
 
             {tab === 'followup' && (
-              <div className="space-y-3">
-                {FOLLOWUP_STEPS.map(({ key, label, day, color, border }) => (
-                  <div key={key} className={`rounded-lg border ${border} bg-slate-900/40 p-3`}>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <Clock size={10} className={color} />
-                        <span className={`text-[11px] font-semibold ${color}`}>{label}</span>
-                        <span className="text-[10px] text-slate-600 font-mono">{day}</span>
+              isGenerating
+                ? <div className="space-y-3">
+                    {FOLLOWUP_STEPS.map(({ key }) => (
+                      <div key={key} className="rounded-lg border border-slate-700/30 bg-slate-900/40 p-3">
+                        <SkeletonLines lines={3} />
                       </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-slate-700 font-mono tabular-nums">
-                          {charLabel(drafts[key])}
-                        </span>
-                        <button
-                          onClick={() => copyToClipboard(drafts[key])}
-                          title="Copy"
-                          className="text-slate-700 hover:text-slate-400 transition-colors"
-                        >
-                          <Copy size={10} />
-                        </button>
-                      </div>
-                    </div>
-                    <textarea
-                      value={drafts[key]}
-                      onChange={(e) => setDrafts((d) => ({ ...d, [key]: e.target.value }))}
-                      placeholder={`${label} message — sent automatically ${day} after outreach`}
-                      rows={3}
-                      className="input w-full resize-y text-[12px] leading-relaxed font-mono"
-                    />
+                    ))}
                   </div>
-                ))}
-                <p className="text-[10px] text-slate-600 text-center pt-1">
-                  Follow-ups send automatically if lead has no reply · Stop = mark as Replied or Skipped
-                </p>
-              </div>
+                : <div className="space-y-3">
+                    {FOLLOWUP_STEPS.map(({ key, label, day, color, border }) => (
+                      <div key={key} className={`rounded-lg border ${border} bg-slate-900/40 p-3`}>
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <Clock size={10} className={color} />
+                            <span className={`text-[11px] font-semibold ${color}`}>{label}</span>
+                            <span className="text-[10px] text-slate-600 font-mono">{day}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-slate-700 font-mono tabular-nums">
+                              {charLabel(drafts[key])}
+                            </span>
+                            <button onClick={() => copyToClipboard(drafts[key])} title="Copy"
+                              className="text-slate-700 hover:text-slate-400 transition-colors">
+                              <Copy size={10} />
+                            </button>
+                          </div>
+                        </div>
+                        <textarea
+                          value={drafts[key]}
+                          onChange={(e) => setDrafts((d) => ({ ...d, [key]: e.target.value }))}
+                          placeholder={`${label} · auto-sent ${day} with no reply`}
+                          rows={3}
+                          className="input w-full resize-y text-[12px] leading-relaxed font-mono"
+                        />
+                      </div>
+                    ))}
+                    <p className="text-[10px] text-slate-600 text-center pt-1">
+                      Sent automatically when lead has no reply · mark Replied or Skipped to stop
+                    </p>
+                  </div>
             )}
           </div>
 
           {/* ── Action bar ───────────────────────────────────────── */}
           <div className="flex items-center gap-2 px-4 py-2.5 border-t border-slate-700/40 bg-slate-900/20">
-            <button
-              onClick={() => regenMut.mutate(MSG_TABS.find((t) => t.id === tab)?.regenType || 'all')}
-              disabled={isBusy}
-              className="btn-secondary text-xs py-1.5 px-3"
-            >
-              {regenMut.isPending
-                ? <><RefreshCw size={11} className="animate-spin" /> Generating…</>
-                : <><RefreshCw size={11} /> Regen {MSG_TABS.find((t) => t.id === tab)?.label}</>}
-            </button>
 
+            {/* PRIMARY: one-click regenerate all */}
             <button
               onClick={() => regenMut.mutate('all')}
               disabled={isBusy}
-              title="Regenerate all message types"
-              className="text-[11px] text-slate-600 hover:text-slate-400 px-2 py-1.5 rounded-lg
-                         border border-transparent hover:border-slate-700/60 transition-all"
+              className={clsx(
+                'flex items-center gap-2 text-xs font-semibold py-2 px-4 rounded-lg transition-all duration-200',
+                justUpdated
+                  ? 'bg-emerald-600/20 border border-emerald-500/40 text-emerald-400'
+                  : 'bg-violet-600/20 border border-violet-500/30 text-violet-300 hover:bg-violet-600/30 hover:border-violet-500/50',
+                isBusy && 'opacity-60 cursor-not-allowed',
+              )}
             >
-              All types
+              {isGenerating
+                ? <><RefreshCw size={12} className="animate-spin" /> Generating all messages…</>
+                : justUpdated
+                ? <><CheckCircle2 size={12} /> Messages updated!</>
+                : <><Wand2 size={12} /> Regenerate All Messages</>}
             </button>
 
+            {/* SEND: right-aligned */}
             <button
               onClick={() => sendMut.mutate()}
               disabled={isBusy || !tabHas(tab)}
@@ -411,11 +447,9 @@ function LeadCard({ lead, checked, onCheck }) {
             >
               {sendMut.isPending
                 ? <><RefreshCw size={11} className="animate-spin" /> Sending…</>
-                : tab === 'followup'
-                ? <><Send size={11} /> Send Follow-Up</>
-                : tab === 'email'
-                ? <><Send size={11} /> Send Email</>
-                : <><Send size={11} /> Send WhatsApp</>}
+                : tab === 'followup' ? <><Send size={11} /> Send Follow-Up</>
+                : tab === 'email'    ? <><Send size={11} /> Send Email</>
+                :                      <><Send size={11} /> Send WhatsApp</>}
             </button>
           </div>
         </>

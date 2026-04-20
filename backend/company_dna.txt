@@ -1,0 +1,21 @@
+COMPANY DNA — PopupGenix
+
+COMPANY_NAME=PopupGenix
+FOUNDER_NAME=Abdullah Al Fahad Sarkar
+INDUSTRY=Custom Software Development / AI & Digital Solutions
+TAGLINE=We build smart digital systems that drive growth
+WEBSITE=https://popupgenix.com
+
+PHONE=+8801838580258
+
+What We Do
+
+We design and develop high-performance digital solutions including websites, SaaS platforms, mobile apps, and AI-powered systems. From UI/UX to backend architecture, we build products that are scalable, conversion-focused, and business-driven. Our solutions help companies automate processes, attract more customers, and increase revenue.
+
+Our Unique Value Proposition
+
+Unlike traditional agencies, we combine advanced AI, automation, and custom development to build intelligent systems—not just static websites. We focus on long-term business growth, delivering scalable solutions tailored specifically to each client’s needs without unnecessary complexity.
+
+Social Proof
+
+We’ve worked with multiple startups and businesses across different industries, helping them build modern digital systems, improve user experience, and increase online conversions. Our solutions are designed to deliver measurable growth and long-term value.
