@@ -13,9 +13,15 @@ import clsx from 'clsx'
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const MSG_TABS = [
-  { id: 'whatsapp', label: 'WhatsApp', Icon: MessageSquare, regenType: 'whatsapp' },
-  { id: 'email',    label: 'Email',    Icon: Mail,          regenType: 'email'    },
-  { id: 'followup', label: 'Follow-Up', Icon: Clock,        regenType: 'followup' },
+  { id: 'whatsapp', label: 'WhatsApp',  Icon: MessageSquare, regenType: 'whatsapp' },
+  { id: 'email',    label: 'Email',     Icon: Mail,          regenType: 'email'    },
+  { id: 'followup', label: 'Follow-Ups', Icon: Clock,        regenType: 'followups' },
+]
+
+const FOLLOWUP_STEPS = [
+  { key: 'follow_up_1', label: 'Follow-Up #1', day: 'Day 3',  color: 'text-sky-400',    border: 'border-sky-500/20'    },
+  { key: 'follow_up_2', label: 'Follow-Up #2', day: 'Day 10', color: 'text-violet-400', border: 'border-violet-500/20' },
+  { key: 'follow_up_3', label: 'Follow-Up #3', day: 'Day 17', color: 'text-amber-400',  border: 'border-amber-500/20'  },
 ]
 
 const FILTER_TABS = [
@@ -33,7 +39,10 @@ const CHANNEL_CLS = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function hasAi(lead) {
-  return !!(lead.ai_whatsapp_msg || lead.ai_email_subject || lead.ai_email_body || lead.ai_followup_msg)
+  return !!(
+    lead.ai_whatsapp_msg || lead.ai_email_subject || lead.ai_email_body ||
+    lead.ai_followup_msg || lead.ai_follow_up_1
+  )
 }
 
 function charLabel(text) {
@@ -56,20 +65,23 @@ function LeadCard({ lead, checked, onCheck }) {
 
   const [tab, setTab] = useState('whatsapp')
   const [drafts, setDrafts] = useState({
-    whatsapp:      lead.ai_whatsapp_msg   ?? '',
-    email_subject: lead.ai_email_subject  ?? '',
-    email_body:    lead.ai_email_body     ?? '',
-    followup:      lead.ai_followup_msg   ?? '',
+    whatsapp:      lead.ai_whatsapp_msg  ?? '',
+    email_subject: lead.ai_email_subject ?? '',
+    email_body:    lead.ai_email_body    ?? '',
+    follow_up_1:   lead.ai_follow_up_1   ?? lead.ai_followup_msg ?? '',
+    follow_up_2:   lead.ai_follow_up_2   ?? '',
+    follow_up_3:   lead.ai_follow_up_3   ?? '',
   })
 
-  const anyDraft = Object.keys(drafts).some(
-    (k) => drafts[k] !== (
-      k === 'whatsapp'      ? (lead.ai_whatsapp_msg  ?? '') :
-      k === 'email_subject' ? (lead.ai_email_subject ?? '') :
-      k === 'email_body'    ? (lead.ai_email_body    ?? '') :
-                              (lead.ai_followup_msg   ?? '')
-    )
-  )
+  const _orig = {
+    whatsapp:      lead.ai_whatsapp_msg  ?? '',
+    email_subject: lead.ai_email_subject ?? '',
+    email_body:    lead.ai_email_body    ?? '',
+    follow_up_1:   lead.ai_follow_up_1   ?? lead.ai_followup_msg ?? '',
+    follow_up_2:   lead.ai_follow_up_2   ?? '',
+    follow_up_3:   lead.ai_follow_up_3   ?? '',
+  }
+  const anyDraft = Object.keys(drafts).some((k) => drafts[k] !== _orig[k])
 
   const invalidate = useCallback(
     () => qc.invalidateQueries({ queryKey: ['pending-leads'] }),
@@ -79,10 +91,13 @@ function LeadCard({ lead, checked, onCheck }) {
   // Sync fresh regen data into local drafts
   function applyRegenResult(data) {
     setDrafts((d) => ({
-      whatsapp:      data.ai_whatsapp_msg   !== undefined ? (data.ai_whatsapp_msg   ?? '') : d.whatsapp,
-      email_subject: data.ai_email_subject  !== undefined ? (data.ai_email_subject  ?? '') : d.email_subject,
-      email_body:    data.ai_email_body     !== undefined ? (data.ai_email_body     ?? '') : d.email_body,
-      followup:      data.ai_followup_msg   !== undefined ? (data.ai_followup_msg   ?? '') : d.followup,
+      whatsapp:      data.ai_whatsapp_msg  !== undefined ? (data.ai_whatsapp_msg  ?? '') : d.whatsapp,
+      email_subject: data.ai_email_subject !== undefined ? (data.ai_email_subject ?? '') : d.email_subject,
+      email_body:    data.ai_email_body    !== undefined ? (data.ai_email_body    ?? '') : d.email_body,
+      follow_up_1:   data.ai_follow_up_1   !== undefined ? (data.ai_follow_up_1   ?? '')
+                     : data.ai_followup_msg !== undefined ? (data.ai_followup_msg ?? '') : d.follow_up_1,
+      follow_up_2:   data.ai_follow_up_2   !== undefined ? (data.ai_follow_up_2   ?? '') : d.follow_up_2,
+      follow_up_3:   data.ai_follow_up_3   !== undefined ? (data.ai_follow_up_3   ?? '') : d.follow_up_3,
     }))
   }
 
@@ -100,12 +115,15 @@ function LeadCard({ lead, checked, onCheck }) {
 
   const sendMut = useMutation({
     mutationFn: async () => {
-      // Persist edits to DB before sending so the server sends the latest text
+      // Persist edits to DB before sending
       await leadsApi.update(lead.id, {
         ai_whatsapp_msg:  drafts.whatsapp,
         ai_email_subject: drafts.email_subject,
         ai_email_body:    drafts.email_body,
-        ai_followup_msg:  drafts.followup,
+        ai_followup_msg:  drafts.follow_up_1,
+        ai_follow_up_1:   drafts.follow_up_1,
+        ai_follow_up_2:   drafts.follow_up_2,
+        ai_follow_up_3:   drafts.follow_up_3,
       })
 
       if (tab === 'followup') {
@@ -130,15 +148,15 @@ function LeadCard({ lead, checked, onCheck }) {
 
   // Current tab char count
   const currentCharCount =
-    tab === 'email'    ? charLabel(drafts.email_body) :
-    tab === 'followup' ? charLabel(drafts.followup)   :
+    tab === 'email'    ? charLabel(drafts.email_body)   :
+    tab === 'followup' ? charLabel(drafts.follow_up_1)  :
                          charLabel(drafts.whatsapp)
 
   // Tab-level content indicator
   function tabHas(tabId) {
     if (tabId === 'whatsapp') return !!drafts.whatsapp
     if (tabId === 'email')    return !!(drafts.email_subject || drafts.email_body)
-    return !!drafts.followup
+    return !!(drafts.follow_up_1 || drafts.follow_up_2 || drafts.follow_up_3)
   }
 
   return (
@@ -268,19 +286,21 @@ function LeadCard({ lead, checked, onCheck }) {
                 {currentCharCount}
               </span>
               {/* Copy current tab content */}
-              <button
-                onClick={() => {
-                  const text =
-                    tab === 'email'
-                      ? `${drafts.email_subject}\n\n${drafts.email_body}`
-                      : tab === 'followup' ? drafts.followup : drafts.whatsapp
-                  copyToClipboard(text)
-                }}
-                title="Copy message"
-                className="text-slate-700 hover:text-slate-400 transition-colors"
-              >
-                <Copy size={11} />
-              </button>
+              {tab !== 'followup' && (
+                <button
+                  onClick={() => {
+                    const text =
+                      tab === 'email'
+                        ? `${drafts.email_subject}\n\n${drafts.email_body}`
+                        : drafts.whatsapp
+                    copyToClipboard(text)
+                  }}
+                  title="Copy message"
+                  className="text-slate-700 hover:text-slate-400 transition-colors"
+                >
+                  <Copy size={11} />
+                </button>
+              )}
             </div>
           </div>
 
@@ -324,13 +344,41 @@ function LeadCard({ lead, checked, onCheck }) {
             )}
 
             {tab === 'followup' && (
-              <textarea
-                value={drafts.followup}
-                onChange={(e) => setDrafts((d) => ({ ...d, followup: e.target.value }))}
-                placeholder="Follow-up message — click Regenerate to create one."
-                rows={4}
-                className="input w-full resize-y text-[12px] leading-relaxed font-mono"
-              />
+              <div className="space-y-3">
+                {FOLLOWUP_STEPS.map(({ key, label, day, color, border }) => (
+                  <div key={key} className={`rounded-lg border ${border} bg-slate-900/40 p-3`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Clock size={10} className={color} />
+                        <span className={`text-[11px] font-semibold ${color}`}>{label}</span>
+                        <span className="text-[10px] text-slate-600 font-mono">{day}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-slate-700 font-mono tabular-nums">
+                          {charLabel(drafts[key])}
+                        </span>
+                        <button
+                          onClick={() => copyToClipboard(drafts[key])}
+                          title="Copy"
+                          className="text-slate-700 hover:text-slate-400 transition-colors"
+                        >
+                          <Copy size={10} />
+                        </button>
+                      </div>
+                    </div>
+                    <textarea
+                      value={drafts[key]}
+                      onChange={(e) => setDrafts((d) => ({ ...d, [key]: e.target.value }))}
+                      placeholder={`${label} message — sent automatically ${day} after outreach`}
+                      rows={3}
+                      className="input w-full resize-y text-[12px] leading-relaxed font-mono"
+                    />
+                  </div>
+                ))}
+                <p className="text-[10px] text-slate-600 text-center pt-1">
+                  Follow-ups send automatically if lead has no reply · Stop = mark as Replied or Skipped
+                </p>
+              </div>
             )}
           </div>
 
@@ -379,9 +427,11 @@ function LeadCard({ lead, checked, onCheck }) {
 // ── Test AI Panel ─────────────────────────────────────────────────────────────
 
 const TEST_RESULT_TABS = [
-  { id: 'whatsapp', label: 'WhatsApp' },
-  { id: 'email',    label: 'Email'    },
-  { id: 'followup', label: 'Follow-Up'},
+  { id: 'whatsapp',  label: 'WhatsApp'  },
+  { id: 'email',     label: 'Email'     },
+  { id: 'follow_up_1', label: 'FU Day 3'  },
+  { id: 'follow_up_2', label: 'FU Day 10' },
+  { id: 'follow_up_3', label: 'FU Day 17' },
 ]
 
 function TestAIPanel({ ollamaConnected }) {
@@ -399,9 +449,9 @@ function TestAIPanel({ ollamaConnected }) {
     results
       ? resultTab === 'email'
         ? `Subject: ${results.ai_email_subject || ''}\n\n${results.ai_email_body || ''}`
-        : resultTab === 'followup'
-        ? results.ai_followup_msg || ''
-        : results.ai_whatsapp_msg || ''
+        : resultTab === 'whatsapp'
+        ? results.ai_whatsapp_msg || ''
+        : results[`ai_${resultTab}`] || results.ai_followup_msg || ''
       : ''
 
   return (

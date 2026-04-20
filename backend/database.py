@@ -82,6 +82,13 @@ async def init_db() -> None:
             "ALTER TABLE leads ADD COLUMN source TEXT DEFAULT 'GOOGLE_MAPS'",
             "ALTER TABLE leads ADD COLUMN address TEXT",
             "ALTER TABLE campaign_runs ADD COLUMN sources TEXT DEFAULT 'GOOGLE_MAPS'",
+            # Follow-up sequence (3 stages: Day-3, Day-10, Day-17)
+            "ALTER TABLE leads ADD COLUMN ai_follow_up_1 TEXT",
+            "ALTER TABLE leads ADD COLUMN ai_follow_up_2 TEXT",
+            "ALTER TABLE leads ADD COLUMN ai_follow_up_3 TEXT",
+            "ALTER TABLE leads ADD COLUMN follow_up_1_sent_at TIMESTAMP",
+            "ALTER TABLE leads ADD COLUMN follow_up_2_sent_at TIMESTAMP",
+            "ALTER TABLE leads ADD COLUMN follow_up_3_sent_at TIMESTAMP",
         ]:
             try:
                 await db.execute(_migration_sql)
@@ -297,7 +304,7 @@ async def delete_lead(lead_id: int) -> bool:
 
 
 async def get_leads_due_for_followup(days: int = 3) -> List[Dict[str, Any]]:
-    """Leads that are SENT, have no follow-up yet, and were sent ≥ `days` days ago."""
+    """Legacy: leads SENT ≥ days ago with no follow-up sent yet."""
     async with get_db() as db:
         rows = await db.execute_fetchall(
             """SELECT * FROM leads
@@ -308,6 +315,50 @@ async def get_leads_due_for_followup(days: int = 3) -> List[Dict[str, Any]]:
                LIMIT 50""",
             (f"-{days}",),
         )
+    return [dict(r) for r in rows]
+
+
+async def get_leads_due_for_stage(stage: int, limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    Multi-stage follow-up query.
+      Stage 1: ≥3 days after initial sent_at, FU1 not yet sent
+      Stage 2: ≥7 days after follow_up_1_sent_at, FU2 not yet sent
+      Stage 3: ≥7 days after follow_up_2_sent_at, FU3 not yet sent
+    Never returns REPLIED or SKIPPED leads.
+    """
+    _DAYS = {1: 3, 2: 7, 3: 7}
+    days = _DAYS.get(stage, 3)
+
+    if stage == 1:
+        sql = """
+            SELECT * FROM leads
+            WHERE status NOT IN ('REPLIED','SKIPPED')
+              AND status = 'SENT'
+              AND follow_up_1_sent_at IS NULL
+              AND sent_at IS NOT NULL
+              AND DATE(sent_at) <= DATE('now', :offset || ' days')
+            LIMIT :lim"""
+    elif stage == 2:
+        sql = """
+            SELECT * FROM leads
+            WHERE status NOT IN ('REPLIED','SKIPPED')
+              AND follow_up_1_sent_at IS NOT NULL
+              AND follow_up_2_sent_at IS NULL
+              AND DATE(follow_up_1_sent_at) <= DATE('now', :offset || ' days')
+            LIMIT :lim"""
+    elif stage == 3:
+        sql = """
+            SELECT * FROM leads
+            WHERE status NOT IN ('REPLIED','SKIPPED')
+              AND follow_up_2_sent_at IS NOT NULL
+              AND follow_up_3_sent_at IS NULL
+              AND DATE(follow_up_2_sent_at) <= DATE('now', :offset || ' days')
+            LIMIT :lim"""
+    else:
+        return []
+
+    async with get_db() as db:
+        rows = await db.execute_fetchall(sql, {"offset": f"-{days}", "lim": limit})
     return [dict(r) for r in rows]
 
 

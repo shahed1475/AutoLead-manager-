@@ -390,12 +390,15 @@ async def run_campaign(
         if not (lead.get("ai_email_subject") or lead.get("ai_whatsapp_msg")):
             await _qlog(log_queue, f"   🤖 Generating personalised messages for {biz}...")
             try:
-                msgs = await ai_brain.generate_messages(lead, company_dna)
+                msgs = await ai_brain.generate_all_messages(lead)
                 ai_update = {
-                    "ai_whatsapp_msg":  msgs.get("whatsapp_message", ""),
-                    "ai_email_subject": msgs.get("email_subject",    ""),
-                    "ai_email_body":    msgs.get("email_body",       ""),
-                    "ai_followup_msg":  msgs.get("followup_message", ""),
+                    "ai_whatsapp_msg":  msgs.get("first_message",  ""),
+                    "ai_email_subject": msgs.get("email_subject",  ""),
+                    "ai_email_body":    msgs.get("email_body",     ""),
+                    "ai_followup_msg":  msgs.get("follow_up_1",   ""),
+                    "ai_follow_up_1":   msgs.get("follow_up_1",   ""),
+                    "ai_follow_up_2":   msgs.get("follow_up_2",   ""),
+                    "ai_follow_up_3":   msgs.get("follow_up_3",   ""),
                 }
                 await db.update_lead(lead_id, ai_update)
                 await db.log_campaign_action(lead_id, "AI", "GENERATE", True)
@@ -407,7 +410,6 @@ async def run_campaign(
                 await db.log_campaign_action(lead_id, "AI", "GENERATE", False, str(exc))
                 results["errors"].append(err)
                 if cfg["auto_send"]:
-                    # Skip send — empty messages would confuse recipients
                     continue
 
         # ── 3f. Send outreach ──────────────────────────────────────────────────
@@ -453,113 +455,116 @@ async def run_campaign(
 
 async def check_followups(
     log_queue: asyncio.Queue,
-    db:        Any,           # the database module — dependency-injected
+    db:        Any,
     config:    Dict[str, Any],
 ) -> Dict[str, Any]:
     """
-    Identify and send follow-up messages to leads that:
-      - status = SENT
-      - sent_at < (NOW − followup_days)
-      - followup_sent_at IS NULL
+    3-stage automated follow-up sequence.
 
-    Parameters
-    ----------
-    log_queue : asyncio.Queue — real-time log entries for SSE
-    db        : the database module
-    config    : dict; supports key `followup_days` (default 3); merged with DB values
+    Stage 1 → sent 3 days after initial outreach   (ai_follow_up_1)
+    Stage 2 → sent 7 days after Stage 1            (ai_follow_up_2)
+    Stage 3 → sent 7 days after Stage 2            (ai_follow_up_3)
 
-    Returns
-    -------
-    dict with keys: checked, sent, skipped, errors
+    A lead is skipped if it becomes REPLIED or SKIPPED at any point.
+    Each stage generates the message on-demand if not already stored.
     """
-    stored        = await db.get_all_settings()
-    followup_days = int(
-        config.get("followup_days")
-        or config.get("followup_delay_days")
-        or stored.get("followup_delay_days")
-        or 3
-    )
-
-    due = await db.get_leads_due_for_followup(followup_days)
-    await _qlog(log_queue,
-        f"📬 Follow-up candidates (≥{followup_days} days since outreach): {len(due)}")
-
-    results: Dict[str, Any] = {
-        "checked": len(due), "sent": 0, "skipped": 0, "errors": [],
-    }
-    if not due:
-        return results
-
-    # Load company DNA once — shared across all follow-up messages
+    stored      = await db.get_all_settings()
     dna_path    = (config.get("company_dna_path")
                    or stored.get("company_dna_path")
                    or settings.company_dna_path)
     company_dna = _load_company_dna(dna_path)
 
-    for lead_row in due:
-        lead    = dict(lead_row)
-        lead_id = lead["id"]
-        biz     = lead.get("business_name", f"Lead {lead_id}")
-        channel = (lead.get("channel") or "EMAIL").upper()
-        sent_via: List[str] = []
+    results: Dict[str, Any] = {"checked": 0, "sent": 0, "skipped": 0, "errors": []}
 
-        # ── Generate follow-up message if not already set ──────────────────────
-        if not lead.get("ai_followup_msg"):
-            await _qlog(log_queue, f"   🤖 Generating follow-up for {biz}...")
-            try:
-                msgs         = await ai_brain.generate_messages(lead, company_dna)
-                followup_txt = msgs.get("followup_message", "").strip()
-                if not followup_txt:
-                    await _qlog(log_queue,
-                        f"   ⚠️  AI returned empty follow-up for {biz} — skipping",
-                        "WARNING")
-                    results["skipped"] += 1
+    # ── Stage definitions ──────────────────────────────────────────────────────
+    STAGES = [
+        # (stage_num, msg_field, sent_field, label, action_tag)
+        (1, "ai_follow_up_1", "follow_up_1_sent_at", "Follow-up #1 (Day 3)",  "FOLLOWUP_1"),
+        (2, "ai_follow_up_2", "follow_up_2_sent_at", "Follow-up #2 (Day 10)", "FOLLOWUP_2"),
+        (3, "ai_follow_up_3", "follow_up_3_sent_at", "Follow-up #3 (Day 17)", "FOLLOWUP_3"),
+    ]
+
+    for stage_num, msg_field, sent_field, label, action_tag in STAGES:
+        due = await db.get_leads_due_for_stage(stage_num)
+        if not due:
+            continue
+
+        await _qlog(log_queue, f"📬 {label}: {len(due)} leads due")
+        results["checked"] += len(due)
+
+        for lead_row in due:
+            lead    = dict(lead_row)
+            lead_id = lead["id"]
+            biz     = lead.get("business_name", f"Lead {lead_id}")
+            channel = (lead.get("channel") or "EMAIL").upper()
+            sent_via: List[str] = []
+
+            # ── Generate this follow-up if not already stored ──────────────────
+            if not lead.get(msg_field):
+                await _qlog(log_queue, f"   🤖 Generating {label} for {biz}…")
+                try:
+                    msgs = await ai_brain.generate_all_messages(lead)
+                    fu_update = {
+                        "ai_followup_msg": msgs.get("follow_up_1", ""),
+                        "ai_follow_up_1":  msgs.get("follow_up_1", ""),
+                        "ai_follow_up_2":  msgs.get("follow_up_2", ""),
+                        "ai_follow_up_3":  msgs.get("follow_up_3", ""),
+                    }
+                    await db.update_lead(lead_id, fu_update)
+                    await db.log_campaign_action(lead_id, "AI", f"{action_tag}_GEN", True)
+                    lead.update(fu_update)
+                    await _qlog(log_queue, f"   ✨ {label} message ready for {biz}")
+                except Exception as exc:
+                    err = f"{label} AI gen failed for '{biz}': {exc}"
+                    await _qlog(log_queue, f"   ❌ {err}", "ERROR")
+                    await db.log_campaign_action(lead_id, "AI", f"{action_tag}_GEN", False, str(exc))
+                    results["errors"].append(err)
                     continue
-                await db.update_lead(lead_id, {"ai_followup_msg": followup_txt})
-                await db.log_campaign_action(lead_id, "AI", "FOLLOWUP_GENERATE", True)
-                lead["ai_followup_msg"] = followup_txt
-                await _qlog(log_queue, "   ✨ Follow-up message ready")
-            except Exception as exc:
-                err = f"Follow-up AI failed for '{biz}': {exc}"
-                await _qlog(log_queue, f"   ❌ {err}", "ERROR")
-                await db.log_campaign_action(lead_id, "AI", "FOLLOWUP_GENERATE", False, str(exc))
-                results["errors"].append(err)
+
+            msg_text = (lead.get(msg_field) or "").strip()
+            if not msg_text:
+                await _qlog(log_queue, f"   ⚠️  Empty {label} for {biz} — skipping", "WARNING")
+                results["skipped"] += 1
                 continue
 
-        # ── Send follow-up via the lead's original channel ─────────────────────
-        if channel in ("EMAIL", "BOTH") and lead.get("email"):
-            try:
-                await email_sender.send_followup_email(lead)
-                await db.log_campaign_action(lead_id, "EMAIL", "FOLLOWUP", True)
-                sent_via.append("EMAIL")
-                await _qlog(log_queue, f"   📧 Follow-up email sent → {biz}")
-            except Exception as exc:
-                err = f"Follow-up email failed for '{biz}': {exc}"
-                await _qlog(log_queue, f"   ❌ {err}", "ERROR")
-                await db.log_campaign_action(lead_id, "EMAIL", "FOLLOWUP", False, str(exc))
-                results["errors"].append(err)
+            # ── Send via lead's original channel ───────────────────────────────
+            # Temporarily override the followup message field so senders pick it up
+            send_lead = {**lead, "ai_followup_msg": msg_text}
 
-        if channel in ("WHATSAPP", "BOTH") and lead.get("phone"):
-            try:
-                await whatsapp_sender.send_followup_whatsapp(lead)
-                await db.log_campaign_action(lead_id, "WHATSAPP", "FOLLOWUP", True)
-                sent_via.append("WHATSAPP")
-                await _qlog(log_queue, f"   💬 Follow-up WhatsApp sent → {biz}")
-            except Exception as exc:
-                err = f"Follow-up WhatsApp failed for '{biz}': {exc}"
-                await _qlog(log_queue, f"   ❌ {err}", "ERROR")
-                await db.log_campaign_action(lead_id, "WHATSAPP", "FOLLOWUP", False, str(exc))
-                results["errors"].append(err)
+            if channel in ("EMAIL", "BOTH") and lead.get("email"):
+                try:
+                    await email_sender.send_followup_email(send_lead)
+                    await db.log_campaign_action(lead_id, "EMAIL", action_tag, True)
+                    sent_via.append("EMAIL")
+                    await _qlog(log_queue, f"   📧 {label} email sent → {biz}")
+                except Exception as exc:
+                    err = f"{label} email failed for '{biz}': {exc}"
+                    await _qlog(log_queue, f"   ❌ {err}", "ERROR")
+                    await db.log_campaign_action(lead_id, "EMAIL", action_tag, False, str(exc))
+                    results["errors"].append(err)
 
-        if sent_via:
-            await db.update_lead(lead_id, {"followup_sent_at": _now_iso()})
-            results["sent"] += 1
-        else:
-            # No matching contact info for the channel — count as skipped
-            if not results["errors"]:
-                await _qlog(log_queue,
-                    f"   ⏭️  Skip {biz} — no contact info for channel={channel}")
-            results["skipped"] += 1
+            if channel in ("WHATSAPP", "BOTH") and lead.get("phone"):
+                try:
+                    await whatsapp_sender.send_followup_whatsapp(send_lead)
+                    await db.log_campaign_action(lead_id, "WHATSAPP", action_tag, True)
+                    sent_via.append("WHATSAPP")
+                    await _qlog(log_queue, f"   💬 {label} WhatsApp sent → {biz}")
+                except Exception as exc:
+                    err = f"{label} WhatsApp failed for '{biz}': {exc}"
+                    await _qlog(log_queue, f"   ❌ {err}", "ERROR")
+                    await db.log_campaign_action(lead_id, "WHATSAPP", action_tag, False, str(exc))
+                    results["errors"].append(err)
+
+            if sent_via:
+                # Mark this stage as sent + keep legacy followup_sent_at updated
+                await db.update_lead(lead_id, {
+                    sent_field:         _now_iso(),
+                    "followup_sent_at": _now_iso(),
+                })
+                results["sent"] += 1
+            else:
+                await _qlog(log_queue, f"   ⏭️  Skip {biz} — no contact info for channel={channel}")
+                results["skipped"] += 1
 
     return results
 
@@ -607,12 +612,15 @@ async def _run_pending_only(stored: Dict[str, str], log_queue: asyncio.Queue) ->
         # ── AI generation if messages are missing ──────────────────────────────
         if not (lead.get("ai_email_subject") or lead.get("ai_whatsapp_msg")):
             try:
-                msgs = await ai_brain.generate_messages(lead, company_dna)
+                msgs = await ai_brain.generate_all_messages(lead)
                 ai_update = {
-                    "ai_whatsapp_msg":  msgs.get("whatsapp_message", ""),
-                    "ai_email_subject": msgs.get("email_subject",    ""),
-                    "ai_email_body":    msgs.get("email_body",       ""),
-                    "ai_followup_msg":  msgs.get("followup_message", ""),
+                    "ai_whatsapp_msg":  msgs.get("first_message",  ""),
+                    "ai_email_subject": msgs.get("email_subject",  ""),
+                    "ai_email_body":    msgs.get("email_body",     ""),
+                    "ai_followup_msg":  msgs.get("follow_up_1",   ""),
+                    "ai_follow_up_1":   msgs.get("follow_up_1",   ""),
+                    "ai_follow_up_2":   msgs.get("follow_up_2",   ""),
+                    "ai_follow_up_3":   msgs.get("follow_up_3",   ""),
                 }
                 await db.update_lead(lead["id"], ai_update)
                 await db.log_campaign_action(lead["id"], "AI", "GENERATE", True)

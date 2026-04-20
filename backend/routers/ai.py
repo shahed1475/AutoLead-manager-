@@ -24,12 +24,15 @@ async def generate_for_lead(payload: AIGenerateRequest):
     msg_type = payload.message_type
     try:
         if msg_type == "all":
-            msgs = await ai_brain.generate_all_messages(dict(lead))
+            msgs   = await ai_brain.generate_all_messages(dict(lead))
             update = {
-                "ai_whatsapp_msg": msgs["whatsapp"],
+                "ai_whatsapp_msg":  msgs["first_message"],
                 "ai_email_subject": msgs["email_subject"],
-                "ai_email_body": msgs["email_body"],
-                "ai_followup_msg": msgs["followup"],
+                "ai_email_body":    msgs["email_body"],
+                "ai_followup_msg":  msgs["follow_up_1"],   # legacy single-followup field
+                "ai_follow_up_1":   msgs["follow_up_1"],
+                "ai_follow_up_2":   msgs["follow_up_2"],
+                "ai_follow_up_3":   msgs["follow_up_3"],
             }
             await db.update_lead(payload.lead_id, update)
             return {"lead_id": payload.lead_id, **update}
@@ -41,14 +44,21 @@ async def generate_for_lead(payload: AIGenerateRequest):
 
         elif msg_type == "email":
             subject = await ai_brain.generate_message(dict(lead), "email_subject")
-            body = await ai_brain.generate_message(dict(lead), "email_body")
+            body    = await ai_brain.generate_message(dict(lead), "email_body")
             await db.update_lead(payload.lead_id, {"ai_email_subject": subject, "ai_email_body": body})
             return {"lead_id": payload.lead_id, "ai_email_subject": subject, "ai_email_body": body}
 
-        elif msg_type == "followup":
-            msg = await ai_brain.generate_message(dict(lead), "followup")
-            await db.update_lead(payload.lead_id, {"ai_followup_msg": msg})
-            return {"lead_id": payload.lead_id, "ai_followup_msg": msg}
+        elif msg_type in ("followup", "followups"):
+            # Generate all 3 follow-ups at once
+            msgs   = await ai_brain.generate_followup_sequence(dict(lead))
+            update = {
+                "ai_followup_msg": msgs["follow_up_1"],
+                "ai_follow_up_1":  msgs["follow_up_1"],
+                "ai_follow_up_2":  msgs["follow_up_2"],
+                "ai_follow_up_3":  msgs["follow_up_3"],
+            }
+            await db.update_lead(payload.lead_id, update)
+            return {"lead_id": payload.lead_id, **update}
 
         else:
             raise HTTPException(400, f"Unknown message_type: {msg_type}")
@@ -62,7 +72,7 @@ async def generate_bulk(payload: BulkAIRequest, background_tasks: BackgroundTask
     if payload.lead_ids:
         lead_ids = payload.lead_ids
     else:
-        result = await db.get_leads(status="PENDING", page_size=200)
+        result   = await db.get_leads(status="PENDING", page_size=200)
         lead_ids = [r["id"] for r in result["items"]]
 
     if not lead_ids:
@@ -76,10 +86,13 @@ async def generate_bulk(payload: BulkAIRequest, background_tasks: BackgroundTask
             try:
                 msgs = await ai_brain.generate_all_messages(dict(lead))
                 await db.update_lead(lead_id, {
-                    "ai_whatsapp_msg": msgs["whatsapp"],
+                    "ai_whatsapp_msg":  msgs["first_message"],
                     "ai_email_subject": msgs["email_subject"],
-                    "ai_email_body": msgs["email_body"],
-                    "ai_followup_msg": msgs["followup"],
+                    "ai_email_body":    msgs["email_body"],
+                    "ai_followup_msg":  msgs["follow_up_1"],
+                    "ai_follow_up_1":   msgs["follow_up_1"],
+                    "ai_follow_up_2":   msgs["follow_up_2"],
+                    "ai_follow_up_3":   msgs["follow_up_3"],
                 })
             except Exception:
                 pass
@@ -93,9 +106,8 @@ async def test_prompt(payload: dict):
     prompt = payload.get("prompt", "")
     if not prompt:
         raise HTTPException(400, "prompt is required")
-
-    from .. import ai_brain
-    raw = await ai_brain._call_ollama_raw(prompt, await ai_brain._ollama_cfg(), num_predict=400)
+    cfg = await ai_brain._ollama_cfg()
+    raw = await ai_brain._call_ollama_raw(prompt, cfg, num_predict=400)
     return {"response": raw}
 
 
@@ -113,10 +125,13 @@ async def test_ai(payload: dict):
     try:
         msgs = await ai_brain.generate_messages_from_text(business_text)
         return {
-            "ai_whatsapp_msg":  msgs["whatsapp"],
-            "ai_email_subject": msgs["email_subject"],
-            "ai_email_body":    msgs["email_body"],
-            "ai_followup_msg":  msgs["followup"],
+            "ai_whatsapp_msg":  msgs.get("first_message") or msgs.get("whatsapp", ""),
+            "ai_email_subject": msgs.get("email_subject", ""),
+            "ai_email_body":    msgs.get("email_body", ""),
+            "ai_followup_msg":  msgs.get("follow_up_1") or msgs.get("followup", ""),
+            "ai_follow_up_1":   msgs.get("follow_up_1", ""),
+            "ai_follow_up_2":   msgs.get("follow_up_2", ""),
+            "ai_follow_up_3":   msgs.get("follow_up_3", ""),
         }
     except Exception as exc:
         raise HTTPException(500, str(exc))

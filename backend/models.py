@@ -48,21 +48,30 @@ class LeadUpdate(BaseModel):
     ai_email_subject: Optional[str]         = None
     ai_email_body:    Optional[str]         = None
     ai_followup_msg:  Optional[str]         = None
+    ai_follow_up_1:   Optional[str]         = None
+    ai_follow_up_2:   Optional[str]         = None
+    ai_follow_up_3:   Optional[str]         = None
     status:           Optional[LeadStatus]  = None
     channel:          Optional[LeadChannel] = None
 
 
 class Lead(LeadBase):
-    id:               int
-    ai_whatsapp_msg:  Optional[str]         = None
-    ai_email_subject: Optional[str]         = None
-    ai_email_body:    Optional[str]         = None
-    ai_followup_msg:  Optional[str]         = None
-    status:           LeadStatus            = LeadStatus.PENDING
-    channel:          Optional[LeadChannel] = None
-    created_at:       datetime
-    sent_at:          Optional[datetime]    = None
-    followup_sent_at: Optional[datetime]    = None
+    id:                  int
+    ai_whatsapp_msg:     Optional[str]      = None
+    ai_email_subject:    Optional[str]      = None
+    ai_email_body:       Optional[str]      = None
+    ai_followup_msg:     Optional[str]      = None
+    ai_follow_up_1:      Optional[str]      = None
+    ai_follow_up_2:      Optional[str]      = None
+    ai_follow_up_3:      Optional[str]      = None
+    status:              LeadStatus         = LeadStatus.PENDING
+    channel:             Optional[LeadChannel] = None
+    created_at:          datetime
+    sent_at:             Optional[datetime] = None
+    followup_sent_at:    Optional[datetime] = None
+    follow_up_1_sent_at: Optional[datetime] = None
+    follow_up_2_sent_at: Optional[datetime] = None
+    follow_up_3_sent_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 
