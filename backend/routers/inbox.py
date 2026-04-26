@@ -111,6 +111,52 @@ async def _enrich_and_score(lead_id: int) -> dict:
     return {"lead_id": lead_id, **scored}
 
 
+@router.get("/leads/{lead_id}/enrichment")
+async def get_lead_enrichment(lead_id: int):
+    """
+    Return combined enrichment + scoring data for a lead.
+    Used by the frontend EnrichmentDrawer.
+    """
+    lead = await db.get_lead_by_id(lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+
+    enriched = await db.get_enriched_data(lead_id) or {}
+    scores   = await db.get_score(lead_id)         or {}
+
+    def _ts(v):
+        return str(v) if v else None
+
+    return {
+        "lead_id":              lead_id,
+        "business_name":        lead["business_name"],
+        "score":                lead.get("score") or 0,
+        "score_label":          lead.get("score_label") or "COLD",
+        # enriched_data fields
+        "business_summary":     enriched.get("business_summary"),
+        "target_audience":      enriched.get("target_audience"),
+        "service_level":        enriched.get("service_level"),
+        "brand_positioning":    enriched.get("brand_positioning"),
+        "marketing_gaps":       enriched.get("marketing_gaps")       or [],
+        "growth_potential":     enriched.get("growth_potential"),
+        "best_pitch_strategy":  enriched.get("best_pitch_strategy"),
+        "personalization_hook": enriched.get("personalization_hook"),
+        "website_quality_score":enriched.get("website_quality_score") or 0,
+        "issues":               enriched.get("issues")               or [],
+        "conversion_gaps":      enriched.get("conversion_gaps")      or [],
+        "seo_gaps":             enriched.get("seo_gaps")             or [],
+        "pitch_angles":         enriched.get("pitch_angles")         or [],
+        "enriched_at":          _ts(enriched.get("enriched_at")),
+        # scores fields
+        "final_score":          scores.get("final_score") or 0,
+        "score_category":       scores.get("category")   or "COLD",
+        "key_problems":         scores.get("key_problems")       or [],
+        "opportunity_summary":  scores.get("opportunity_summary"),
+        "pitch_angle":          scores.get("pitch_angle"),
+        "scored_at":            _ts(scores.get("scored_at")),
+    }
+
+
 @router.post("/leads/{lead_id}/enrich")
 async def enrich_lead_endpoint(lead_id: int, background_tasks: BackgroundTasks):
     """

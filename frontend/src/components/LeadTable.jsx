@@ -7,10 +7,14 @@ import clsx from 'clsx'
 import ScoreBadge from './ScoreBadge'
 
 const STATUS_BADGE = {
-  PENDING: 'badge-pending',
-  SENT:    'badge-sent',
-  REPLIED: 'badge-replied',
-  SKIPPED: 'badge-skipped',
+  PENDING:        'badge-pending',
+  ENRICHED:       'badge-enriched',
+  SCORED:         'badge-scored',
+  MESSAGES_READY: 'badge-messages-ready',
+  SENT:           'badge-sent',
+  REPLIED:        'badge-replied',
+  SKIPPED:        'badge-skipped',
+  FAILED:         'badge-failed',
 }
 
 const CHANNEL_BADGE = {
@@ -68,6 +72,7 @@ export default function LeadTable({
   onMarkReplied,
   onViewMessages,
   onEnrich,
+  onRowClick,
   onSelect,
   selected = [],
   page,
@@ -146,12 +151,14 @@ export default function LeadTable({
             {items.map((lead) => (
               <tr
                 key={lead.id}
+                onClick={() => onRowClick?.(lead)}
                 className={clsx(
                   'group hover:bg-slate-800/40 transition-colors',
+                  onRowClick && 'cursor-pointer',
                   selected.includes(lead.id) && 'bg-brand-600/5'
                 )}
               >
-                <td className="py-3 px-4">
+                <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
                   <input
                     type="checkbox"
                     checked={selected.includes(lead.id)}
@@ -167,6 +174,7 @@ export default function LeadTable({
                       href={lead.website}
                       target="_blank"
                       rel="noreferrer"
+                      onClick={(e) => e.stopPropagation()}
                       className="text-xs text-slate-500 hover:text-brand-400 transition-colors truncate block"
                     >
                       {lead.website.replace(/^https?:\/\//, '')}
@@ -213,7 +221,7 @@ export default function LeadTable({
                   {fmtDate(lead.sent_at)}
                 </td>
 
-                <td className="py-3 px-4">
+                <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center gap-1 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
                     <button
                       onClick={() => onEnrich?.(lead.id)}

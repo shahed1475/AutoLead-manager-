@@ -101,10 +101,17 @@ export const inboxApi = {
 }
 
 export const enrichApi = {
-  enrichLead: (leadId)            => api.post(`/leads/${leadId}/enrich-sync`).then((r) => r.data),
-  enrichQueue:(leadId)            => api.post(`/leads/${leadId}/enrich`).then((r) => r.data),
-  scoreAll:   (leadIds = null)    => api.post('/leads/score-all', { lead_ids: leadIds }).then((r) => r.data),
-  scoreDist:  ()                  => api.get('/leads/score-dist').then((r) => r.data),
+  enrichLead:    (leadId)         => api.post(`/leads/${leadId}/enrich-sync`).then((r) => r.data),
+  enrichQueue:   (leadId)         => api.post(`/leads/${leadId}/enrich`).then((r) => r.data),
+  getEnrichment: (leadId)         => api.get(`/leads/${leadId}/enrichment`).then((r) => r.data),
+  scoreAll:      (leadIds = null) => api.post('/leads/score-all', { lead_ids: leadIds }).then((r) => r.data),
+  scoreDist:     ()               => api.get('/leads/score-dist').then((r) => r.data),
+}
+
+export const followupsApi = {
+  pending: ()            => api.get('/followups/pending').then((r) => r.data),
+  history: (params = {}) => api.get('/followups/history', { params }).then((r) => r.data),
+  run:     ()            => api.post('/followups/run').then((r) => r.data),
 }
 
 export default api

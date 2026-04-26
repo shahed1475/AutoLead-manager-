@@ -5,6 +5,7 @@ import { leadsApi, aiApi, campaignApi, enrichApi } from '../api/client'
 import LeadTable from '../components/LeadTable'
 import CampaignControls from '../components/CampaignControls'
 import ViewMessagesModal from '../components/ViewMessagesModal'
+import EnrichmentDrawer from '../components/EnrichmentDrawer'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -46,10 +47,11 @@ export default function Leads() {
     status: '', channel: '', search: '', niche: '', city: '',
     date_from: '', date_to: '', score_label: '',
   })
-  const [sortBy, setSortBy] = useState('created_at')
+  const [sortBy, setSortBy] = useState('score')
   const [sortDir, setSortDir] = useState('desc')
   const [showAdd, setShowAdd] = useState(false)
   const [viewLead, setViewLead] = useState(null)
+  const [drawerLead, setDrawerLead] = useState(null)
   const [form, setForm] = useState({
     business_name: '', email: '', phone: '', website: '', niche: '', city: '',
   })
@@ -323,6 +325,7 @@ export default function Leads() {
             onResend={(id, channel) => resendMut.mutate({ id, channel })}
             onViewMessages={(lead) => setViewLead(lead)}
             onEnrich={(id) => enrichMut.mutate(id)}
+            onRowClick={(lead) => setDrawerLead(lead)}
             selected={selected}
             onSelect={setSelected}
             page={page}
@@ -344,6 +347,14 @@ export default function Leads() {
           />
         </div>
       </div>
+
+      {/* Enrichment Drawer */}
+      <EnrichmentDrawer
+        lead={drawerLead}
+        onClose={() => setDrawerLead(null)}
+        onEnrich={(id) => { enrichMut.mutate(id); setDrawerLead(null) }}
+        onViewMessages={(lead) => { setViewLead(lead); setDrawerLead(null) }}
+      />
 
       {/* View Messages Modal */}
       {viewLead && (
