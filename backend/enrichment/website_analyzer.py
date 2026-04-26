@@ -1,20 +1,35 @@
 """
-website_analyzer.py — Fetch and analyze a business website.
+website_analyzer.py — Deep website signal extraction and structural scoring.
 
-Extracts clean readable text, metadata, and structural signals
-(contact form, social links) for use by the AI enricher and lead scorer.
+Two public functions:
 
-All network calls use httpx with redirect following and SSL verification
-disabled to handle the many small-business sites with invalid certs.
+  analyze_website(url, timeout) -> dict
+      Async. Fetches the page and extracts every signal needed for AI
+      enrichment: title, meta, headings, clean body text, phone/email
+      presence, CTAs, social links, image count, word count, SSL.
+
+  score_website(website_data) -> dict
+      Sync. Consumes the output of analyze_website() and produces a
+      0-25 quality score plus four categorised gap lists (issues,
+      conversion_gaps, seo_gaps, pitch_angles) used downstream by the
+      AI enricher to generate highly targeted outreach.
 """
 import logging
 import re
-from typing import Any, Dict
+from typing import Any, Dict, List, Set
 
 import httpx
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
+
+# ── Limits ────────────────────────────────────────────────────────────────────
+
+_MAX_TEXT_CHARS = 3_000
+_MAX_HEADINGS   = 20
+_MAX_CTAS       = 15
+
+# ── Network headers ───────────────────────────────────────────────────────────
 
 _HEADERS = {
     "User-Agent": (
@@ -22,14 +37,56 @@ _HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
+    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
 }
 
-_MAX_TEXT_CHARS  = 3000
-_SOCIAL_DOMAINS  = re.compile(
-    r"(facebook|twitter|instagram|linkedin|youtube|tiktok|pinterest)\.com", re.I
+# ── Compiled patterns ─────────────────────────────────────────────────────────
+
+_SOCIAL_RE = re.compile(
+    r"(facebook|instagram|linkedin|twitter|x\.com|tiktok|youtube|pinterest)\.com",
+    re.I,
 )
 
+# Covers: (123) 456-7890 · 123-456-7890 · +1 234 567 8901 · +44 7911 123456
+_PHONE_RE = re.compile(
+    r"(?:\+?\d{1,3}[\s.\-]?)?(?:\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4})"
+    r"|\+\d{7,15}",
+    re.M,
+)
+
+_EMAIL_RE = re.compile(
+    r"\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b"
+)
+
+# Classes / text patterns that suggest a call-to-action element
+_CTA_CLASS_RE = re.compile(
+    r"\b(btn|button|cta|call.to.action|get.started|buy|order|shop|"
+    r"sign.?up|contact|book|reserve|learn.more|try|start|apply|download|"
+    r"quote|schedule|request|join|subscribe)\b",
+    re.I,
+)
+
+# Text that looks like a CTA label in its own right
+_CTA_TEXT_RE = re.compile(
+    r"\b(get\s+(?:a\s+)?(?:free\s+)?quote|book\s+(?:a\s+)?(?:free\s+)?|"
+    r"contact\s+us|call\s+(?:us\s+)?now|schedule|request|get\s+started|"
+    r"start\s+(?:your\s+)?|sign\s+up|learn\s+more|try\s+(?:it\s+)?(?:free)?|"
+    r"download|buy\s+now|order\s+now|shop\s+now|subscribe|join\s+(?:us\s+)?(?:now)?)\b",
+    re.I,
+)
+
+# Words so generic they aren't real CTAs
+_GENERIC_TEXT: Set[str] = {
+    "submit", "ok", "cancel", "close", "menu", "home", "about", "more",
+    "read more", "click here", "here", "link", "continue", "next", "back",
+    "send", "go", "yes", "no", "search", "reset", "enter", "loading",
+    "click", "log in", "login", "sign in", "register",
+}
+
+
+# ── Private helpers ───────────────────────────────────────────────────────────
 
 def _normalize_url(url: str) -> str:
     url = url.strip()
@@ -38,45 +95,138 @@ def _normalize_url(url: str) -> str:
     return url
 
 
-def _extract_text(soup: BeautifulSoup) -> str:
-    """Remove boilerplate then extract clean readable text."""
+def _clean_text(soup: BeautifulSoup) -> str:
+    """Strip boilerplate, return first _MAX_TEXT_CHARS of readable prose."""
     for tag in soup(["script", "style", "nav", "header", "footer",
-                     "noscript", "iframe", "svg", "form"]):
+                     "noscript", "iframe", "svg", "aside", "figure"]):
         tag.decompose()
 
     body = (
         soup.find("main")
         or soup.find("article")
-        or soup.find(id=re.compile(r"content|main|hero|about", re.I))
+        or soup.find(id=re.compile(r"content|main|hero|about|body", re.I))
         or soup.find("body")
         or soup
     )
-
-    lines = [t.strip() for t in body.stripped_strings if len(t.strip()) > 20]
+    lines = [t.strip() for t in body.stripped_strings if len(t.strip()) > 15]
     return " ".join(lines)[:_MAX_TEXT_CHARS]
 
 
-async def analyze_website(url: str, timeout: int = 12) -> Dict[str, Any]:
-    """
-    Fetch a business website and return extracted intelligence.
+def _extract_headings(soup: BeautifulSoup) -> List[str]:
+    return [
+        h.get_text(strip=True)
+        for h in soup.find_all(["h1", "h2", "h3"])
+        if h.get_text(strip=True)
+    ][:_MAX_HEADINGS]
 
-    Returns
-    -------
-    dict with keys:
-      url, page_text, title, description,
-      has_contact_form, has_social_links, error (None on success)
+
+def _has_contact_form(soup: BeautifulSoup) -> bool:
+    for form in soup.find_all("form"):
+        if form.find(["input", "textarea"],
+                     attrs={"type": re.compile(r"^(text|email|tel)$", re.I)}):
+            return True
+    return False
+
+
+def _has_phone(text: str, soup: BeautifulSoup) -> bool:
+    if _PHONE_RE.search(text):
+        return True
+    return bool(soup.find("a", href=re.compile(r"^tel:", re.I)))
+
+
+def _has_email_on_page(text: str, soup: BeautifulSoup) -> bool:
+    if _EMAIL_RE.search(text):
+        return True
+    return bool(soup.find("a", href=re.compile(r"^mailto:", re.I)))
+
+
+def _extract_ctas(soup: BeautifulSoup) -> List[str]:
+    """Return unique, meaningful CTA labels (buttons, submit inputs, CTA links)."""
+    candidates: List[str] = []
+
+    # <button> elements
+    for el in soup.find_all("button"):
+        t = el.get_text(strip=True)
+        if t and t.lower() not in _GENERIC_TEXT and 3 <= len(t) <= 80:
+            candidates.append(t)
+
+    # <input type="submit|button">
+    for el in soup.find_all("input", attrs={"type": re.compile(r"^(submit|button)$", re.I)}):
+        t = (el.get("value") or "").strip()
+        if t and t.lower() not in _GENERIC_TEXT and 3 <= len(t) <= 80:
+            candidates.append(t)
+
+    # <a> links that look like CTAs (by class or text)
+    for el in soup.find_all("a"):
+        cls  = " ".join(el.get("class", []))
+        t    = el.get_text(strip=True)
+        if not t or len(t) < 3 or len(t) > 80 or t.lower() in _GENERIC_TEXT:
+            continue
+        if _CTA_CLASS_RE.search(cls) or _CTA_TEXT_RE.search(t):
+            candidates.append(t)
+
+    # Deduplicate (case-insensitive), preserve order
+    seen: Set[str] = set()
+    result: List[str] = []
+    for c in candidates:
+        lk = c.lower()
+        if lk not in seen:
+            seen.add(lk)
+            result.append(c[:80])
+        if len(result) >= _MAX_CTAS:
+            break
+
+    return result
+
+
+def _extract_social_links(soup: BeautifulSoup) -> List[str]:
+    """Return sorted list of social platform names found in any <a href>."""
+    found: Set[str] = set()
+    for a in soup.find_all("a", href=True):
+        m = _SOCIAL_RE.search(a["href"])
+        if m:
+            platform = m.group(1).lower()
+            if platform == "x.com":
+                platform = "twitter"
+            found.add(platform)
+    return sorted(found)
+
+
+# ── Public: fetch + extract ───────────────────────────────────────────────────
+
+async def analyze_website(url: str, timeout: int = 10) -> Dict[str, Any]:
     """
+    Fetch a business website and return a comprehensive signal dict.
+
+    All keys are always present; ``error`` is None on success.
+    ``has_social_links`` and ``page_text`` are backward-compat aliases.
+    """
+    norm    = _normalize_url(url)
+    has_ssl = norm.startswith("https://")
+
     result: Dict[str, Any] = {
-        "url":              url,
-        "page_text":        "",
-        "title":            "",
-        "description":      "",
-        "has_contact_form": False,
-        "has_social_links": False,
-        "error":            None,
+        # Network
+        "url":               norm,
+        "has_ssl":           has_ssl,
+        "error":             None,
+        # Content
+        "page_title":        "",
+        "meta_description":  "",
+        "all_headings":      [],
+        "body_text":         "",
+        "word_count":        0,
+        "image_count":       0,
+        # Contact / conversion
+        "has_contact_form":  False,
+        "has_phone_on_page": False,
+        "has_email_on_page": False,
+        "cta_buttons":       [],
+        # Social / trust
+        "social_media_links": [],
+        # Backward-compat aliases consumed by score_lead() + older callers
+        "has_social_links":  False,
+        "page_text":         "",
     }
-
-    norm = _normalize_url(url)
 
     try:
         async with httpx.AsyncClient(
@@ -95,28 +245,175 @@ async def analyze_website(url: str, timeout: int = 12) -> Dict[str, Any]:
         result["error"] = "timeout"
         return result
     except Exception as exc:
-        result["error"] = str(exc)[:80]
+        result["error"] = str(exc)[:120]
         return result
 
     soup = BeautifulSoup(html, "lxml")
 
-    # Title
-    title_tag = soup.find("title")
-    result["title"] = title_tag.get_text(strip=True)[:120] if title_tag else ""
+    # ── Title ──────────────────────────────────────────────────────────────────
+    tag = soup.find("title")
+    result["page_title"] = tag.get_text(strip=True)[:120] if tag else ""
 
-    # Meta description
+    # ── Meta description ───────────────────────────────────────────────────────
     meta = soup.find("meta", attrs={"name": re.compile(r"^description$", re.I)})
-    result["description"] = (meta.get("content", "")[:200] if meta else "")
+    result["meta_description"] = meta.get("content", "")[:250] if meta else ""
 
-    # Contact form signal
-    forms = soup.find_all("form")
-    for form in forms:
-        if form.find(["input", "textarea"], attrs={"type": re.compile(r"text|email", re.I)}):
-            result["has_contact_form"] = True
-            break
+    # ── Headings ───────────────────────────────────────────────────────────────
+    result["all_headings"] = _extract_headings(soup)
 
-    # Social links
-    result["has_social_links"] = bool(soup.find("a", href=_SOCIAL_DOMAINS))
+    # ── Body text ──────────────────────────────────────────────────────────────
+    body_text = _clean_text(soup)
+    result["body_text"]  = body_text
+    result["page_text"]  = body_text                  # backward-compat
+    result["word_count"] = len(body_text.split())
+    result["image_count"] = len(soup.find_all("img"))
 
-    result["page_text"] = _extract_text(soup)
+    # ── Contact / conversion signals ───────────────────────────────────────────
+    result["has_contact_form"]   = _has_contact_form(soup)
+    result["has_phone_on_page"]  = _has_phone(body_text, soup)
+    result["has_email_on_page"]  = _has_email_on_page(body_text, soup)
+    result["cta_buttons"]        = _extract_ctas(soup)
+
+    # ── Social / trust signals ─────────────────────────────────────────────────
+    social                        = _extract_social_links(soup)
+    result["social_media_links"]  = social
+    result["has_social_links"]    = bool(social)      # backward-compat
+
+    logger.debug(
+        "analyze_website: %s → wc=%d headings=%d ctas=%d social=%s ssl=%s",
+        norm, result["word_count"], len(result["all_headings"]),
+        len(result["cta_buttons"]), social, has_ssl,
+    )
     return result
+
+
+# ── Public: structural scoring ────────────────────────────────────────────────
+
+def score_website(website_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Produce a 0-25 website quality score and four categorised gap lists.
+
+    Scoring rubric (max 25 pts):
+      +5  SSL / HTTPS
+      +5  contact form present
+      +3  phone number on page
+      +3  meta description > 50 chars
+      +3  ≥ 2 social media links
+      +3  CTA buttons found (non-generic)
+      +3  word count > 300
+
+    Returns
+    -------
+    dict with:
+      website_quality_score : float  0-25
+      issues                : list[str]  detected problems
+      conversion_gaps       : list[str]  missing conversion elements
+      seo_gaps              : list[str]  missing SEO elements
+      pitch_angles          : list[str]  actionable sales opportunities
+    """
+    if website_data.get("error"):
+        return {
+            "website_quality_score": 0.0,
+            "issues":          ["Website could not be fetched — may be down or block crawlers"],
+            "conversion_gaps": ["Unable to verify contact options or conversion path"],
+            "seo_gaps":        ["Website accessibility and indexability unknown"],
+            "pitch_angles":    [
+                "Help them establish a reliable, crawlable online presence",
+                "Fix technical issues preventing customers from finding them online",
+            ],
+        }
+
+    score:           float     = 0.0
+    issues:          List[str] = []
+    conversion_gaps: List[str] = []
+    seo_gaps:        List[str] = []
+    pitch_angles:    List[str] = []
+
+    # ── +5 SSL ─────────────────────────────────────────────────────────────────
+    if website_data.get("has_ssl"):
+        score += 5
+    else:
+        issues.append("No HTTPS — site served over plain HTTP")
+        seo_gaps.append("Missing HTTPS: Google penalises non-SSL sites and browsers show 'Not Secure'")
+        pitch_angles.append(
+            "Migrate them to HTTPS — quick win that boosts trust, SEO, and removes scary browser warnings"
+        )
+
+    # ── +5 contact form ────────────────────────────────────────────────────────
+    if website_data.get("has_contact_form"):
+        score += 5
+    else:
+        conversion_gaps.append("No contact form — visitors have no self-service way to reach them")
+        pitch_angles.append(
+            "Add a simple quote/contact form so leads can enquire 24/7 without calling"
+        )
+
+    # ── +3 phone on page ──────────────────────────────────────────────────────
+    if website_data.get("has_phone_on_page"):
+        score += 3
+    else:
+        issues.append("Phone number not visible in page content")
+        conversion_gaps.append("No visible phone number — removes a key trust and conversion signal")
+
+    # ── +3 meta description > 50 chars ────────────────────────────────────────
+    meta = website_data.get("meta_description", "")
+    if meta and len(meta) > 50:
+        score += 3
+    else:
+        seo_gaps.append(
+            "Missing or very short meta description — Google auto-generates an unhelpful snippet"
+        )
+        pitch_angles.append(
+            "Write compelling meta descriptions for every page to dramatically improve click-through from search"
+        )
+
+    # ── +3 ≥2 social media links ──────────────────────────────────────────────
+    social = website_data.get("social_media_links", [])
+    if len(social) >= 2:
+        score += 3
+    elif len(social) == 1:
+        issues.append(f"Only one social platform linked ({social[0]}) — limited social proof")
+        pitch_angles.append(
+            f"Expand their social presence beyond {social[0]} to build a stronger brand footprint"
+        )
+    else:
+        issues.append("No social media links on website")
+        conversion_gaps.append("No social proof — visitors can't verify legitimacy via social media")
+        pitch_angles.append(
+            "Set up and link their social profiles to build trust and create additional customer touchpoints"
+        )
+
+    # ── +3 non-generic CTA buttons ────────────────────────────────────────────
+    ctas = website_data.get("cta_buttons", [])
+    if ctas:
+        score += 3
+    else:
+        conversion_gaps.append("No clear call-to-action buttons — visitors don't know what to do next")
+        pitch_angles.append(
+            "Add specific CTA buttons ('Get a Free Quote', 'Book a Consultation') to guide visitors to convert"
+        )
+
+    # ── +3 word count > 300 ───────────────────────────────────────────────────
+    wc = website_data.get("word_count", 0)
+    if wc > 300:
+        score += 3
+    elif wc > 100:
+        issues.append(f"Thin content ({wc} words) — insufficient for SEO or visitor confidence")
+        seo_gaps.append("Too little readable content for Google to understand and rank the page")
+        pitch_angles.append("Build out their content with service pages, FAQs, and case studies")
+    else:
+        issues.append(f"Near-empty page detected ({wc} words) — possibly a JavaScript SPA or parked domain")
+        seo_gaps.append("Search engines can't index content they can't read — site effectively invisible")
+        pitch_angles.append(
+            "Rebuild their site with substantive content — they're essentially invisible to search engines"
+        )
+
+    score = min(25.0, max(0.0, score))
+
+    return {
+        "website_quality_score": score,
+        "issues":          issues          or ["No major structural issues detected"],
+        "conversion_gaps": conversion_gaps or ["No obvious conversion gaps detected"],
+        "seo_gaps":        seo_gaps        or ["No obvious SEO gaps detected"],
+        "pitch_angles":    pitch_angles    or ["Site appears well-optimised — focus on personalisation"],
+    }

@@ -10,26 +10,21 @@ Routes:
   GET  /api/leads/score-dist   — HOT/WARM/COLD distribution
 """
 import logging
-from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from .. import database as db
 from ..config import get_settings
-from ..models import ReplyInboxResponse, EnrichRequest, ScoreRequest
+from ..models import ReplyInboxResponse, ScoreRequest
 from ..scoring.lead_scorer import score_lead
 from ..enrichment.website_analyzer import analyze_website
-from ..enrichment.ai_enricher import enrich_lead
+from ..enrichment.ai_enricher import enrich_lead_with_ai
 from ..reply_detector import check_replies
 
 logger   = logging.getLogger(__name__)
 settings = get_settings()
 router   = APIRouter(prefix="/api", tags=["inbox"])
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 # ── Reply inbox ────────────────────────────────────────────────────────────────
@@ -77,39 +72,36 @@ async def trigger_reply_check(background_tasks: BackgroundTasks):
 # ── Lead enrichment ────────────────────────────────────────────────────────────
 
 async def _enrich_and_score(lead_id: int) -> dict:
-    """Fetch website, run AI analysis, score, and persist to DB."""
+    """Fetch website, run AI enrichment + structural scoring, then HOT/WARM/COLD score."""
     lead = await db.get_lead_by_id(lead_id)
     if not lead:
         return {"error": "Lead not found"}
 
     lead = dict(lead)
-    update: dict = {}
+    enrichment: dict = {}
 
     website = lead.get("website")
     if website:
-        # 1. Fetch and analyze website
+        # 1. Fetch and analyze website signals
         site_data = await analyze_website(website, timeout=settings.enrichment_timeout)
-        if not site_data.get("error"):
-            # 2. AI enrichment from website text
-            stored = await db.get_all_settings()
-            from pathlib import Path
-            dna_path    = stored.get("company_dna_path") or settings.company_dna_path
-            company_dna = Path(dna_path).read_text(encoding="utf-8") if Path(dna_path).exists() else ""
 
-            ai_data = await enrich_lead(lead, site_data.get("page_text", ""), company_dna)
-            update.update(ai_data)
-            update["has_social_links"] = 1 if site_data.get("has_social_links") else 0
-            update["enriched_at"]      = _now_iso()
+        # 2. Load company DNA once
+        from pathlib import Path
+        stored      = await db.get_all_settings()
+        dna_path    = stored.get("company_dna_path") or settings.company_dna_path
+        company_dna = Path(dna_path).read_text(encoding="utf-8") if Path(dna_path).exists() else ""
 
-    # 3. Score the lead (with any new enrichment data merged)
-    merged = {**lead, **update}
-    scored = score_lead(merged)
-    update.update(scored)
+        # 3. AI enrichment + structural scoring — handles DB upsert + lead status internally
+        enrichment = await enrich_lead_with_ai(lead, site_data, company_dna)
 
-    if update:
-        await db.update_lead(lead_id, update)
+    # 4. Re-fetch lead (enrich_lead_with_ai already updated it)
+    lead = dict(await db.get_lead_by_id(lead_id) or lead)
 
-    return {"lead_id": lead_id, **scored}
+    # 5. HOT / WARM / COLD classification on the fully-merged lead
+    scored = score_lead({**lead, **enrichment})
+    await db.update_lead(lead_id, scored)
+
+    return {"lead_id": lead_id, **scored, **enrichment}
 
 
 @router.post("/leads/{lead_id}/enrich")

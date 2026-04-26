@@ -188,19 +188,33 @@ CREATE INDEX IF NOT EXISTS idx_inbox_created ON reply_inbox (created_at);
 
 -- ── Enriched data (v3 new) ────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS enriched_data (
-    id                  SERIAL PRIMARY KEY,
-    lead_id             INTEGER UNIQUE REFERENCES leads(id) ON DELETE CASCADE,
-    business_summary    TEXT,
-    target_audience     TEXT,
-    service_level       VARCHAR(50),
-    brand_positioning   TEXT,
-    marketing_gaps      TEXT[],
-    growth_potential    VARCHAR(50),
-    best_pitch_strategy TEXT,
-    website_text        TEXT,
-    enriched_at         TIMESTAMP DEFAULT NOW()
+    id                    SERIAL PRIMARY KEY,
+    lead_id               INTEGER UNIQUE REFERENCES leads(id) ON DELETE CASCADE,
+    business_summary      TEXT,
+    target_audience       TEXT,
+    service_level         VARCHAR(50),
+    brand_positioning     TEXT,
+    marketing_gaps        TEXT[],
+    growth_potential      VARCHAR(50),
+    best_pitch_strategy   TEXT,
+    personalization_hook  TEXT,
+    website_text          TEXT,
+    website_quality_score FLOAT   DEFAULT 0,
+    issues                TEXT[],
+    conversion_gaps       TEXT[],
+    seo_gaps              TEXT[],
+    pitch_angles          TEXT[],
+    enriched_at           TIMESTAMP DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_enriched_lead ON enriched_data (lead_id);
+
+-- ── Enriched data — upgrade migrations (idempotent, safe on existing installs) ─
+ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS personalization_hook  TEXT;
+ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS website_quality_score FLOAT   DEFAULT 0;
+ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS issues                TEXT[];
+ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS conversion_gaps       TEXT[];
+ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS seo_gaps              TEXT[];
+ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS pitch_angles          TEXT[];
 
 -- ── Scores breakdown (v3 new) ─────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS scores (
@@ -911,7 +925,9 @@ async def update_inbox_entry(entry_id: int, data: Dict[str, Any]) -> bool:
 
 _ENRICHED_WRITABLE = frozenset({
     "business_summary", "target_audience", "service_level", "brand_positioning",
-    "marketing_gaps", "growth_potential", "best_pitch_strategy", "website_text",
+    "marketing_gaps", "growth_potential", "best_pitch_strategy",
+    "personalization_hook", "website_text",
+    "website_quality_score", "issues", "conversion_gaps", "seo_gaps", "pitch_angles",
     "enriched_at",
 })
 
