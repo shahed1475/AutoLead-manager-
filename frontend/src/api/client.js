@@ -2,7 +2,7 @@ import axios from 'axios'
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 30000,
+  timeout: 300000,  // 5 min — Ollama generation can take up to 300 s
 })
 
 api.interceptors.response.use(
@@ -91,6 +91,20 @@ export const engineApi = {
 
 export const logsApi = {
   recent: (limit = 20) => api.get('/logs', { params: { limit } }).then((r) => r.data),
+}
+
+export const inboxApi = {
+  list:    (params = {})          => api.get('/inbox', { params }).then((r) => r.data),
+  stats:   ()                     => api.get('/inbox/stats').then((r) => r.data),
+  process: (id, intent)           => api.post(`/inbox/${id}/process`, null, { params: { intent } }).then((r) => r.data),
+  check:   ()                     => api.post('/inbox/check').then((r) => r.data),
+}
+
+export const enrichApi = {
+  enrichLead: (leadId)            => api.post(`/leads/${leadId}/enrich-sync`).then((r) => r.data),
+  enrichQueue:(leadId)            => api.post(`/leads/${leadId}/enrich`).then((r) => r.data),
+  scoreAll:   (leadIds = null)    => api.post('/leads/score-all', { lead_ids: leadIds }).then((r) => r.data),
+  scoreDist:  ()                  => api.get('/leads/score-dist').then((r) => r.data),
 }
 
 export default api

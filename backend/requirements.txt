@@ -1,21 +1,48 @@
+# ── Web framework ────────────────────────────────────────────────────────────
 fastapi>=0.115.5
-ollama>=0.3.0
 uvicorn[standard]>=0.32.1
-aiosqlite>=0.20.0
-pydantic>=2.10.0
-pydantic-settings>=2.7.0
+python-multipart>=0.0.12
+
+# ── Database — PostgreSQL (async) ────────────────────────────────────────────
+asyncpg>=0.29.0
+psycopg2-binary>=2.9.9       # sync driver (migrations / admin scripts)
+
+# ── Redis & async job queue ───────────────────────────────────────────────────
+redis[asyncio]>=5.0.3
+arq>=0.25.0                  # async Redis queue (asyncio-native alternative to rq)
+
+# ── AI / LLM ─────────────────────────────────────────────────────────────────
+ollama>=0.3.0
+
+# ── Async HTTP + scraping ─────────────────────────────────────────────────────
 httpx>=0.27.2
-playwright>=1.48.0
+requests>=2.33.1
 beautifulsoup4>=4.12.3
 lxml>=5.4.0
-python-dotenv>=1.0.1
+playwright>=1.48.0
+fake-useragent>=1.5.1
+python-whois>=0.9.4
+
+# ── Data validation ───────────────────────────────────────────────────────────
+pydantic>=2.10.0
+pydantic[email]>=2.10.0
+pydantic-settings>=2.7.0
+
+# ── Email (SMTP send + IMAP receive) ─────────────────────────────────────────
+aiosmtplib>=3.0.0
+
+# ── Task scheduling ───────────────────────────────────────────────────────────
 apscheduler==3.10.4
+
+# ── WhatsApp automation ───────────────────────────────────────────────────────
 pyautogui>=0.9.54
 pyperclip>=1.8.2
 pywhatkit==5.4
 pillow>=11.0.0
-python-multipart>=0.0.12
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.1
 aiofiles>=24.1.0
-requests>=2.33.1
+urllib3>=2.0.0
 selenium>=4.27.1
 webdriver-manager>=4.0.2

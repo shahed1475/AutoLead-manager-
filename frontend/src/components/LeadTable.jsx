@@ -1,8 +1,10 @@
 import {
   Trash2, SkipForward, Eye, RotateCcw, CheckCircle2,
   ChevronLeft, ChevronRight, ArrowUp, ArrowDown, ArrowUpDown,
+  Sparkles,
 } from 'lucide-react'
 import clsx from 'clsx'
+import ScoreBadge from './ScoreBadge'
 
 const STATUS_BADGE = {
   PENDING: 'badge-pending',
@@ -18,15 +20,19 @@ const CHANNEL_BADGE = {
 }
 
 const SOURCE_BADGE = {
-  GOOGLE_MAPS:  'badge bg-blue-500/20 text-blue-400 border border-blue-500/30',
-  YELP:         'badge bg-red-500/20 text-red-400 border border-red-500/30',
-  YELLOW_PAGES: 'badge bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
+  GOOGLE_MAPS:   'badge bg-blue-500/20 text-blue-400 border border-blue-500/30',
+  YELP:          'badge bg-red-500/20 text-red-400 border border-red-500/30',
+  YELLOW_PAGES:  'badge bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
+  GOOGLE_SEARCH: 'badge bg-purple-500/20 text-purple-400 border border-purple-500/30',
+  BING_MAPS:     'badge bg-sky-500/20 text-sky-400 border border-sky-500/30',
 }
 
 const SOURCE_LABEL = {
-  GOOGLE_MAPS:  '🗺 Maps',
-  YELP:         '⭐ Yelp',
-  YELLOW_PAGES: '📒 YP',
+  GOOGLE_MAPS:   '🗺 Maps',
+  YELP:          '⭐ Yelp',
+  YELLOW_PAGES:  '📒 YP',
+  GOOGLE_SEARCH: '🔍 Search',
+  BING_MAPS:     '🔷 Bing',
 }
 
 function SortTh({ label, field, sortBy, sortDir, onSort, className = '' }) {
@@ -61,6 +67,7 @@ export default function LeadTable({
   onResend,
   onMarkReplied,
   onViewMessages,
+  onEnrich,
   onSelect,
   selected = [],
   page,
@@ -127,11 +134,12 @@ export default function LeadTable({
               <SortTh label="Business"     field="business_name" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
               <SortTh label="Niche / City" field="niche"         sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
               <th className="py-3 px-4 text-left font-medium text-slate-400 text-xs uppercase tracking-wide">Contact</th>
+              <SortTh label="Score"        field="score"         sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
               <SortTh label="Status"       field="status"        sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
               <th className="py-3 px-4 text-left font-medium text-slate-400 text-xs uppercase tracking-wide">Channel</th>
               <th className="py-3 px-4 text-left font-medium text-slate-400 text-xs uppercase tracking-wide">Source</th>
               <SortTh label="Sent"         field="sent_at"       sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
-              <th className="py-3 px-4 text-right font-medium text-slate-400 text-xs uppercase tracking-wide w-48">Actions</th>
+              <th className="py-3 px-4 text-right font-medium text-slate-400 text-xs uppercase tracking-wide w-52">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/60">
@@ -178,6 +186,10 @@ export default function LeadTable({
                 </td>
 
                 <td className="py-3 px-4">
+                  <ScoreBadge score={lead.score} label={lead.score_label} />
+                </td>
+
+                <td className="py-3 px-4">
                   <span className={STATUS_BADGE[lead.status] || 'badge'}>{lead.status}</span>
                 </td>
 
@@ -203,6 +215,13 @@ export default function LeadTable({
 
                 <td className="py-3 px-4">
                   <div className="flex items-center gap-1 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={() => onEnrich?.(lead.id)}
+                      title="Enrich with AI"
+                      className="p-1.5 rounded text-slate-500 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all"
+                    >
+                      <Sparkles size={13} />
+                    </button>
                     <button
                       onClick={() => onViewMessages?.(lead)}
                       title="View AI Messages"

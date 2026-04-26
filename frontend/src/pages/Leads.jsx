@@ -1,14 +1,22 @@
 import { useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Upload, Download, Search, RefreshCw } from 'lucide-react'
-import { leadsApi, aiApi, campaignApi } from '../api/client'
+import { Plus, Upload, Download, Search, RefreshCw, Sparkles } from 'lucide-react'
+import { leadsApi, aiApi, campaignApi, enrichApi } from '../api/client'
 import LeadTable from '../components/LeadTable'
 import CampaignControls from '../components/CampaignControls'
 import ViewMessagesModal from '../components/ViewMessagesModal'
 import toast from 'react-hot-toast'
+import clsx from 'clsx'
 
 const STATUSES = ['', 'PENDING', 'SENT', 'REPLIED', 'SKIPPED']
 const CHANNELS = ['', 'EMAIL', 'WHATSAPP', 'BOTH']
+const SCORES   = ['', 'HOT', 'WARM', 'COLD']
+
+const SCORE_STYLES = {
+  HOT:  'border-red-500/50 bg-red-500/15 text-red-300',
+  WARM: 'border-amber-500/50 bg-amber-500/15 text-amber-300',
+  COLD: 'border-blue-500/50 bg-blue-500/15 text-blue-300',
+}
 
 const STATUS_BTN = {
   PENDING: {
@@ -36,7 +44,7 @@ export default function Leads() {
   const [selected, setSelected] = useState([])
   const [filters, setFilters] = useState({
     status: '', channel: '', search: '', niche: '', city: '',
-    date_from: '', date_to: '',
+    date_from: '', date_to: '', score_label: '',
   })
   const [sortBy, setSortBy] = useState('created_at')
   const [sortDir, setSortDir] = useState('desc')
@@ -65,6 +73,21 @@ export default function Leads() {
   )
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['leads'] })
+
+  const enrichMut = useMutation({
+    mutationFn: (id) => enrichApi.enrichLead(id),
+    onSuccess: (d) => {
+      invalidate()
+      toast.success(`Enriched — Score: ${d.score} (${d.score_label})`)
+    },
+    onError: (e) => toast.error(e.message),
+  })
+
+  const scoreAllMut = useMutation({
+    mutationFn: () => enrichApi.scoreAll(),
+    onSuccess: () => { invalidate(); toast.success('Scoring queued for all leads') },
+    onError: (e) => toast.error(e.message),
+  })
 
   const deleteMut = useMutation({
     mutationFn: leadsApi.delete,
@@ -171,13 +194,22 @@ export default function Leads() {
             className="hidden"
             onChange={(e) => { if (e.target.files[0]) importMut.mutate(e.target.files[0]) }}
           />
+          <button
+            onClick={() => scoreAllMut.mutate()}
+            disabled={scoreAllMut.isPending}
+            className="btn-secondary text-xs"
+          >
+            {scoreAllMut.isPending
+              ? <><RefreshCw size={12} className="animate-spin" /> Scoring...</>
+              : <><Sparkles size={12} /> Score All</>}
+          </button>
           <button onClick={() => setShowAdd(true)} className="btn-primary text-xs">
             <Plus size={13} /> Add Lead
           </button>
         </div>
       </div>
 
-      {/* Status summary bar */}
+      {/* Status + Score filter bar */}
       <div className="flex items-center gap-2 flex-wrap">
         {STATUSES.slice(1).map((s) => {
           const cls = STATUS_BTN[s]
@@ -197,12 +229,31 @@ export default function Leads() {
             </button>
           )
         })}
-        {filters.status && (
+
+        <div className="w-px h-5 bg-slate-700/60 mx-1" />
+
+        {SCORES.slice(1).map((s) => {
+          const isActive = filters.score_label === s
+          return (
+            <button
+              key={s}
+              onClick={() => setFilter('score_label', isActive ? '' : s)}
+              className={clsx(
+                'px-3 py-1.5 rounded-lg border text-xs font-medium transition-all',
+                isActive ? SCORE_STYLES[s] : 'border-slate-700/50 text-slate-500 hover:border-slate-600 hover:text-slate-400',
+              )}
+            >
+              {s}
+            </button>
+          )
+        })}
+
+        {(filters.status || filters.score_label) && (
           <button
-            onClick={() => setFilter('status', '')}
+            onClick={() => { setFilter('status', ''); setFilter('score_label', '') }}
             className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
           >
-            Clear filter
+            Clear filters
           </button>
         )}
       </div>
@@ -271,6 +322,7 @@ export default function Leads() {
             onMarkReplied={(id) => markRepliedMut.mutate(id)}
             onResend={(id, channel) => resendMut.mutate({ id, channel })}
             onViewMessages={(lead) => setViewLead(lead)}
+            onEnrich={(id) => enrichMut.mutate(id)}
             selected={selected}
             onSelect={setSelected}
             page={page}

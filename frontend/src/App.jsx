@@ -6,6 +6,7 @@ import Leads from './pages/Leads'
 import Campaign from './pages/Campaign'
 import AILab from './pages/AILab'
 import Settings from './pages/Settings'
+import Inbox from './pages/Inbox'
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
               <Route path="/leads"     element={<Leads />} />
               <Route path="/campaign"  element={<Campaign />} />
               <Route path="/ai-lab"    element={<AILab />} />
+              <Route path="/inbox"     element={<Inbox />} />
               <Route path="/settings"  element={<Settings />} />
             </Routes>
           </main>

@@ -1,18 +1,29 @@
 import { NavLink } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import {
-  LayoutDashboard, Users, Send, Cpu, Settings, Zap
+  LayoutDashboard, Users, Send, Cpu, Settings, Zap, Inbox,
 } from 'lucide-react'
 import clsx from 'clsx'
+import { inboxApi } from '../api/client'
 
 const nav = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/leads',     icon: Users,           label: 'Leads'     },
   { to: '/campaign',  icon: Send,            label: 'Campaign'  },
   { to: '/ai-lab',    icon: Cpu,             label: 'AI Lab'    },
+  { to: '/inbox',     icon: Inbox,           label: 'Inbox', badge: true },
   { to: '/settings',  icon: Settings,        label: 'Settings'  },
 ]
 
 export default function Sidebar() {
+  const { data: inboxStats } = useQuery({
+    queryKey: ['inbox-stats'],
+    queryFn: inboxApi.stats,
+    refetchInterval: 60_000,
+    retry: false,
+  })
+  const unread = inboxStats?.unread ?? 0
+
   return (
     <aside className="w-56 shrink-0 flex flex-col bg-slate-900 border-r border-slate-800 h-screen">
       <div className="flex items-center gap-2.5 px-5 py-5 border-b border-slate-800">
@@ -21,12 +32,12 @@ export default function Sidebar() {
         </div>
         <div>
           <p className="font-semibold text-sm text-slate-100 leading-none">AutoLead</p>
-          <p className="text-[10px] text-slate-500 mt-0.5">Marketing Engine</p>
+          <p className="text-[10px] text-slate-500 mt-0.5">Marketing Engine v3</p>
         </div>
       </div>
 
       <nav className="flex-1 px-3 py-4 space-y-0.5">
-        {nav.map(({ to, icon: Icon, label }) => (
+        {nav.map(({ to, icon: Icon, label, badge }) => (
           <NavLink
             key={to}
             to={to}
@@ -40,13 +51,18 @@ export default function Sidebar() {
             }
           >
             <Icon size={16} />
-            {label}
+            <span className="flex-1">{label}</span>
+            {badge && unread > 0 && (
+              <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded-full bg-brand-600 text-white font-bold">
+                {unread > 99 ? '99+' : unread}
+              </span>
+            )}
           </NavLink>
         ))}
       </nav>
 
       <div className="px-4 py-4 border-t border-slate-800">
-        <p className="text-[10px] text-slate-600 text-center">Zero-Cost Engine v1.0</p>
+        <p className="text-[10px] text-slate-600 text-center">AutoLead v3 · Self-Hosted</p>
       </div>
     </aside>
   )

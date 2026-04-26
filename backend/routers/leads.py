@@ -11,18 +11,20 @@ router = APIRouter(prefix="/api/leads", tags=["leads"])
 
 @router.get("", response_model=LeadListResponse)
 async def list_leads(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    status: Optional[str] = None,
-    channel: Optional[str] = None,
-    niche: Optional[str] = None,
-    city: Optional[str] = None,
-    search: Optional[str] = None,
-    sort_by: str = Query("created_at"),
-    sort_dir: str = Query("desc"),
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    date_field: str = Query("created_at"),
+    page:          int            = Query(1, ge=1),
+    page_size:     int            = Query(50, ge=1, le=200),
+    status:        Optional[str]  = None,
+    channel:       Optional[str]  = None,
+    niche:         Optional[str]  = None,
+    city:          Optional[str]  = None,
+    search:        Optional[str]  = None,
+    sort_by:       str            = Query("created_at"),
+    sort_dir:      str            = Query("desc"),
+    date_from:     Optional[str]  = None,
+    date_to:       Optional[str]  = None,
+    date_field:    str            = Query("created_at"),
+    score_label:   Optional[str]  = None,
+    enriched_only: bool           = False,
 ):
     return await db.get_leads(
         page=page, page_size=page_size,
@@ -30,6 +32,7 @@ async def list_leads(
         niche=niche, city=city, search=search,
         sort_by=sort_by, sort_dir=sort_dir,
         date_from=date_from, date_to=date_to, date_field=date_field,
+        score_label=score_label, enriched_only=enriched_only,
     )
 
 
@@ -123,15 +126,8 @@ async def patch_status(lead_id: int, payload: StatusUpdate):
 @router.delete("", status_code=200)
 async def delete_all_leads(status: Optional[str] = Query(None)):
     """Bulk-delete leads, optionally filtered by status."""
-    from ..database import get_db
-    async with get_db() as conn:
-        valid = {"PENDING", "SENT", "REPLIED", "SKIPPED"}
-        if status and status.upper() in valid:
-            cursor = await conn.execute("DELETE FROM leads WHERE status = ?", (status.upper(),))
-        else:
-            cursor = await conn.execute("DELETE FROM leads")
-        await conn.commit()
-        return {"deleted": cursor.rowcount}
+    deleted = await db.delete_all_leads(status)
+    return {"deleted": deleted}
 
 
 @router.delete("/{lead_id}", status_code=204)
@@ -163,7 +159,10 @@ async def regenerate_messages(
                 "ai_whatsapp_msg":  msgs["whatsapp"],
                 "ai_email_subject": msgs["email_subject"],
                 "ai_email_body":    msgs["email_body"],
-                "ai_followup_msg":  msgs["followup"],
+                "ai_followup_msg":  msgs.get("follow_up_1"),
+                "ai_follow_up_1":   msgs.get("follow_up_1"),
+                "ai_follow_up_2":   msgs.get("follow_up_2"),
+                "ai_follow_up_3":   msgs.get("follow_up_3"),
             }
         elif message_type == "whatsapp":
             msg    = await ai_brain.generate_message(dict(lead), "whatsapp")
@@ -172,9 +171,14 @@ async def regenerate_messages(
             subject = await ai_brain.generate_message(dict(lead), "email_subject")
             body    = await ai_brain.generate_message(dict(lead), "email_body")
             update  = {"ai_email_subject": subject, "ai_email_body": body}
-        elif message_type == "followup":
-            msg    = await ai_brain.generate_message(dict(lead), "followup")
-            update = {"ai_followup_msg": msg}
+        elif message_type in ("followup", "followups"):
+            msgs   = await ai_brain.generate_followup_sequence(dict(lead))
+            update = {
+                "ai_followup_msg": msgs.get("follow_up_1"),
+                "ai_follow_up_1":  msgs.get("follow_up_1"),
+                "ai_follow_up_2":  msgs.get("follow_up_2"),
+                "ai_follow_up_3":  msgs.get("follow_up_3"),
+            }
         else:
             raise HTTPException(400, f"Unknown message_type '{message_type}'. Use: all | whatsapp | email | followup")
 

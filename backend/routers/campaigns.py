@@ -1,9 +1,12 @@
+import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from typing import List
 from .. import database as db
 from .. import email_sender, whatsapp_sender, ai_brain, scraper
 from ..models import CampaignSendRequest, CampaignStartRequest
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/campaign", tags=["campaign"])
 
@@ -45,28 +48,45 @@ async def _send_one(lead_id: int, channel: str) -> dict:
     try:
         if channel == "EMAIL":
             await email_sender.send_email_lead(lead)
+            await db.update_lead(lead_id, {"status": "SENT", "sent_at": _now_iso()})
+            await db.log_campaign_action(lead_id, channel, "SEND", True)
+            return {"lead_id": lead_id, "success": True}
+
         elif channel == "WHATSAPP":
             await whatsapp_sender.send_whatsapp_lead(lead)
+            await db.update_lead(lead_id, {"status": "SENT", "sent_at": _now_iso()})
+            await db.log_campaign_action(lead_id, channel, "SEND", True)
+            return {"lead_id": lead_id, "success": True}
+
         elif channel == "BOTH":
-            # Attempt both independently — one failure shouldn't block the other
+            # Attempt both independently — one failure should not block the other
+            sent_any = False
             try:
                 await email_sender.send_email_lead(lead)
+                await db.log_campaign_action(lead_id, "EMAIL", "SEND", True)
+                sent_any = True
             except Exception as exc:
                 errors.append(f"email: {exc}")
                 await db.log_campaign_action(lead_id, "EMAIL", "SEND", False, str(exc))
 
             try:
                 await whatsapp_sender.send_whatsapp_lead(lead)
+                await db.log_campaign_action(lead_id, "WHATSAPP", "SEND", True)
+                sent_any = True
             except Exception as exc:
                 errors.append(f"whatsapp: {exc}")
                 await db.log_campaign_action(lead_id, "WHATSAPP", "SEND", False, str(exc))
 
-            if errors:
-                return {"lead_id": lead_id, "success": False, "error": "; ".join(errors)}
+            if sent_any:
+                await db.update_lead(lead_id, {"status": "SENT", "sent_at": _now_iso()})
+                return {
+                    "lead_id": lead_id,
+                    "success": True,
+                    "partial_errors": errors if errors else None,
+                }
+            return {"lead_id": lead_id, "success": False, "error": "; ".join(errors)}
 
-        await db.update_lead(lead_id, {"status": "SENT", "sent_at": _now_iso()})
-        await db.log_campaign_action(lead_id, channel, "SEND", True)
-        return {"lead_id": lead_id, "success": True}
+        return {"lead_id": lead_id, "success": False, "error": f"Unknown channel: {channel}"}
 
     except Exception as exc:
         await db.log_campaign_action(lead_id, channel, "SEND", False, str(exc))
@@ -113,7 +133,10 @@ async def _run_campaign_task(
                     "ai_whatsapp_msg":  msgs.get("whatsapp"),
                     "ai_email_subject": msgs.get("email_subject"),
                     "ai_email_body":    msgs.get("email_body"),
-                    "ai_followup_msg":  msgs.get("followup"),
+                    "ai_followup_msg":  msgs.get("follow_up_1"),
+                    "ai_follow_up_1":   msgs.get("follow_up_1"),
+                    "ai_follow_up_2":   msgs.get("follow_up_2"),
+                    "ai_follow_up_3":   msgs.get("follow_up_3"),
                 })
                 await db.log_campaign_action(lead_id, "AI", "GENERATE", True)
                 lead = await db.get_lead_by_id(lead_id)
@@ -134,6 +157,7 @@ async def _run_campaign_task(
         })
 
     except Exception as exc:
+        logger.error("Campaign task failed (run_id=%s): %s", run_id, exc, exc_info=True)
         await db.update_campaign_run(run_id, {
             "status":      "FAILED",
             "leads_found": _run_state["leads_found"],
@@ -234,7 +258,19 @@ async def send_followup(lead_id: int, channel: str = Query("EMAIL")):
             errors.append(f"whatsapp: {exc}")
 
     if sent_via:
-        await db.update_lead(lead_id, {"followup_sent_at": _now_iso()})
+        now = _now_iso()
+        # Update legacy field + the first un-sent stage timestamp so the
+        # scheduler doesn't re-send a follow-up that was just sent manually.
+        lead_fresh = await db.get_lead_by_id(lead_id)
+        stage_update: dict = {"followup_sent_at": now}
+        if lead_fresh:
+            if not lead_fresh.get("follow_up_1_sent_at"):
+                stage_update["follow_up_1_sent_at"] = now
+            elif not lead_fresh.get("follow_up_2_sent_at"):
+                stage_update["follow_up_2_sent_at"] = now
+            elif not lead_fresh.get("follow_up_3_sent_at"):
+                stage_update["follow_up_3_sent_at"] = now
+        await db.update_lead(lead_id, stage_update)
 
     if not sent_via and errors:
         raise HTTPException(500, "; ".join(errors))

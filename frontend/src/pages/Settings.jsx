@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Save, RefreshCw, Eye, EyeOff, Mail, Bot, Globe,
   MessageCircle, FileText, AlertTriangle, Shield, Zap,
-  CheckCircle2, XCircle, Trash2, RotateCcw,
+  CheckCircle2, XCircle, Trash2, RotateCcw, Inbox,
 } from 'lucide-react'
 import { settingsApi, aiApi, leadsApi } from '../api/client'
 import toast from 'react-hot-toast'
@@ -151,6 +151,11 @@ const DEFAULTS = {
   smtp_password: '',
   smtp_from_name: '',
   smtp_from_email: '',
+  imap_host: 'imap.gmail.com',
+  imap_port: '993',
+  imap_username: '',
+  imap_password: '',
+  imap_ssl: 'true',
   ollama_base_url: 'http://localhost:11434',
   ollama_model: 'llama3',
   ollama_timeout: '120',
@@ -360,6 +365,40 @@ export default function Settings() {
             ? <><RefreshCw size={13} className="animate-spin" /> Testing…</>
             : 'Test SMTP Connection'}
         </button>
+      </SectionCard>
+
+      {/* ─── IMAP / Reply Detection ─── */}
+      <SectionCard
+        title="IMAP — Reply Detection"
+        description="Auto-detects email replies and marks leads as REPLIED. Uses the same Gmail account."
+        icon={Inbox}
+        iconColor="text-emerald-400"
+      >
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="IMAP Host" name="imap_host" value={values.imap_host} onChange={set} placeholder="imap.gmail.com" />
+          <Field label="Port" name="imap_port" value={values.imap_port} onChange={set} placeholder="993" />
+        </div>
+        <Field
+          label="Username / Email"
+          name="imap_username"
+          value={values.imap_username}
+          onChange={set}
+          placeholder="you@gmail.com"
+          hint="Usually the same as your SMTP username."
+        />
+        <Field
+          label="Password / App Password"
+          name="imap_password"
+          type="password"
+          value={values.imap_password}
+          onChange={set}
+        />
+        <Toggle
+          label="Use SSL (recommended)"
+          description="IMAPS on port 993 — disable only for non-SSL IMAP on port 143."
+          checked={values.imap_ssl === 'true'}
+          onChange={() => set('imap_ssl', values.imap_ssl === 'true' ? 'false' : 'true')}
+        />
       </SectionCard>
 
       {/* ─── Ollama AI ─── */}

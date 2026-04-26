@@ -45,9 +45,9 @@ async def test_smtp():
 async def reset_stats():
     """Clear all campaign_log and campaign_runs records."""
     async with db.get_db() as conn:
-        await conn.execute("DELETE FROM campaign_log")
-        await conn.execute("DELETE FROM campaign_runs")
-        await conn.commit()
+        async with conn.transaction():
+            await conn.execute("DELETE FROM campaign_log")
+            await conn.execute("DELETE FROM campaign_runs")
     return {"cleared": True}
 
 

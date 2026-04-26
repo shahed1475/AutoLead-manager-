@@ -68,6 +68,14 @@ def _strip_thinking(text: str) -> str:
     return _THINK_BLOCK_RE.sub("", text).strip()
 
 
+def _fix_mojibake(text: str) -> str:
+    """Fix Windows-1252 mojibake in Ollama responses (â€™ → ', etc.)."""
+    try:
+        return text.encode("cp1252").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+
+
 # ── JSON schemas ───────────────────────────────────────────────────────────────
 
 # Phase 1: WhatsApp sequence
@@ -228,6 +236,15 @@ def _build_lead_context(lead: Dict[str, Any]) -> str:
     if lead.get("city"):    parts.append(f"Location: {lead['city']}")
     if lead.get("website"): parts.append(f"Website: {lead['website']}")
     if lead.get("phone"):   parts.append(f"Phone: {lead['phone']}")
+    if lead.get("rating"):  parts.append(f"Rating: {lead['rating']}/5")
+    if lead.get("review_count"): parts.append(f"Reviews: {lead['review_count']}")
+    # Enrichment context — dramatically improves personalization quality
+    if lead.get("website_summary"):
+        parts.append(f"Website Summary: {lead['website_summary']}")
+    if lead.get("business_gaps"):
+        parts.append(f"Identified Gaps: {lead['business_gaps']}")
+    if lead.get("personalization_hook"):
+        parts.append(f"Personalization Detail: {lead['personalization_hook']}")
     return "\n".join(parts)
 
 
@@ -242,6 +259,17 @@ def _build_master_prompt(lead: Dict[str, Any], company_dna: str) -> str:
     website = lead.get("website")       or "no website listed"
     style   = random.choice(_OPENING_STYLES)
 
+    # Build enrichment section if available
+    enrichment_ctx = ""
+    if lead.get("website_summary"):
+        enrichment_ctx += f"\nWebsite Analysis: {lead['website_summary']}"
+    if lead.get("business_gaps"):
+        enrichment_ctx += f"\nIdentified Gaps: {lead['business_gaps']}"
+    if lead.get("personalization_hook"):
+        enrichment_ctx += f"\nPersonalization Hook: {lead['personalization_hook']}"
+    if lead.get("rating"):
+        enrichment_ctx += f"\nRating: {lead['rating']}/5 ({lead.get('review_count', 0)} reviews)"
+
     return f"""You are an AI sales agent working for PopupGenix.
 Generate 4 personalized WhatsApp outreach messages for this lead.
 ALWAYS return a real message. NEVER leave any field empty or use placeholder text.
@@ -253,7 +281,7 @@ LEAD DATA:
 Business: {biz}
 Industry: {niche}
 Location: {city}
-Website: {website}
+Website: {website}{enrichment_ctx}
 
 OPENING STYLE FOR FIRST MESSAGE: {style}
 
@@ -396,8 +424,8 @@ async def _call_ollama_raw(
             )
 
         r.raise_for_status()
-        raw = r.json().get("response", "")
-        return _strip_thinking(raw)
+        raw = json.loads(r.content.decode("utf-8")).get("response", "")
+        return _strip_thinking(_fix_mojibake(raw))
 
 
 # ── Per-phase JSON generation ──────────────────────────────────────────────────

@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Users, Send, TrendingUp, DollarSign, MailOpen, MessageSquare,
   MapPin, Clock, AlertCircle, PlayCircle, RefreshCw, Rocket,
-  CheckCircle2, XCircle, Activity,
+  CheckCircle2, XCircle, Activity, Flame, Sun, Snowflake, Inbox,
 } from 'lucide-react'
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -280,9 +280,8 @@ export default function Dashboard() {
     retry: false,
   })
 
-  // Est. Revenue — $500 avg deal value per reply (configurable via Settings later)
-  const AVG_DEAL = 500
-  const estRevenue = (stats?.replied || 0) * AVG_DEAL
+  // Est. Revenue — pulled from backend (avg_deal_value is configurable in Settings)
+  const estRevenue = stats?.estimated_revenue ?? 0
   const sentToday  = (stats?.email_sent_today || 0) + (stats?.whatsapp_sent_today || 0)
 
   const pieData = stats
@@ -341,7 +340,7 @@ export default function Dashboard() {
           value={stats ? fmtCurrency(estRevenue) : '—'}
           icon={DollarSign}
           color="amber"
-          sub={`@ $${AVG_DEAL} avg deal`}
+          sub={`${stats?.replied ?? 0} replies converted`}
         />
       </div>
 
@@ -487,6 +486,42 @@ export default function Dashboard() {
               ? `${((stats.replied / stats.sent) * 100).toFixed(1)}%`
               : '—'}
           </p>
+        </div>
+      </div>
+
+      {/* ── Row 5: Lead Quality Scoring ───────────────────────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        <div className="card p-4 border border-red-500/20 bg-red-500/5">
+          <div className="flex items-center gap-2 mb-2">
+            <Flame size={14} className="text-red-400" />
+            <p className="text-[10px] text-red-400 uppercase tracking-wider font-semibold">HOT Leads</p>
+          </div>
+          <p className="text-2xl font-bold text-red-300">{stats?.hot_leads ?? '—'}</p>
+          <p className="text-[10px] text-slate-600 mt-1">Score 70–100 · High priority</p>
+        </div>
+        <div className="card p-4 border border-amber-500/20 bg-amber-500/5">
+          <div className="flex items-center gap-2 mb-2">
+            <Sun size={14} className="text-amber-400" />
+            <p className="text-[10px] text-amber-400 uppercase tracking-wider font-semibold">WARM Leads</p>
+          </div>
+          <p className="text-2xl font-bold text-amber-300">{stats?.warm_leads ?? '—'}</p>
+          <p className="text-[10px] text-slate-600 mt-1">Score 40–69 · Worth sending</p>
+        </div>
+        <div className="card p-4 border border-blue-500/20 bg-blue-500/5">
+          <div className="flex items-center gap-2 mb-2">
+            <Snowflake size={14} className="text-blue-400" />
+            <p className="text-[10px] text-blue-400 uppercase tracking-wider font-semibold">COLD Leads</p>
+          </div>
+          <p className="text-2xl font-bold text-blue-300">{stats?.cold_leads ?? '—'}</p>
+          <p className="text-[10px] text-slate-600 mt-1">Score 0–39 · Incomplete data</p>
+        </div>
+        <div className="card p-4 border border-brand-500/20 bg-brand-500/5">
+          <div className="flex items-center gap-2 mb-2">
+            <Inbox size={14} className="text-brand-400" />
+            <p className="text-[10px] text-brand-400 uppercase tracking-wider font-semibold">Unread Replies</p>
+          </div>
+          <p className="text-2xl font-bold text-brand-300">{stats?.unread_replies ?? '—'}</p>
+          <p className="text-[10px] text-slate-600 mt-1">New inbox messages</p>
         </div>
       </div>
 

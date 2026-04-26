@@ -8,12 +8,15 @@ from fastapi.responses import StreamingResponse
 
 from .config import get_settings
 from .database import (
-    init_db, get_db, get_all_settings,
+    init_db, close_db, get_db, get_all_settings,
     get_dashboard_stats, get_weekly_activity, get_recent_logs,
 )
+from .cache import close_redis
 from .scheduler import start_scheduler, stop_scheduler, get_scheduler_status
 from .routers import leads, campaigns, ai, scraper_router, settings_router, status
+from .routers import inbox as inbox_router
 from .routers.campaigns import get_campaign_state
+from .queue_worker import init_queue, get_queue
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,13 +31,21 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     await init_db()
 
-    # Read schedule_hour from DB so UI-saved value survives restarts
     stored = await get_all_settings()
     hour   = int(stored.get("schedule_hour") or settings.schedule_hour)
     start_scheduler(hour)
 
+    # Start parallel job queue
+    n_workers = int(stored.get("queue_workers") or settings.queue_workers)
+    queue = init_queue(n_workers=n_workers)
+    await queue.start()
+
     yield
+
+    await queue.stop()
     stop_scheduler()
+    await close_db()
+    await close_redis()
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -54,6 +65,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(inbox_router.router)   # first — static /leads/score-* paths before /{lead_id}
 app.include_router(leads.router)
 app.include_router(campaigns.router)
 app.include_router(ai.router)
@@ -111,7 +123,9 @@ def _fmt_log(row: dict) -> str:
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "app": settings.app_name, "version": "2.0.0"}
+    q     = get_queue()
+    queue = q.stats if q else {"running": False}
+    return {"status": "ok", "app": settings.app_name, "version": "3.0.0", "queue": queue}
 
 
 @app.get("/api/stats")
@@ -161,10 +175,9 @@ async def stream_logs(request: Request):
 
     async def event_gen():
         async with get_db() as conn:
-            rows    = await conn.execute_fetchall(
-                "SELECT COALESCE(MAX(id), 0) AS m FROM campaign_log"
-            )
-            last_id: int = rows[0]["m"]
+            last_id: int = await conn.fetchval(
+                "SELECT COALESCE(MAX(id), 0) FROM campaign_log"
+            ) or 0
 
         try:
             while True:
@@ -172,22 +185,22 @@ async def stream_logs(request: Request):
                     break
 
                 async with get_db() as conn:
-                    rows = await conn.execute_fetchall(
+                    rows = await conn.fetch(
                         """SELECT cl.id,
                                   cl.channel,
                                   cl.action,
                                   cl.success,
                                   cl.error_msg,
-                                  STRFTIME('%H:%M:%S', cl.timestamp) AS ts,
+                                  TO_CHAR(cl.timestamp, 'HH24:MI:SS') AS ts,
                                   COALESCE(l.business_name, 'Unknown') AS business_name,
                                   l.email,
                                   l.phone
                            FROM campaign_log cl
                            LEFT JOIN leads l ON l.id = cl.lead_id
-                           WHERE cl.id > ?
+                           WHERE cl.id > $1
                            ORDER BY cl.id ASC
                            LIMIT 50""",
-                        (last_id,),
+                        last_id,
                     )
 
                 for row in rows:

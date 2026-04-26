@@ -29,6 +29,8 @@ from . import database as db
 from . import email_sender, scraper, whatsapp_sender
 from .config import get_settings
 from .log_stream import emit as _stream_emit
+from .reply_detector import check_replies as _check_replies
+from .scoring.lead_scorer import score_lead as _score_lead
 
 logger   = logging.getLogger(__name__)
 settings = get_settings()
@@ -695,6 +697,28 @@ async def _daily_campaign_job() -> None:
             await _run_pending_only(stored, log_queue)
         except Exception as exc:
             logger.error(f"Pending-only job error: {exc}", exc_info=True)
+
+    # ── Automatic reply detection ──────────────────────────────────────────────
+    try:
+        reply_result = await _check_replies(since_days=1)
+        if reply_result.get("new_replies", 0) > 0:
+            logger.info(
+                "Reply detection: %d new, %d matched leads",
+                reply_result["new_replies"], reply_result["matched"]
+            )
+    except Exception as exc:
+        logger.warning("Reply detection skipped: %s", exc)
+
+    # ── Auto-score any un-scored leads ─────────────────────────────────────────
+    try:
+        unscored = await db.get_leads_without_score(limit=200)
+        if unscored:
+            for lead in unscored:
+                scored = _score_lead(lead)
+                await db.update_lead(lead["id"], scored)
+            logger.info("Auto-scored %d leads", len(unscored))
+    except Exception as exc:
+        logger.warning("Auto-scoring skipped: %s", exc)
 
     logger.info("▶ Daily campaign job complete")
 

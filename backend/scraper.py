@@ -883,10 +883,14 @@ async def scrape_multi_source(
     cfg     = await _scraper_cfg()
     cfg_run = {**cfg, "headless": headless}
 
+    from .scrapers.google_search import search_businesses as _gs_search
+    from .scrapers import google_maps as _gm_scraper
+
     _SCRAPER_MAP: Dict[str, Tuple] = {
-        "GOOGLE_MAPS":  (_scrape_sync,            "🗺 Google Maps"),
-        "YELP":         (_scrape_yelp_sync,        "⭐ Yelp"),
-        "YELLOW_PAGES": (_scrape_yellowpages_sync, "📒 Yellow Pages"),
+        "GOOGLE_MAPS":   (None,                     "🗺 Google Maps"),      # async — handled below
+        "YELP":          (_scrape_yelp_sync,        "⭐ Yelp"),
+        "YELLOW_PAGES":  (_scrape_yellowpages_sync, "📒 Yellow Pages"),
+        "GOOGLE_SEARCH": (None,                     "🔍 Google Search"),   # async — handled below
     }
 
     all_leads: List[Dict[str, Any]] = []
@@ -905,12 +909,12 @@ async def scrape_multi_source(
         _log(f"━━━ Starting {label} (budget: {budget}) ━━━")
 
         if source == "GOOGLE_MAPS":
-            # _scrape_sync doesn't tag source — we tag after
-            batch: List[Dict] = await asyncio.to_thread(
-                _scrape_sync, niche, city, budget, cfg_run, _log
+            batch: List[Dict] = await _gm_scraper.scrape(
+                niche, city, max_results=budget, cfg=cfg_run, log_callback=_log
             )
-            for lead in batch:
-                lead.setdefault("source", "GOOGLE_MAPS")
+        elif source == "GOOGLE_SEARCH":
+            # Async scraper — call directly without to_thread
+            batch = await _gs_search(niche, city, max_results=budget, log_callback=_log)
         else:
             batch = await asyncio.to_thread(
                 sync_fn, niche, city, budget, cfg_run, _log

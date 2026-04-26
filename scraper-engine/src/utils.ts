@@ -19,7 +19,19 @@ export function now(): string {
 }
 
 export function normalizePhone(raw: string): string {
-  return raw.replace(/\D/g, '').slice(-10)
+  const s = raw.trim()
+  // Preserve E.164 (+ followed by digits)
+  if (s.startsWith('+')) {
+    const digits = s.slice(1).replace(/\D/g, '')
+    return `+${digits}`
+  }
+  // International prefix 00… → +…
+  const digits = s.replace(/\D/g, '')
+  if (digits.startsWith('00') && digits.length > 4) {
+    return `+${digits.slice(2)}`
+  }
+  // Return all digits with + — preserve country code
+  return `+${digits}`
 }
 
 export function normalizeName(raw: string): string {
