@@ -17,7 +17,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from .. import database as db
 from ..config import get_settings
 from ..models import ReplyInboxResponse, ScoreRequest
-from ..scoring.lead_scorer import score_lead
+from ..scoring.lead_scorer import score_lead, filter_leads_for_outreach
 from ..enrichment.website_analyzer import analyze_website
 from ..enrichment.ai_enricher import enrich_lead_with_ai
 from ..reply_detector import check_replies
@@ -77,7 +77,8 @@ async def _enrich_and_score(lead_id: int) -> dict:
     if not lead:
         return {"error": "Lead not found"}
 
-    lead = dict(lead)
+    lead       = dict(lead)
+    site_data:  dict = {}
     enrichment: dict = {}
 
     website = lead.get("website")
@@ -97,11 +98,10 @@ async def _enrich_and_score(lead_id: int) -> dict:
     # 4. Re-fetch lead (enrich_lead_with_ai already updated it)
     lead = dict(await db.get_lead_by_id(lead_id) or lead)
 
-    # 5. HOT / WARM / COLD classification on the fully-merged lead
-    scored = score_lead({**lead, **enrichment})
-    await db.update_lead(lead_id, scored)
+    # 5. HOT / WARM / COLD — score_lead handles its own persistence
+    scored = await score_lead(lead, enriched=enrichment, website_scores=site_data)
 
-    return {"lead_id": lead_id, **scored, **enrichment}
+    return {"lead_id": lead_id, **scored}
 
 
 @router.post("/leads/{lead_id}/enrich")
@@ -144,8 +144,7 @@ async def score_all_leads(payload: ScoreRequest, background_tasks: BackgroundTas
             leads = await db.get_leads_without_score()
 
         for lead in leads:
-            scored = score_lead(lead)
-            await db.update_lead(lead["id"], scored)
+            await score_lead(lead)
         logger.info("Scored %d leads", len(leads))
 
     background_tasks.add_task(_run, payload.lead_ids)
@@ -156,3 +155,13 @@ async def score_all_leads(payload: ScoreRequest, background_tasks: BackgroundTas
 async def score_distribution():
     """Return HOT / WARM / COLD lead counts."""
     return await db.get_score_distribution()
+
+
+@router.get("/leads/outreach-queue")
+async def outreach_queue():
+    """
+    HOT + WARM leads ready for outreach (status=SCORED).
+    HOT first, then WARM, both ordered by final_score DESC.
+    """
+    leads = await filter_leads_for_outreach()
+    return {"total": len(leads), "items": leads}

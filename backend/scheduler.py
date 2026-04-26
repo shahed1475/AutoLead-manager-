@@ -714,8 +714,7 @@ async def _daily_campaign_job() -> None:
         unscored = await db.get_leads_without_score(limit=200)
         if unscored:
             for lead in unscored:
-                scored = _score_lead(lead)
-                await db.update_lead(lead["id"], scored)
+                await _score_lead(lead)
             logger.info("Auto-scored %d leads", len(unscored))
     except Exception as exc:
         logger.warning("Auto-scoring skipped: %s", exc)
