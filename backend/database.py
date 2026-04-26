@@ -1095,6 +1095,129 @@ async def get_replies(lead_id: int) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Follow-up sequence engine helpers (Upgrade 6)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def count_messages_for_lead(lead_id: int) -> int:
+    """Number of message records that exist for this lead (any status / step)."""
+    async with get_db() as conn:
+        return await conn.fetchval(
+            "SELECT COUNT(*) FROM messages WHERE lead_id = $1", lead_id
+        ) or 0
+
+
+async def get_due_followup_messages(limit: int = 100) -> List[Dict[str, Any]]:
+    """
+    Return follow-up messages that are past their scheduled_for time and PENDING.
+    Joined with leads so the engine has all contact info and current lead status.
+    """
+    async with get_db() as conn:
+        rows = await conn.fetch("""
+            SELECT
+                m.id, m.lead_id, m.sequence_step,
+                m.subject          AS msg_subject,
+                m.body             AS msg_body,
+                TO_CHAR(m.scheduled_for, 'YYYY-MM-DD"T"HH24:MI:SS') AS scheduled_for,
+                l.business_name, l.email, l.phone, l.channel,
+                l.status           AS lead_status,
+                l.niche,           l.city,
+                l.ai_email_subject,
+                l.ai_followup_msg,
+                l.ai_follow_up_1,  l.ai_follow_up_2
+            FROM messages m
+            JOIN leads l ON l.id = m.lead_id
+            WHERE m.status = 'PENDING'
+              AND m.sequence_step IN (2, 3)
+              AND m.scheduled_for <= NOW()
+            ORDER BY m.scheduled_for ASC
+            LIMIT $1
+        """, limit)
+    return [dict(r) for r in rows]
+
+
+async def cancel_pending_followups(lead_id: int) -> int:
+    """Cancel all PENDING follow-up messages for a lead (e.g., lead replied)."""
+    async with get_db() as conn:
+        result = await conn.execute(
+            """UPDATE messages SET status = 'CANCELLED'
+               WHERE lead_id = $1 AND status = 'PENDING'
+                 AND sequence_step IN (2, 3)""",
+            lead_id,
+        )
+    return _rows_affected(result)
+
+
+async def count_pending_followups() -> int:
+    """Total PENDING follow-up messages across all leads."""
+    async with get_db() as conn:
+        return await conn.fetchval(
+            """SELECT COUNT(*) FROM messages
+               WHERE status = 'PENDING' AND sequence_step IN (2, 3)"""
+        ) or 0
+
+
+async def get_followup_history(
+    page:      int = 1,
+    page_size: int = 50,
+) -> Dict[str, Any]:
+    """Paginated list of sent follow-up messages with lead info."""
+    offset = (page - 1) * page_size
+    async with get_db() as conn:
+        total = await conn.fetchval(
+            """SELECT COUNT(*) FROM messages
+               WHERE status = 'SENT' AND sequence_step IN (2, 3)"""
+        ) or 0
+        rows = await conn.fetch("""
+            SELECT
+                m.id, m.lead_id, m.sequence_step, m.status,
+                TO_CHAR(m.sent_at,       'YYYY-MM-DD"T"HH24:MI:SS') AS sent_at,
+                TO_CHAR(m.scheduled_for, 'YYYY-MM-DD"T"HH24:MI:SS') AS scheduled_for,
+                m.subject,
+                LEFT(m.body, 200)   AS body_snippet,
+                l.business_name, l.email, l.phone, l.channel,
+                l.status            AS lead_status,
+                l.niche, l.city
+            FROM messages m
+            JOIN leads l ON l.id = m.lead_id
+            WHERE m.status = 'SENT' AND m.sequence_step IN (2, 3)
+            ORDER BY m.sent_at DESC
+            LIMIT $1 OFFSET $2
+        """, page_size, offset)
+    return {
+        "items":       [dict(r) for r in rows],
+        "total":       total,
+        "page":        page,
+        "page_size":   page_size,
+        "total_pages": max(1, math.ceil(total / page_size)),
+    }
+
+
+async def get_recent_send_info(lead_id: int, hours: int = 24) -> Dict[str, Any]:
+    """
+    Check whether any message was sent to this lead within the last N hours,
+    and return the body of the most-recently-sent message for body-diff checking.
+    Used by followup_engine to detect and avoid duplicate sends.
+    """
+    async with get_db() as conn:
+        recent_count = await conn.fetchval(
+            """SELECT COUNT(*) FROM messages
+               WHERE lead_id = $1 AND status = 'SENT'
+                 AND sent_at > NOW() - ($2 * INTERVAL '1 hour')""",
+            lead_id, hours,
+        )
+        last_row = await conn.fetchrow(
+            """SELECT body FROM messages
+               WHERE lead_id = $1 AND status = 'SENT'
+               ORDER BY sent_at DESC LIMIT 1""",
+            lead_id,
+        )
+    return {
+        "sent_recently": (recent_count or 0) > 0,
+        "last_body":     (last_row["body"] if last_row else None) or "",
+    }
+
+
 async def get_reply_stats() -> Dict[str, Any]:
     """Aggregate reply statistics for reply_detector.get_reply_summary()."""
     async with get_db() as conn:

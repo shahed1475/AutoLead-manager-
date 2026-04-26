@@ -23,12 +23,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from . import ai_brain
 from . import database as db
 from . import email_sender, scraper, whatsapp_sender
 from .config import get_settings
 from .log_stream import emit as _stream_emit
+from .followup_engine import (
+    process_followup_queue as _process_followups,
+    schedule_followups_for_lead as _schedule_fu,
+)
 from .reply_detector import check_replies as _check_replies
 from .scoring.lead_scorer import score_lead as _score_lead
 
@@ -420,7 +425,9 @@ async def run_campaign(
             sent_ok, send_err = await _dispatch_send(lead, channel, db, log_queue)
 
             if sent_ok:
-                await db.update_lead(lead_id, {"status": "SENT", "sent_at": _now_iso()})
+                now_dt = datetime.now(timezone.utc)
+                await db.update_lead(lead_id, {"status": "SENT", "sent_at": now_dt.isoformat()})
+                await _schedule_fu(lead_id, now_dt, lead)
                 results["leads_sent"] += 1
                 await _qlog(log_queue, f"   ✅ Delivered → {biz}")
 
@@ -635,7 +642,9 @@ async def _run_pending_only(stored: Dict[str, str], log_queue: asyncio.Queue) ->
         if channel in ("EMAIL", "BOTH") and email_budget > 0 and lead.get("email"):
             try:
                 await email_sender.send_email_lead(lead)
-                await db.update_lead(lead["id"], {"status": "SENT", "sent_at": _now_iso()})
+                now_dt = datetime.now(timezone.utc)
+                await db.update_lead(lead["id"], {"status": "SENT", "sent_at": now_dt.isoformat()})
+                await _schedule_fu(lead["id"], now_dt, lead)
                 await db.log_campaign_action(lead["id"], "EMAIL", "SEND", True)
                 email_budget -= 1
             except Exception as exc:
@@ -648,7 +657,9 @@ async def _run_pending_only(stored: Dict[str, str], log_queue: asyncio.Queue) ->
                 await whatsapp_sender.send_whatsapp_lead(lead)
                 current = await db.get_lead_by_id(lead["id"])
                 if current and current.get("status") != "SENT":
-                    await db.update_lead(lead["id"], {"status": "SENT", "sent_at": _now_iso()})
+                    now_dt = datetime.now(timezone.utc)
+                    await db.update_lead(lead["id"], {"status": "SENT", "sent_at": now_dt.isoformat()})
+                    await _schedule_fu(lead["id"], now_dt, lead)
                 await db.log_campaign_action(lead["id"], "WHATSAPP", "SEND", True)
                 wa_budget -= 1
             except Exception as exc:
@@ -657,6 +668,23 @@ async def _run_pending_only(stored: Dict[str, str], log_queue: asyncio.Queue) ->
 
     # ── Follow-up pass ─────────────────────────────────────────────────────────
     await check_followups(log_queue, db, {})
+
+
+async def _followup_job() -> None:
+    """APScheduler entry point — runs the follow-up engine every 6 hours."""
+    logger.info("▶ Follow-up engine triggered by scheduler")
+    try:
+        stored = await db.get_all_settings()
+        config = {
+            "ollama_base_url": stored.get("ollama_base_url") or settings.ollama_base_url,
+            "ollama_model":    stored.get("ollama_model")    or settings.ollama_model,
+        }
+        result = await _process_followups(config)
+        if result.get("sent", 0) > 0 or result.get("cancelled", 0) > 0:
+            logger.info("Follow-up engine: %s", result)
+    except Exception as exc:
+        logger.error("Follow-up engine job failed: %s", exc, exc_info=True)
+    logger.info("▶ Follow-up engine job complete")
 
 
 async def _daily_campaign_job() -> None:
@@ -736,12 +764,19 @@ def start_scheduler(hour: Optional[int] = None) -> AsyncIOScheduler:
     _scheduler.add_job(
         _daily_campaign_job,
         CronTrigger(hour=h, minute=0),
-        id              = "daily_campaign",
-        replace_existing= True,
-        misfire_grace_time = 3600,       # tolerate up to 1-hour startup delay
+        id                 = "daily_campaign",
+        replace_existing   = True,
+        misfire_grace_time = 3600,
+    )
+    _scheduler.add_job(
+        _followup_job,
+        IntervalTrigger(hours=6),
+        id                 = "followup_sequence",
+        replace_existing   = True,
+        misfire_grace_time = 3600,
     )
     _scheduler.start()
-    logger.info(f"Scheduler started — daily campaign at {h:02d}:00 UTC")
+    logger.info("Scheduler started — daily campaign at %02d:00 UTC, follow-ups every 6 h", h)
     return _scheduler
 
 

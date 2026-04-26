@@ -15,6 +15,7 @@ from .cache import close_redis
 from .scheduler import start_scheduler, stop_scheduler, get_scheduler_status
 from .routers import leads, campaigns, ai, scraper_router, settings_router, status
 from .routers import inbox as inbox_router
+from .routers import followups as followups_router
 from .routers.campaigns import get_campaign_state
 from .queue_worker import init_queue, get_queue
 
@@ -66,6 +67,7 @@ app.add_middleware(
 )
 
 app.include_router(inbox_router.router)   # first — static /leads/score-* paths before /{lead_id}
+app.include_router(followups_router.router)
 app.include_router(leads.router)
 app.include_router(campaigns.router)
 app.include_router(ai.router)

@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from typing import List
 from .. import database as db
 from .. import email_sender, whatsapp_sender, ai_brain, scraper
+from ..followup_engine import schedule_followups_for_lead as _schedule_fu
 from ..models import CampaignSendRequest, CampaignStartRequest
 
 logger = logging.getLogger(__name__)
@@ -48,14 +49,18 @@ async def _send_one(lead_id: int, channel: str) -> dict:
     try:
         if channel == "EMAIL":
             await email_sender.send_email_lead(lead)
-            await db.update_lead(lead_id, {"status": "SENT", "sent_at": _now_iso()})
+            now_dt = datetime.now(timezone.utc)
+            await db.update_lead(lead_id, {"status": "SENT", "sent_at": now_dt.isoformat()})
             await db.log_campaign_action(lead_id, channel, "SEND", True)
+            await _schedule_fu(lead_id, now_dt, dict(lead))
             return {"lead_id": lead_id, "success": True}
 
         elif channel == "WHATSAPP":
             await whatsapp_sender.send_whatsapp_lead(lead)
-            await db.update_lead(lead_id, {"status": "SENT", "sent_at": _now_iso()})
+            now_dt = datetime.now(timezone.utc)
+            await db.update_lead(lead_id, {"status": "SENT", "sent_at": now_dt.isoformat()})
             await db.log_campaign_action(lead_id, channel, "SEND", True)
+            await _schedule_fu(lead_id, now_dt, dict(lead))
             return {"lead_id": lead_id, "success": True}
 
         elif channel == "BOTH":
@@ -78,7 +83,9 @@ async def _send_one(lead_id: int, channel: str) -> dict:
                 await db.log_campaign_action(lead_id, "WHATSAPP", "SEND", False, str(exc))
 
             if sent_any:
-                await db.update_lead(lead_id, {"status": "SENT", "sent_at": _now_iso()})
+                now_dt = datetime.now(timezone.utc)
+                await db.update_lead(lead_id, {"status": "SENT", "sent_at": now_dt.isoformat()})
+                await _schedule_fu(lead_id, now_dt, dict(lead))
                 return {
                     "lead_id": lead_id,
                     "success": True,
@@ -283,6 +290,7 @@ async def mark_replied(lead_id: int):
     ok = await db.mark_lead_replied(lead_id)
     if not ok:
         raise HTTPException(404, "Lead not found")
+    await db.cancel_pending_followups(lead_id)
     return {"lead_id": lead_id, "status": "REPLIED"}
 
 
