@@ -56,10 +56,17 @@ async def process_reply(entry_id: int, intent: str = Query("NEUTRAL")):
     if intent.upper() not in valid_intents:
         raise HTTPException(400, f"Invalid intent. Use one of: {valid_intents}")
 
-    ok = await db.update_inbox_entry(entry_id, {"processed": 1, "intent": intent.upper()})
+    ok = await db.update_inbox_entry(entry_id, {"processed": True, "intent": intent.upper()})
     if not ok:
         raise HTTPException(404, "Inbox entry not found")
     return {"entry_id": entry_id, "processed": True, "intent": intent.upper()}
+
+
+@router.get("/inbox/summary")
+async def reply_summary():
+    """Intent breakdown, reply rate, and leads to follow up."""
+    from ..reply_detector import get_reply_summary
+    return await get_reply_summary()
 
 
 @router.post("/inbox/check")

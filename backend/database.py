@@ -661,6 +661,22 @@ async def find_lead_by_email(email: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
+async def find_lead_by_business_name_in_subject(subject: str) -> Optional[Dict[str, Any]]:
+    """Match a lead by checking if their business_name appears in an email subject."""
+    if not subject or not subject.strip():
+        return None
+    async with get_db() as conn:
+        row = await conn.fetchrow(
+            """SELECT * FROM leads
+               WHERE status IN ('SENT', 'REPLIED')
+                 AND $1 ILIKE '%' || business_name || '%'
+               ORDER BY created_at DESC
+               LIMIT 1""",
+            subject,
+        )
+    return dict(row) if row else None
+
+
 async def get_leads_without_score(limit: int = 100) -> List[Dict[str, Any]]:
     async with get_db() as conn:
         rows = await conn.fetch(
@@ -1077,6 +1093,39 @@ async def get_replies(lead_id: int) -> List[Dict[str, Any]]:
             lead_id,
         )
     return [dict(r) for r in rows]
+
+
+async def get_reply_stats() -> Dict[str, Any]:
+    """Aggregate reply statistics for reply_detector.get_reply_summary()."""
+    async with get_db() as conn:
+        intent_rows = await conn.fetch(
+            """SELECT detected_intent, COUNT(*) AS cnt
+               FROM replies GROUP BY detected_intent"""
+        )
+        total_replies = await conn.fetchval("SELECT COUNT(*) FROM replies") or 0
+        total_sent    = await conn.fetchval(
+            "SELECT COUNT(*) FROM leads WHERE status IN ('SENT', 'REPLIED')"
+        ) or 0
+        total_replied = await conn.fetchval(
+            "SELECT COUNT(*) FROM leads WHERE status = 'REPLIED'"
+        ) or 0
+        followup_rows = await conn.fetch(
+            """SELECT l.id, l.business_name, l.email, l.phone, l.niche, l.city,
+                      r.detected_intent,
+                      TO_CHAR(r.received_at, 'YYYY-MM-DD"T"HH24:MI:SS') AS received_at
+               FROM leads l
+               JOIN replies r ON r.lead_id = l.id
+               WHERE l.status = 'REPLIED'
+               ORDER BY r.received_at DESC
+               LIMIT 50"""
+        )
+    return {
+        "by_intent":          [dict(r) for r in intent_rows],
+        "total_replies":      total_replies,
+        "total_sent":         total_sent,
+        "total_replied":      total_replied,
+        "leads_to_follow_up": [dict(r) for r in followup_rows],
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
