@@ -9,12 +9,13 @@ from enum import Enum
 # ─────────────────────────────────────────────────────────────────────────────
 
 class LeadStatus(str, Enum):
-    PENDING  = "PENDING"
-    ENRICHED = "ENRICHED"
-    SCORED   = "SCORED"
-    SENT     = "SENT"
-    REPLIED  = "REPLIED"
-    SKIPPED  = "SKIPPED"
+    PENDING        = "PENDING"
+    ENRICHED       = "ENRICHED"
+    SCORED         = "SCORED"
+    MESSAGES_READY = "MESSAGES_READY"
+    SENT           = "SENT"
+    REPLIED        = "REPLIED"
+    SKIPPED        = "SKIPPED"
 
 
 class LeadChannel(str, Enum):

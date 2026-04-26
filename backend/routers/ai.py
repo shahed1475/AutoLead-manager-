@@ -21,35 +21,45 @@ async def generate_for_lead(payload: AIGenerateRequest):
     if not status["connected"]:
         raise HTTPException(503, "Ollama is not running. Start it with: ollama serve")
 
+    lead_id  = payload.lead_id
     msg_type = payload.message_type
     try:
         if msg_type == "all":
-            msgs   = await ai_brain.generate_all_messages(dict(lead))
-            update = {
-                "ai_whatsapp_msg":  msgs["first_message"],
-                "ai_email_subject": msgs["email_subject"],
-                "ai_email_body":    msgs["email_body"],
-                "ai_followup_msg":  msgs["follow_up_1"],   # legacy single-followup field
-                "ai_follow_up_1":   msgs["follow_up_1"],
-                "ai_follow_up_2":   msgs["follow_up_2"],
-                "ai_follow_up_3":   msgs["follow_up_3"],
-            }
-            await db.update_lead(payload.lead_id, update)
-            return {"lead_id": payload.lead_id, **update}
+            from pathlib import Path
+            from ..config import get_settings
+            settings    = get_settings()
+            stored      = await db.get_all_settings()
+            dna_path    = stored.get("company_dna_path") or settings.company_dna_path
+            company_dna = Path(dna_path).read_text(encoding="utf-8") if Path(dna_path).exists() else ""
+
+            enriched = await db.get_enriched_data(lead_id) or {}
+            scores   = await db.get_score(lead_id)         or {}
+
+            # v2: single Ollama call with full enrichment context; handles own DB writes
+            msgs = await ai_brain.generate_messages_v2(dict(lead), enriched, scores, company_dna)
+            return {"lead_id": lead_id, **msgs,
+                    # legacy keys for ViewMessagesModal backward compat
+                    "ai_whatsapp_msg":  msgs["whatsapp_message"],
+                    "ai_email_subject": msgs["email_subject"],
+                    "ai_email_body":    msgs["email_body"],
+                    "ai_followup_msg":  msgs["followup_day3_body"],
+                    "ai_follow_up_1":   msgs["followup_day3_body"],
+                    "ai_follow_up_2":   msgs["followup_day7_body"],
+                    "ai_follow_up_3":   msgs["followup_day7_body"],
+                    }
 
         elif msg_type == "whatsapp":
             msg = await ai_brain.generate_message(dict(lead), "whatsapp")
-            await db.update_lead(payload.lead_id, {"ai_whatsapp_msg": msg})
-            return {"lead_id": payload.lead_id, "ai_whatsapp_msg": msg}
+            await db.update_lead(lead_id, {"ai_whatsapp_msg": msg})
+            return {"lead_id": lead_id, "ai_whatsapp_msg": msg}
 
         elif msg_type == "email":
             subject = await ai_brain.generate_message(dict(lead), "email_subject")
             body    = await ai_brain.generate_message(dict(lead), "email_body")
-            await db.update_lead(payload.lead_id, {"ai_email_subject": subject, "ai_email_body": body})
-            return {"lead_id": payload.lead_id, "ai_email_subject": subject, "ai_email_body": body}
+            await db.update_lead(lead_id, {"ai_email_subject": subject, "ai_email_body": body})
+            return {"lead_id": lead_id, "ai_email_subject": subject, "ai_email_body": body}
 
         elif msg_type in ("followup", "followups"):
-            # Generate all 3 follow-ups at once
             msgs   = await ai_brain.generate_followup_sequence(dict(lead))
             update = {
                 "ai_followup_msg": msgs["follow_up_1"],
@@ -57,8 +67,8 @@ async def generate_for_lead(payload: AIGenerateRequest):
                 "ai_follow_up_2":  msgs["follow_up_2"],
                 "ai_follow_up_3":  msgs["follow_up_3"],
             }
-            await db.update_lead(payload.lead_id, update)
-            return {"lead_id": payload.lead_id, **update}
+            await db.update_lead(lead_id, update)
+            return {"lead_id": lead_id, **update}
 
         else:
             raise HTTPException(400, f"Unknown message_type: {msg_type}")

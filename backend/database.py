@@ -1044,6 +1044,15 @@ async def get_messages(lead_id: int) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+async def delete_lead_messages(lead_id: int) -> int:
+    """Delete all messages for a lead. Returns number of rows deleted."""
+    async with get_db() as conn:
+        result = await conn.execute(
+            "DELETE FROM messages WHERE lead_id = $1", lead_id
+        )
+    return _rows_affected(result)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Replies (new table)
 # ─────────────────────────────────────────────────────────────────────────────
