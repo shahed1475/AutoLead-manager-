@@ -17,13 +17,16 @@ async def engine_status():
         "scraper_progress":    _scraper_state["progress"],
         "scraper_total":       _scraper_state["total"],
         "scraper_last_name":   _scraper_state["last_name"],
-        "campaign_running":    camp["running"],
-        "campaign_niche":      camp["niche"],
-        "campaign_city":       camp["city"],
-        "campaign_channel":    camp["channel"],
-        "campaign_daily_cap":  camp["daily_cap"],
-        "campaign_leads_found":camp["leads_found"],
-        "campaign_leads_sent": camp["leads_sent"],
+        "campaign_running":      camp["running"],
+        "campaign_niche":        camp["niche"],
+        "campaign_city":         camp["city"],
+        "campaign_country":      camp.get("country"),
+        "campaign_channel":      camp["channel"],
+        "campaign_daily_cap":    camp["daily_cap"],
+        "campaign_sources":      camp.get("sources", []),
+        "campaign_hot_warm_only": camp.get("hot_warm_only", True),
+        "campaign_leads_found":  camp["leads_found"],
+        "campaign_leads_sent":   camp["leads_sent"],
     }
 
 

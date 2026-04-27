@@ -703,6 +703,14 @@ async def get_score_distribution() -> Dict[str, int]:
     return dist
 
 
+async def get_avg_score() -> float:
+    async with get_db() as conn:
+        val = await conn.fetchval(
+            "SELECT COALESCE(AVG(score::float), 0) FROM leads WHERE score > 0"
+        )
+    return round(float(val), 1) if val else 0.0
+
+
 async def get_leads_due_for_followup(days: int = 3) -> List[Dict[str, Any]]:
     async with get_db() as conn:
         rows = await conn.fetch(

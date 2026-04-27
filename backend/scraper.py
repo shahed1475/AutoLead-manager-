@@ -853,11 +853,13 @@ async def scrape_multi_source(
     max_results: int,
     headless: bool = False,
     log_callback: Optional[Callable[[str], None]] = None,
+    source_caps: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Scrape leads from one or more sources sequentially (one browser at a time).
 
-    Budget is divided evenly across selected sources; remainder goes to the first.
+    If source_caps is provided it overrides the even budget split; each key maps
+    a source id (e.g. "GOOGLE_MAPS") to its individual max_results limit.
     Cross-source deduplication by phone (primary) then business name (secondary).
     Email enrichment runs once on the combined result set.
     """
@@ -872,10 +874,15 @@ async def scrape_multi_source(
                 pass
 
     # ── Budget split ──────────────────────────────────────────────────────────
-    n        = len(sources)
-    base     = max_results // n
-    rem      = max_results % n
-    budgets  = [base + (1 if i < rem else 0) for i in range(n)]
+    n    = len(sources)
+    base = max_results // n
+    rem  = max_results % n
+    default_budgets = [base + (1 if i < rem else 0) for i in range(n)]
+
+    if source_caps:
+        budgets = [source_caps.get(s, default_budgets[i]) for i, s in enumerate(sources)]
+    else:
+        budgets = default_budgets
 
     _log(f"🗂️  Sources: {sources}  |  budget split: {dict(zip(sources, budgets))}")
 

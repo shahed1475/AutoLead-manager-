@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
-from typing import List
+from typing import Dict, List, Optional
 from .. import database as db
 from .. import email_sender, whatsapp_sender, ai_brain, scraper
 from ..followup_engine import schedule_followups_for_lead as _schedule_fu
@@ -13,17 +13,21 @@ router = APIRouter(prefix="/api/campaign", tags=["campaign"])
 
 # ── In-memory campaign run state ──────────────────────────────────────────────
 _run_state: dict = {
-    "running":        False,
-    "stop_requested": False,
-    "niche":          None,
-    "city":           None,
-    "channel":        None,
-    "daily_cap":      20,
-    "sources":        ["GOOGLE_MAPS"],
-    "headless":       False,
-    "leads_found":    0,
-    "leads_sent":     0,
-    "run_id":         None,
+    "running":          False,
+    "stop_requested":   False,
+    "niche":            None,
+    "city":             None,
+    "country":          None,
+    "channel":          None,
+    "daily_cap":        20,
+    "sources":          ["GOOGLE_MAPS"],
+    "headless":         False,
+    "hot_warm_only":    True,
+    "google_maps_cap":  None,
+    "google_search_cap": None,
+    "leads_found":      0,
+    "leads_sent":       0,
+    "run_id":           None,
 }
 
 
@@ -105,6 +109,8 @@ async def _send_one(lead_id: int, channel: str) -> dict:
 async def _run_campaign_task(
     niche: str, city: str, channel: str, daily_cap: int, run_id: int,
     sources: List[str] = None, headless: bool = False,
+    country: str = None, hot_warm_only: bool = True,
+    source_caps: Dict[str, int] = None,
 ) -> None:
     if sources is None:
         sources = ["GOOGLE_MAPS"]
@@ -116,6 +122,7 @@ async def _run_campaign_task(
             city        = city,
             max_results = daily_cap,
             headless    = headless,
+            source_caps = source_caps or None,
         )
 
         for lead_data in scraped_leads:
@@ -126,6 +133,15 @@ async def _run_campaign_task(
             lead_id, is_new = await db.create_lead_deduped(lead_data)
             if not is_new:
                 continue
+
+            # HOT+WARM filter — skip COLD leads that have already been scored
+            if hot_warm_only:
+                lead_check = await db.get_lead_by_id(lead_id)
+                if lead_check:
+                    score = lead_check.get("score") or 0
+                    label = (lead_check.get("score_label") or "COLD").upper()
+                    if score > 0 and label == "COLD":
+                        continue
 
             await db.log_campaign_action(lead_id, "SCRAPE", "FOUND", True)
             _run_state["leads_found"] += 1
@@ -186,29 +202,41 @@ async def start_campaign(payload: CampaignStartRequest, background_tasks: Backgr
 
     sources_list = [s.value for s in payload.sources]
 
+    # Build per-source cap dict for the scraper
+    source_caps: Dict[str, int] = {}
+    if payload.google_maps_cap and "GOOGLE_MAPS" in sources_list:
+        source_caps["GOOGLE_MAPS"] = payload.google_maps_cap
+    if payload.google_search_cap and "GOOGLE_SEARCH" in sources_list:
+        source_caps["GOOGLE_SEARCH"] = payload.google_search_cap
+
     run_id = await db.create_campaign_run(
         payload.niche, payload.city, payload.channel.value, payload.daily_cap,
         sources=",".join(sources_list),
     )
 
     _run_state.update({
-        "running":        True,
-        "stop_requested": False,
-        "niche":          payload.niche,
-        "city":           payload.city,
-        "channel":        payload.channel.value,
-        "daily_cap":      payload.daily_cap,
-        "sources":        sources_list,
-        "headless":       payload.headless,
-        "leads_found":    0,
-        "leads_sent":     0,
-        "run_id":         run_id,
+        "running":          True,
+        "stop_requested":   False,
+        "niche":            payload.niche,
+        "city":             payload.city,
+        "country":          payload.country,
+        "channel":          payload.channel.value,
+        "daily_cap":        payload.daily_cap,
+        "sources":          sources_list,
+        "headless":         payload.headless,
+        "hot_warm_only":    payload.hot_warm_only,
+        "google_maps_cap":  payload.google_maps_cap,
+        "google_search_cap": payload.google_search_cap,
+        "leads_found":      0,
+        "leads_sent":       0,
+        "run_id":           run_id,
     })
 
     background_tasks.add_task(
         _run_campaign_task,
         payload.niche, payload.city, payload.channel.value, payload.daily_cap, run_id,
         sources_list, payload.headless,
+        payload.country, payload.hot_warm_only, source_caps or None,
     )
     return {"started": True, "run_id": run_id}
 

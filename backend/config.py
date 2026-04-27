@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     queue_workers: int = 4
 
     model_config = {
-        "env_file":          ".env",
+        "env_file":          str(BASE_DIR / ".env"),
         "env_file_encoding": "utf-8",
         "extra":             "ignore",
     }

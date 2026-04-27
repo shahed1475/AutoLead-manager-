@@ -210,6 +210,36 @@ async def score_distribution():
     return await db.get_score_distribution()
 
 
+@router.get("/leads/hot")
+async def hot_leads(
+    page:      int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+):
+    """HOT-scored leads ordered by score descending."""
+    return await db.get_leads(
+        score_label="HOT",
+        sort_by="score",
+        sort_dir="desc",
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/leads/stats/scores")
+async def lead_score_stats():
+    """Score distribution (HOT/WARM/COLD counts) + average score across all scored leads."""
+    dist     = await db.get_score_distribution()
+    avg      = await db.get_avg_score()
+    total    = sum(dist.values())
+    return {
+        "hot":       dist["HOT"],
+        "warm":      dist["WARM"],
+        "cold":      dist["COLD"],
+        "total":     total,
+        "avg_score": avg,
+    }
+
+
 @router.get("/leads/outreach-queue")
 async def outreach_queue():
     """

@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  LayoutDashboard, Users, Send, Cpu, Settings, Zap, Inbox,
+  LayoutDashboard, Users, Send, Cpu, Settings, Inbox,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { inboxApi } from '../api/client'
@@ -26,14 +26,12 @@ export default function Sidebar() {
 
   return (
     <aside className="w-56 shrink-0 flex flex-col bg-slate-900 border-r border-slate-800 h-screen">
-      <div className="flex items-center gap-2.5 px-5 py-5 border-b border-slate-800">
-        <div className="w-7 h-7 bg-brand-600 rounded-lg flex items-center justify-center">
-          <Zap size={14} className="text-white" />
-        </div>
-        <div>
-          <p className="font-semibold text-sm text-slate-100 leading-none">AutoLead</p>
-          <p className="text-[10px] text-slate-500 mt-0.5">Marketing Engine v3</p>
-        </div>
+      <div className="flex items-center justify-center px-4 py-4 border-b border-slate-800">
+        <img
+          src="/logo.png"
+          alt="HOM — AI Sales Growth Engine"
+          className="h-14 w-auto object-contain drop-shadow-lg"
+        />
       </div>
 
       <nav className="flex-1 px-3 py-4 space-y-0.5">
@@ -62,7 +60,7 @@ export default function Sidebar() {
       </nav>
 
       <div className="px-4 py-4 border-t border-slate-800">
-        <p className="text-[10px] text-slate-600 text-center">AutoLead v3 · Self-Hosted</p>
+        <p className="text-[10px] text-slate-600 text-center">HOM · AI Sales Growth Engine</p>
       </div>
     </aside>
   )

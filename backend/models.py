@@ -362,17 +362,21 @@ class CampaignSendRequest(BaseModel):
 
 
 class CampaignStartRequest(BaseModel):
-    niche:     str
-    city:      str
-    channel:   LeadChannel
-    daily_cap: int              = 20
-    sources:   List[LeadSource] = [LeadSource.GOOGLE_MAPS]
-    headless:  bool             = False
+    niche:             str
+    city:              str
+    country:           Optional[str]   = None
+    channel:           LeadChannel
+    daily_cap:         int              = 20
+    sources:           List[LeadSource] = [LeadSource.GOOGLE_MAPS]
+    headless:          bool             = False
+    hot_warm_only:     bool             = True
+    google_maps_cap:   Optional[int]   = None
+    google_search_cap: Optional[int]   = None
 
     @field_validator("daily_cap")
     @classmethod
     def clamp_cap(cls, v: int) -> int:
-        return max(1, min(200, v))
+        return max(1, min(500, v))
 
     @field_validator("sources")
     @classmethod

@@ -96,6 +96,7 @@ export const logsApi = {
 export const inboxApi = {
   list:    (params = {})          => api.get('/inbox', { params }).then((r) => r.data),
   stats:   ()                     => api.get('/inbox/stats').then((r) => r.data),
+  summary: ()                     => api.get('/inbox/summary').then((r) => r.data),
   process: (id, intent)           => api.post(`/inbox/${id}/process`, null, { params: { intent } }).then((r) => r.data),
   check:   ()                     => api.post('/inbox/check').then((r) => r.data),
 }

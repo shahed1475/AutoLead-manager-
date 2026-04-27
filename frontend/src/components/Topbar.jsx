@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { useLocation } from 'react-router-dom'
-import { Zap, Wifi, WifiOff, Clock, Activity } from 'lucide-react'
+import { Wifi, WifiOff, Clock, Activity } from 'lucide-react'
 import { engineApi } from '../api/client'
 import clsx from 'clsx'
 
@@ -60,11 +60,12 @@ export default function Topbar() {
                        bg-slate-900/90 border-b border-slate-800 backdrop-blur-sm z-10">
 
       {/* Brand */}
-      <div className="flex items-center gap-2">
-        <div className="w-6 h-6 bg-brand-600 rounded-md flex items-center justify-center shadow-lg shadow-brand-900/40">
-          <Zap size={11} className="text-white" />
-        </div>
-        <span className="font-bold text-sm text-slate-100 tracking-tight">MarketBot</span>
+      <div className="flex items-center gap-2.5">
+        <img
+          src="/logo.png"
+          alt="HOM"
+          className="h-8 w-auto object-contain"
+        />
         <span className="hidden sm:block text-slate-700 select-none">/</span>
         <span className="hidden sm:block text-sm text-slate-400">{pageTitle}</span>
       </div>

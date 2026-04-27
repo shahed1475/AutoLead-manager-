@@ -10,12 +10,14 @@ from .config import get_settings
 from .database import (
     init_db, close_db, get_db, get_all_settings,
     get_dashboard_stats, get_weekly_activity, get_recent_logs,
+    get_avg_score,
 )
 from .cache import close_redis
 from .scheduler import start_scheduler, stop_scheduler, get_scheduler_status
 from .routers import leads, campaigns, ai, scraper_router, settings_router, status
 from .routers import inbox as inbox_router
 from .routers import followups as followups_router
+from .routers import replies as replies_router
 from .routers.campaigns import get_campaign_state
 from .queue_worker import init_queue, get_queue
 
@@ -68,6 +70,7 @@ app.add_middleware(
 
 app.include_router(inbox_router.router)   # first — static /leads/score-* paths before /{lead_id}
 app.include_router(followups_router.router)
+app.include_router(replies_router.router)
 app.include_router(leads.router)
 app.include_router(campaigns.router)
 app.include_router(ai.router)
@@ -137,10 +140,12 @@ async def dashboard_stats():
     - lead counts (total, pending, sent, replied, skipped)
     - today's send counts per channel
     - reply_rate, estimated_revenue
+    - hot_leads_count, warm_leads_count, avg_score, total_replies
     - engine_status: "idle" | "running" | "scheduled"
     - next_run: ISO timestamp of next scheduled job
     """
     stats = await get_dashboard_stats()
+    avg   = await get_avg_score()
 
     camp  = get_campaign_state()
     sched = get_scheduler_status()
@@ -152,8 +157,12 @@ async def dashboard_stats():
     else:
         engine_status = "idle"
 
-    stats["engine_status"] = engine_status
-    stats["next_run"]      = sched.get("next_run")
+    stats["engine_status"]   = engine_status
+    stats["next_run"]        = sched.get("next_run")
+    stats["avg_score"]       = avg
+    stats["total_replies"]   = stats.get("replied", 0)
+    stats["hot_leads_count"] = stats.get("hot_leads", 0)
+    stats["warm_leads_count"]= stats.get("warm_leads", 0)
     return stats
 
 
