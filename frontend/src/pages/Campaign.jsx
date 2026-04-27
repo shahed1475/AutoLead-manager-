@@ -250,13 +250,12 @@ function PipelineCard({ isRunning, logs, leadsFound, leadsSent, scoreDist }) {
             {[
               { label: 'HOT',  emoji: '🔥', n: hot,  bar: 'bg-red-500/70'   },
               { label: 'WARM', emoji: '♨️', n: warm, bar: 'bg-amber-500/70' },
-              { label: 'COLD', emoji: '❄️', n: cold, bar: 'bg-blue-400/25', note: '(skipped)' },
-            ].map(({ label, emoji, n, bar, note }) => (
+              { label: 'COLD', emoji: '❄️', n: cold, bar: 'bg-blue-400/25'  },
+            ].map(({ label, emoji, n, bar }) => (
               <div key={label} className="flex-1 space-y-1">
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] text-slate-500">
                     {emoji} <span className="font-medium">{label}</span>
-                    {note && <span className="text-slate-700 ml-1">{note}</span>}
                   </span>
                   <span className="text-[10px] font-mono font-bold text-slate-400 tabular-nums">{n}</span>
                 </div>

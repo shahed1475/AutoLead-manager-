@@ -286,10 +286,10 @@ export default function Dashboard() {
 
   const pieData = stats
     ? [
-        { name: 'Pending',  value: stats.pending  },
-        { name: 'Sent',     value: stats.sent     },
-        { name: 'Replied',  value: stats.replied  },
-        { name: 'Skipped',  value: stats.skipped  },
+        { name: 'Pending',  value: stats.pending  || 0 },
+        { name: 'Sent',     value: stats.sent     || 0 },
+        { name: 'Replied',  value: stats.replied  || 0 },
+        { name: 'Skipped',  value: stats.skipped  || 0 },
       ].filter((d) => d.value > 0)
     : []
 
@@ -436,7 +436,14 @@ export default function Dashboard() {
           ) : (
             <div className="flex flex-col items-center justify-center h-[210px] gap-2">
               <Users size={28} className="text-slate-700" />
-              <p className="text-sm text-slate-600">No leads yet</p>
+              {stats?.total_leads > 0 ? (
+                <>
+                  <p className="text-sm text-slate-500">{stats.total_leads} leads ready</p>
+                  <p className="text-xs text-slate-600">Run a campaign to send them</p>
+                </>
+              ) : (
+                <p className="text-sm text-slate-600">No leads yet</p>
+              )}
             </div>
           )}
         </div>

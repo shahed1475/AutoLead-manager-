@@ -7,6 +7,9 @@ from .. import email_sender, whatsapp_sender, ai_brain, scraper
 from ..followup_engine import schedule_followups_for_lead as _schedule_fu
 from ..models import CampaignSendRequest, CampaignStartRequest
 
+# Progress update every N leads to avoid hammering the DB on every iteration
+_PROGRESS_EVERY = 5
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/campaign", tags=["campaign"])
@@ -125,6 +128,8 @@ async def _run_campaign_task(
             source_caps = source_caps or None,
         )
 
+        leads_scraped_total = len(scraped_leads)
+
         for lead_data in scraped_leads:
             if _run_state["stop_requested"]:
                 break
@@ -141,6 +146,7 @@ async def _run_campaign_task(
                     score = lead_check.get("score") or 0
                     label = (lead_check.get("score_label") or "COLD").upper()
                     if score > 0 and label == "COLD":
+                        await db.update_lead(lead_id, {"status": "SKIPPED"})
                         continue
 
             await db.log_campaign_action(lead_id, "SCRAPE", "FOUND", True)
@@ -165,11 +171,19 @@ async def _run_campaign_task(
                 lead = await db.get_lead_by_id(lead_id)
             except Exception as exc:
                 await db.log_campaign_action(lead_id, "AI", "GENERATE", False, str(exc))
+                logger.warning("AI generation failed for lead %s: %s", lead_id, exc)
+                continue  # skip send if no messages were generated
 
             # Send outreach
             result = await _send_one(lead_id, channel)
             if result.get("success"):
                 _run_state["leads_sent"] += 1
+
+            # Push live progress to DB every N leads
+            if (_run_state["leads_found"] % _PROGRESS_EVERY) == 0:
+                await db.update_campaign_run_progress(
+                    run_id, _run_state["leads_found"], _run_state["leads_sent"]
+                )
 
         final_status = "STOPPED" if _run_state["stop_requested"] else "COMPLETED"
         await db.update_campaign_run(run_id, {

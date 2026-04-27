@@ -216,6 +216,19 @@ ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS conversion_gaps       TEXT[];
 ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS seo_gaps              TEXT[];
 ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS pitch_angles          TEXT[];
 
+-- ── Data normalisation (idempotent — safe to run on every startup) ────────────
+-- Collapse legacy pipeline statuses (ENRICHED, SCORED, MESSAGES_READY, FAILED)
+-- into PENDING so the dashboard counts are correct.
+UPDATE leads
+SET status = 'PENDING'
+WHERE status IS NULL
+   OR status NOT IN ('PENDING', 'SENT', 'REPLIED', 'SKIPPED');
+
+-- Mark campaigns that were still RUNNING when the server last shut down as FAILED.
+UPDATE campaign_runs
+SET status = 'FAILED', finished_at = NOW()
+WHERE status = 'RUNNING';
+
 -- ── Scores breakdown (v3 new) ─────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS scores (
     id                  SERIAL PRIMARY KEY,
@@ -361,14 +374,18 @@ async def get_dashboard_stats() -> Dict[str, Any]:
         # Single pass over leads for all status + score counts
         lead_row = await conn.fetchrow("""
             SELECT
-                COUNT(*)                                                          AS total,
-                COUNT(*) FILTER (WHERE status = 'PENDING')                        AS pending,
-                COUNT(*) FILTER (WHERE status = 'SENT')                           AS sent,
-                COUNT(*) FILTER (WHERE status = 'REPLIED')                        AS replied,
-                COUNT(*) FILTER (WHERE status = 'SKIPPED')                        AS skipped,
-                COUNT(*) FILTER (WHERE score_label = 'HOT'  AND status != 'SKIPPED') AS hot_leads,
-                COUNT(*) FILTER (WHERE score_label = 'WARM' AND status != 'SKIPPED') AS warm_leads,
-                COUNT(*) FILTER (WHERE score_label = 'COLD' AND status != 'SKIPPED') AS cold_leads
+                COUNT(*)                                                                   AS total,
+                COUNT(*) FILTER (WHERE status NOT IN ('SENT','REPLIED','SKIPPED')
+                                    OR status IS NULL)                                     AS pending,
+                COUNT(*) FILTER (WHERE status = 'SENT')                                   AS sent,
+                COUNT(*) FILTER (WHERE status = 'REPLIED')                                AS replied,
+                COUNT(*) FILTER (WHERE status = 'SKIPPED')                                AS skipped,
+                COUNT(*) FILTER (WHERE score > 0 AND score_label = 'HOT'
+                                    AND status != 'SKIPPED')                              AS hot_leads,
+                COUNT(*) FILTER (WHERE score > 0 AND score_label = 'WARM'
+                                    AND status != 'SKIPPED')                              AS warm_leads,
+                COUNT(*) FILTER (WHERE score > 0 AND score_label = 'COLD'
+                                    AND status != 'SKIPPED')                              AS cold_leads
             FROM leads
         """)
 
@@ -692,7 +709,9 @@ async def get_score_distribution() -> Dict[str, int]:
     async with get_db() as conn:
         rows = await conn.fetch(
             """SELECT score_label, COUNT(*) AS cnt
-               FROM leads WHERE status != 'SKIPPED'
+               FROM leads
+               WHERE status != 'SKIPPED'
+                 AND score IS NOT NULL AND score > 0
                GROUP BY score_label"""
         )
     dist = {"HOT": 0, "WARM": 0, "COLD": 0}
@@ -832,6 +851,15 @@ async def update_campaign_run(run_id: int, data: Dict[str, Any]) -> bool:
             f"UPDATE campaign_runs SET {set_clause} WHERE id = ${len(params)}", *params
         )
     return _rows_affected(result) > 0
+
+
+async def update_campaign_run_progress(run_id: int, leads_found: int, leads_sent: int) -> None:
+    """Lightweight in-progress update — called after each lead found/sent."""
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE campaign_runs SET leads_found=$1, leads_sent=$2 WHERE id=$3",
+            leads_found, leads_sent, run_id,
+        )
 
 
 async def get_campaign_history(limit: int = 10) -> List[Dict[str, Any]]:
