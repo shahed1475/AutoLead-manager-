@@ -38,7 +38,10 @@ async def get_redis() -> aioredis.Redis:
 async def close_redis() -> None:
     global _redis
     if _redis:
-        await _redis.aclose()
+        try:
+            await _redis.aclose()
+        except Exception:
+            pass
         _redis = None
         logger.info("Redis connection closed")
 

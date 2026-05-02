@@ -16,7 +16,7 @@ Pipeline
      are absent after clearing
   5. Enrich leads that have a website but no email via email_finder
      (max 5 concurrent, asyncio.Semaphore)
-  6. Batch-save to PostgreSQL via create_lead_deduped (max 10 concurrent)
+  6. Batch-save to SQLite via create_lead_deduped (max 10 concurrent)
   7. Log summary line; return saved lead dicts (each has 'id' from DB)
 
 Threading model
@@ -47,7 +47,11 @@ _SOURCE_WEIGHTS: Dict[str, float] = {
     "GOOGLE_SEARCH": 0.40,
     "YELP":          0.50,
     "YELLOW_PAGES":  0.50,
-    "BING_MAPS":     0.50,
+    "BING_SEARCH":   0.50,
+    "HOTFROG":       0.40,
+    "FOURSQUARE":    0.40,
+    "TOP_LIST":      0.35,
+    "GENERIC_DIR":   0.45,
 }
 
 
@@ -173,7 +177,7 @@ def _validate_and_clean(
         if lead.get("phone") and not is_valid_phone(lead["phone"]):
             lead = {**lead, "phone": None}
 
-        if not lead.get("email") and not lead.get("phone"):
+        if not lead.get("email") and not lead.get("phone") and not lead.get("website"):
             rejected.append({**lead, "_reject_reason": "no email and no phone"})
             continue
 
@@ -196,13 +200,19 @@ async def _dispatch_source(
     log_fn:  Callable[[str], None],
 ) -> List[dict]:
     """Run one source's scraper and return its raw lead list (never raises)."""
-    from .google_maps   import scrape            as _gm_scrape
-    from .google_search import scrape_google_search as _gs_scrape
-    from ..             import scraper as _parent   # Yelp / YP sync functions
+    from .google_maps      import scrape               as _gm_scrape
+    from .google_search    import scrape_google_search as _gs_scrape
+    from .yelp             import scrape               as _yelp_scrape
+    from .yellow_pages     import scrape               as _yp_scrape
+    from .bing_search      import scrape               as _bing_scrape
+    from .hotfrog          import scrape               as _hotfrog_scrape
+    from .foursquare       import scrape               as _fsq_scrape
+    from .top_list         import scrape               as _toplist_scrape
+    from .generic_directory import scrape              as _gendir_scrape
 
     try:
         if source == "GOOGLE_MAPS":
-            log_fn(f"🗺  Google Maps  → {budget} leads")
+            log_fn(f"🗺  Google Maps   → {budget} leads")
             leads = await _gm_scrape(
                 niche=niche, city=city,
                 max_results=budget, cfg=cfg, log_callback=log_fn,
@@ -217,16 +227,51 @@ async def _dispatch_source(
 
         elif source == "YELP":
             log_fn(f"⭐ Yelp          → {budget} leads")
-            leads = await asyncio.to_thread(
-                _parent._scrape_yelp_sync,
-                niche, city, budget, cfg, log_fn,
+            leads = await _yelp_scrape(
+                niche=niche, city=city, country=country,
+                max_results=budget, cfg=cfg, log_callback=log_fn,
             )
 
         elif source == "YELLOW_PAGES":
             log_fn(f"📒 Yellow Pages  → {budget} leads")
-            leads = await asyncio.to_thread(
-                _parent._scrape_yellowpages_sync,
-                niche, city, budget, cfg, log_fn,
+            leads = await _yp_scrape(
+                niche=niche, city=city, country=country,
+                max_results=budget, cfg=cfg, log_callback=log_fn,
+            )
+
+        elif source == "BING_SEARCH":
+            log_fn(f"🔎 Bing Search   → {budget} leads")
+            leads = await _bing_scrape(
+                niche=niche, city=city, country=country,
+                max_results=budget, cfg=cfg, log_callback=log_fn,
+            )
+
+        elif source == "HOTFROG":
+            log_fn(f"🔥 Hotfrog       → {budget} leads")
+            leads = await _hotfrog_scrape(
+                niche=niche, city=city, country=country,
+                max_results=budget, cfg=cfg, log_callback=log_fn,
+            )
+
+        elif source == "FOURSQUARE":
+            log_fn(f"📍 Foursquare    → {budget} leads")
+            leads = await _fsq_scrape(
+                niche=niche, city=city, country=country,
+                max_results=budget, cfg=cfg, log_callback=log_fn,
+            )
+
+        elif source == "TOP_LIST":
+            log_fn(f"📰 Top-List      → {budget} leads")
+            leads = await _toplist_scrape(
+                niche=niche, city=city, country=country,
+                max_results=budget, cfg=cfg, log_callback=log_fn,
+            )
+
+        elif source == "GENERIC_DIR":
+            log_fn(f"📂 Generic Dir   → {budget} leads")
+            leads = await _gendir_scrape(
+                niche=niche, city=city, country=country,
+                max_results=budget, cfg=cfg, log_callback=log_fn,
             )
 
         else:
@@ -262,7 +307,11 @@ async def _enrich_parallel(
     with at most max_concurrent concurrent requests (asyncio.Semaphore).
     Mutates lead dicts in-place; always returns the same list.
     """
-    from .email_finder import find_emails_from_website
+    try:
+        from .email_finder import find_emails_from_website
+    except Exception as exc:
+        log_fn(f"⚠️  Email finder unavailable: {exc}")
+        return leads
 
     candidates = [l for l in leads if l.get("website") and not l.get("email")]
     if not candidates:
@@ -304,12 +353,13 @@ async def _batch_save(
     log_fn: Callable[[str], None],
 ) -> Tuple[List[dict], int]:
     """
-    Concurrent PostgreSQL saves (max 10 at once).
-    Uses create_lead_deduped so email/phone unique constraints are respected.
+    Sequential SQLite saves (semaphore=1).
+    SQLite WAL mode allows only ONE concurrent writer — using Semaphore(1) prevents
+    "database is locked" errors that would silently discard all leads.
     Returns (list_of_saved_dicts_with_id, fail_count).
     Each returned dict has '_is_new': bool to distinguish inserts vs skipped dupes.
     """
-    sem     = asyncio.Semaphore(10)
+    sem     = asyncio.Semaphore(1)          # SQLite: serialise writes
     results: List[Optional[dict]] = [None] * len(leads)
     fails   = 0
 
@@ -328,13 +378,22 @@ async def _batch_save(
                 results[idx] = {**lead, "id": lead_id, "_is_new": is_new}
             except Exception as exc:
                 fails += 1
+                # Surface error to SSE terminal so it's visible to the user
+                log_fn(
+                    f"   ❌ DB save failed [{lead.get('business_name', '?')}]: {exc}"
+                )
                 logger.error(
                     "DB save failed for '%s': %s",
-                    lead.get("business_name"), exc,
+                    lead.get("business_name"), exc, exc_info=True,
                 )
 
     await asyncio.gather(*[_save(i, l) for i, l in enumerate(leads)])
     saved = [r for r in results if r is not None]
+    if fails:
+        log_fn(
+            f"   ⚠️  {fails}/{len(leads)} lead(s) failed to save — "
+            f"check DB write permissions or disk space"
+        )
     return saved, fails
 
 
@@ -442,13 +501,16 @@ async def run_bulk_scrape(
         return []
 
     # ── 6. Email enrichment (parallel, semaphore-limited) ─────────────────────
-    valid = await _enrich_parallel(valid, _log, max_concurrent=5)
+    try:
+        valid = await _enrich_parallel(valid, _log, max_concurrent=5)
+    except Exception as exc:
+        _log(f"⚠️  Email enrichment error: {exc} — saving leads without enrichment")
 
     # Re-validate: enrichment may have filled in missing fields
     valid, rejected2 = _validate_and_clean(valid, _log)
     rejected.extend(rejected2)
 
-    # ── 7. Batch PostgreSQL save ──────────────────────────────────────────────
+    # ── 7. Batch SQLite save ──────────────────────────────────────────────────
     _log(f"💾 Saving {len(valid)} lead(s) to database …")
     saved, n_failed = await _batch_save(valid, _log)
 
@@ -456,7 +518,15 @@ async def run_bulk_scrape(
     new_count = sum(1 for l in saved if l.get("_is_new"))
     dup_db    = len(saved) - new_count
 
-    # ── 8. Summary ────────────────────────────────────────────────────────────
+    # ── 8. Post-save DB verification ─────────────────────────────────────────
+    try:
+        async with db.get_db() as _conn:
+            db_total = await _conn.fetchval("SELECT COUNT(*) FROM leads") or 0
+        _log(f"   📊 DB now contains {db_total} total lead(s)")
+    except Exception as _ve:
+        _log(f"   ⚠️  DB count check failed: {_ve}")
+
+    # ── 9. Summary ────────────────────────────────────────────────────────────
     _log(
         f"✅ Scraped: {len(all_raw)} "
         f"| ❌ Duplicates removed: {n_removed + dup_db} "
@@ -464,5 +534,87 @@ async def run_bulk_scrape(
         f"| 💾 Saved: {new_count} new "
         f"| ⏱️  {elapsed}s"
     )
+    if not saved:
+        _log(
+            "⚠️  No leads persisted — if this is unexpected, run "
+            "POST /api/campaign/test-pipeline to diagnose DB write issues"
+        )
 
-    return [_clean_lead(l) for l in saved if l.get("_is_new")]
+    return [_clean_lead(l) for l in saved]
+
+
+# ── Test pipeline ──────────────────────────────────────────────────────────────
+
+async def run_test_pipeline(
+    log_callback: Optional[Callable[[str], None]] = None,
+) -> dict:
+    """
+    Inserts 5 dummy leads directly into the DB and reads them back.
+    Confirms the full write → read path works end-to-end without any scraping.
+    """
+    def _log(msg: str) -> None:
+        if log_callback:
+            try:
+                log_callback(msg)
+            except Exception:
+                pass
+
+    _log("🧪 Test pipeline: inserting 5 dummy leads to verify DB write …")
+
+    dummies = [
+        {
+            "business_name": f"Test Business {i + 1}",
+            "phone":         f"+97150001{1000 + i}",
+            "email":         f"test{i + 1}@testbiz{i + 1}.com",
+            "website":       f"https://testbiz{i + 1}.example.com",
+            "niche":         "_test_",
+            "city":          "TestCity",
+            "source":        "TEST",
+        }
+        for i in range(5)
+    ]
+
+    saved_ids: List[int] = []
+    errors:    List[str] = []
+
+    for d in dummies:
+        try:
+            lead_id, is_new = await db.create_lead_deduped(d)
+            saved_ids.append(lead_id)
+            _log(
+                f"   {'✅ Created' if is_new else '🔄 Already exists'}: "
+                f"{d['business_name']} (id={lead_id})"
+            )
+        except Exception as exc:
+            errors.append(str(exc))
+            _log(f"   ❌ Failed to save {d['business_name']}: {exc}")
+
+    # Read back
+    db_total = 0
+    test_total = 0
+    try:
+        async with db.get_db() as conn:
+            db_total   = await conn.fetchval("SELECT COUNT(*) FROM leads") or 0
+            test_total = await conn.fetchval(
+                "SELECT COUNT(*) FROM leads WHERE source = 'TEST'"
+            ) or 0
+    except Exception as exc:
+        _log(f"   ❌ DB read-back failed: {exc}")
+        errors.append(str(exc))
+
+    _log(
+        f"🧪 Done — {len(saved_ids)}/5 saved | "
+        f"{test_total} TEST leads in DB | {db_total} total leads"
+    )
+
+    if errors:
+        _log(f"   ⚠️  {len(errors)} error(s): {errors[0]}")
+
+    return {
+        "saved":        len(saved_ids),
+        "ids":          saved_ids,
+        "total_leads":  db_total,
+        "test_leads":   test_total,
+        "errors":       errors,
+        "ok":           len(errors) == 0 and len(saved_ids) == 5,
+    }

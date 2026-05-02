@@ -318,6 +318,9 @@ async def send_whatsapp(phone_number: str, message: str, config: Dict[str, Any])
 # ── Legacy high-level API (called by scheduler.py and campaigns.py) ────────────
 
 
+_MSG_GARBAGE_MARKERS = ("[Generation failed", "[Message generation failed", "[Subject —", "[Body —")
+
+
 async def send_whatsapp_lead(lead: Dict[str, Any]) -> None:
     """
     Send WhatsApp outreach to a lead.
@@ -327,10 +330,14 @@ async def send_whatsapp_lead(lead: Dict[str, Any]) -> None:
     if not phone:
         raise ValueError(f"Lead {lead.get('id')} has no phone number")
 
-    message = lead.get("ai_whatsapp_msg")
-    if not message:
-        raise ValueError(
-            f"Lead {lead.get('id')} has no WhatsApp message — generate it first"
+    message = lead.get("ai_whatsapp_msg") or ""
+    if not message or any(message.startswith(m) for m in _MSG_GARBAGE_MARKERS):
+        biz     = lead.get("business_name") or "your business"
+        niche   = lead.get("niche")         or "your industry"
+        message = (
+            f"Hi! I came across {biz} and wanted to reach out. "
+            f"We help {niche} businesses grow with digital marketing. "
+            "Would you be open to a quick chat?"
         )
 
     cfg = await _wa_cfg()
@@ -347,10 +354,13 @@ async def send_followup_whatsapp(lead: Dict[str, Any]) -> None:
     if not phone:
         raise ValueError(f"Lead {lead.get('id')} has no phone number")
 
-    message = lead.get("ai_followup_msg")
-    if not message:
-        raise ValueError(
-            f"Lead {lead.get('id')} has no follow-up message — generate it first"
+    message = lead.get("ai_followup_msg") or ""
+    if not message or any(message.startswith(m) for m in _MSG_GARBAGE_MARKERS):
+        biz     = lead.get("business_name") or "your business"
+        message = (
+            f"Hi again! Just wanted to follow up on my previous message about {biz}. "
+            "Would you be open to a quick chat about how we can help you grow? "
+            "Happy to keep it brief!"
         )
 
     cfg = await _wa_cfg()

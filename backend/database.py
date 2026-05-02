@@ -1,19 +1,30 @@
 """
-database.py — PostgreSQL (asyncpg) database layer for AutoLead v3.
+database.py — SQLite (aiosqlite) database layer for AutoLead local development.
 
-Connection pool: min=5, max=20. All public functions maintain the
-same signatures as the SQLite version so routers require no changes.
+Drop-in replacement for the asyncpg/PostgreSQL version.
+All public function signatures and return types are identical so routers,
+scrapers, and main.py require zero changes.
 
-Tables
-──────
-  Existing (migrated):  leads, app_settings, campaign_log, campaign_runs,
-                        reply_inbox
-  New (v3):             enriched_data, scores, messages, replies, campaigns
+Compatibility shim
+------------------
+_SQLiteConn wraps aiosqlite.Connection and exposes the asyncpg-style API:
+  conn.fetch(sql, *args)      -> List[dict]
+  conn.fetchrow(sql, *args)   -> Optional[dict]
+  conn.fetchval(sql, *args)   -> scalar or None
+  conn.execute(sql, *args)    -> "EXEC N" string (rowcount)
+
+Parameter translation
+---------------------
+asyncpg $1/$2/... markers are auto-converted to SQLite ? at query time.
 """
-import asyncpg
+
+import aiosqlite
 import json
 import logging
 import math
+import os
+import re
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
@@ -23,90 +34,141 @@ from .config import get_settings
 logger   = logging.getLogger(__name__)
 settings = get_settings()
 
-# Module-level pool — created once in init_db(), shared by all requests
-_pool: Optional[asyncpg.Pool] = None
+DB_PATH = settings.database_path
+
+_JSON_ARRAY_COLS = frozenset({
+    "marketing_gaps", "issues", "conversion_gaps",
+    "seo_gaps", "pitch_angles", "key_problems", "sources",
+})
+
+_PG_PARAM_RE = re.compile(r'\$\d+')
+
+
+def _pg_to_sqlite(sql: str) -> str:
+    return _PG_PARAM_RE.sub('?', sql)
+
+
+def _row_to_dict(row) -> Optional[Dict[str, Any]]:
+    if row is None:
+        return None
+    d = dict(row)
+    for col in _JSON_ARRAY_COLS:
+        val = d.get(col)
+        if isinstance(val, str) and val:
+            try:
+                d[col] = json.loads(val)
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return d
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# asyncpg-compatible connection wrapper
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _SQLiteConn:
+    """Wraps aiosqlite.Connection with asyncpg-style fetch/fetchrow/fetchval/execute."""
+
+    def __init__(self, conn: aiosqlite.Connection) -> None:
+        self._conn = conn
+
+    async def fetch(self, sql: str, *args) -> List[Dict[str, Any]]:
+        sql = _pg_to_sqlite(sql)
+        async with self._conn.execute(sql, args) as cur:
+            rows = await cur.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+    async def fetchrow(self, sql: str, *args) -> Optional[Dict[str, Any]]:
+        sql = _pg_to_sqlite(sql)
+        async with self._conn.execute(sql, args) as cur:
+            row = await cur.fetchone()
+        return _row_to_dict(row) if row else None
+
+    async def fetchval(self, sql: str, *args) -> Any:
+        """Return first column of first row. Handles RETURNING by using lastrowid."""
+        has_ret = bool(re.search(r'\bRETURNING\b', sql, re.I))
+        sql_c   = _pg_to_sqlite(sql)
+        if has_ret:
+            sql_exec = re.sub(r'\s+RETURNING\s+\w+', '', sql_c, flags=re.I)
+            cur = await self._conn.execute(sql_exec, args)
+            await self._conn.commit()
+            return cur.lastrowid
+        async with self._conn.execute(sql_c, args) as cur:
+            row = await cur.fetchone()
+        return row[0] if row else None
+
+    async def execute(self, sql: str, *args) -> str:
+        sql_c = _pg_to_sqlite(sql)
+        cur   = await self._conn.execute(sql_c, args)
+        await self._conn.commit()
+        return f"EXEC {cur.rowcount}"
+
+    async def _executescript(self, script: str) -> None:
+        await self._conn.executescript(script)
+
+    async def _raw_execute(self, sql: str) -> None:
+        await self._conn.execute(sql)
+        await self._conn.commit()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pool lifecycle
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _register_codecs(conn: asyncpg.Connection) -> None:
-    """Called on every new connection; registers JSONB ↔ dict codec."""
-    await conn.set_type_codec(
-        "jsonb",
-        encoder=json.dumps,
-        decoder=json.loads,
-        schema="pg_catalog",
-        format="text",
-    )
-
-
 async def init_db() -> None:
-    """Create connection pool and apply idempotent schema."""
-    global _pool
-    _pool = await asyncpg.create_pool(
-        settings.database_url,
-        min_size=settings.db_pool_min,
-        max_size=settings.db_pool_max,
-        command_timeout=60,
-        init=_register_codecs,
-    )
-    await _run_migrations()
-    logger.info(
-        "PostgreSQL pool ready (min=%d max=%d)",
-        settings.db_pool_min, settings.db_pool_max,
-    )
+    os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
+    async with aiosqlite.connect(DB_PATH) as raw:
+        raw.row_factory = aiosqlite.Row
+        conn = _SQLiteConn(raw)
+        await _run_migrations(conn, raw)
+    logger.info("SQLite database ready at %s", DB_PATH)
 
 
 async def close_db() -> None:
-    global _pool
-    if _pool:
-        await _pool.close()
-        _pool = None
-        logger.info("PostgreSQL pool closed")
+    logger.info("SQLite: no pool to close")
 
 
 @asynccontextmanager
-async def get_db() -> AsyncGenerator[asyncpg.Connection, None]:
-    if _pool is None:
-        raise RuntimeError("Database pool not initialised — call init_db() first")
-    async with _pool.acquire() as conn:
-        yield conn
+async def get_db() -> AsyncGenerator[_SQLiteConn, None]:
+    async with aiosqlite.connect(DB_PATH) as raw:
+        raw.row_factory = aiosqlite.Row
+        await raw.execute("PRAGMA journal_mode=WAL")
+        await raw.execute("PRAGMA foreign_keys=ON")
+        # 30-second busy timeout — prevents "database is locked" under concurrent async writes
+        await raw.execute("PRAGMA busy_timeout=30000")
+        yield _SQLiteConn(raw)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Schema — all CREATE TABLE / INDEX use IF NOT EXISTS → idempotent
+# Schema
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SCHEMA_SQL = """
--- ── Settings ─────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS app_settings (
-    key        VARCHAR(100) PRIMARY KEY,
+    key        TEXT PRIMARY KEY,
     value      TEXT,
-    updated_at TIMESTAMP DEFAULT NOW()
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- ── Leads ─────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS leads (
-    id                   SERIAL PRIMARY KEY,
-    business_name        VARCHAR(255) NOT NULL,
-    phone                VARCHAR(50),
-    email                VARCHAR(255),
-    website              VARCHAR(500),
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    business_name        TEXT    NOT NULL,
+    phone                TEXT,
+    email                TEXT,
+    website              TEXT,
     address              TEXT,
-    niche                VARCHAR(100),
-    city                 VARCHAR(100),
-    country              VARCHAR(100),
-    rating               FLOAT,
+    niche                TEXT,
+    city                 TEXT,
+    country              TEXT,
+    rating               REAL,
     reviews_count        INTEGER,
     review_count         INTEGER,
-    source               VARCHAR(50),
-    status               VARCHAR(30)  DEFAULT 'PENDING',
-    channel              VARCHAR(20),
-    score                INTEGER      DEFAULT 0,
-    score_label          VARCHAR(10)  DEFAULT 'COLD',
-    score_category       VARCHAR(10)  DEFAULT 'COLD',
+    source               TEXT,
+    status               TEXT    DEFAULT 'PENDING',
+    channel              TEXT,
+    score                INTEGER DEFAULT 0,
+    score_label          TEXT    DEFAULT 'COLD',
+    score_category       TEXT    DEFAULT 'COLD',
     ai_whatsapp_msg      TEXT,
     ai_email_subject     TEXT,
     ai_email_body        TEXT,
@@ -119,14 +181,14 @@ CREATE TABLE IF NOT EXISTS leads (
     business_gaps        TEXT,
     pain_points          TEXT,
     personalization_hook TEXT,
-    verified_email       SMALLINT     DEFAULT 0,
-    has_social_links     SMALLINT     DEFAULT 0,
+    verified_email       INTEGER DEFAULT 0,
+    has_social_links     INTEGER DEFAULT 0,
     sent_at              TIMESTAMP,
     followup_sent_at     TIMESTAMP,
     follow_up_1_sent_at  TIMESTAMP,
     follow_up_2_sent_at  TIMESTAMP,
     follow_up_3_sent_at  TIMESTAMP,
-    created_at           TIMESTAMP    DEFAULT NOW()
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email
@@ -140,162 +202,178 @@ CREATE INDEX IF NOT EXISTS idx_leads_score   ON leads (score_label);
 CREATE INDEX IF NOT EXISTS idx_leads_source  ON leads (source);
 CREATE INDEX IF NOT EXISTS idx_leads_created ON leads (created_at);
 
--- ── Campaign log ──────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS campaign_log (
-    id        SERIAL    PRIMARY KEY,
+    id        INTEGER   PRIMARY KEY AUTOINCREMENT,
     lead_id   INTEGER   REFERENCES leads(id) ON DELETE SET NULL,
-    channel   VARCHAR(20),
-    action    VARCHAR(50),
-    success   BOOLEAN   DEFAULT FALSE,
+    channel   TEXT,
+    action    TEXT,
+    success   INTEGER   DEFAULT 0,
     error_msg TEXT,
-    timestamp TIMESTAMP DEFAULT NOW()
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_log_lead      ON campaign_log (lead_id);
 CREATE INDEX IF NOT EXISTS idx_log_timestamp ON campaign_log (timestamp);
 
--- ── Campaign runs (backwards compat) ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS campaign_runs (
-    id          SERIAL      PRIMARY KEY,
-    niche       VARCHAR(100),
-    city        VARCHAR(100),
-    country     VARCHAR(100),
-    channel     VARCHAR(20),
-    daily_cap   INTEGER     DEFAULT 20,
-    leads_found INTEGER     DEFAULT 0,
-    leads_sent  INTEGER     DEFAULT 0,
+    id          INTEGER   PRIMARY KEY AUTOINCREMENT,
+    niche       TEXT,
+    city        TEXT,
+    country     TEXT,
+    channel     TEXT,
+    daily_cap   INTEGER   DEFAULT 20,
+    leads_found INTEGER   DEFAULT 0,
+    leads_sent  INTEGER   DEFAULT 0,
     sources     TEXT,
-    started_at  TIMESTAMP   DEFAULT NOW(),
+    started_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     finished_at TIMESTAMP,
-    status      VARCHAR(20) DEFAULT 'RUNNING'
+    status      TEXT      DEFAULT 'RUNNING'
 );
 CREATE INDEX IF NOT EXISTS idx_runs_started ON campaign_runs (started_at);
 
--- ── Reply inbox (backwards compat) ───────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS reply_inbox (
-    id           SERIAL       PRIMARY KEY,
-    lead_id      INTEGER      REFERENCES leads(id) ON DELETE SET NULL,
-    from_email   VARCHAR(255) NOT NULL,
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id      INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+    from_email   TEXT    NOT NULL,
     subject      TEXT,
     body_snippet TEXT,
     received_at  TEXT,
-    intent       VARCHAR(20)  DEFAULT 'NEUTRAL',
-    processed    BOOLEAN      DEFAULT FALSE,
-    created_at   TIMESTAMP    DEFAULT NOW()
+    intent       TEXT    DEFAULT 'NEUTRAL',
+    processed    INTEGER DEFAULT 0,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_lead    ON reply_inbox (lead_id);
 CREATE INDEX IF NOT EXISTS idx_inbox_email   ON reply_inbox (from_email);
 CREATE INDEX IF NOT EXISTS idx_inbox_created ON reply_inbox (created_at);
 
--- ── Enriched data (v3 new) ────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS enriched_data (
-    id                    SERIAL PRIMARY KEY,
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     lead_id               INTEGER UNIQUE REFERENCES leads(id) ON DELETE CASCADE,
     business_summary      TEXT,
     target_audience       TEXT,
-    service_level         VARCHAR(50),
+    service_level         TEXT,
     brand_positioning     TEXT,
-    marketing_gaps        TEXT[],
-    growth_potential      VARCHAR(50),
+    marketing_gaps        TEXT,
+    growth_potential      TEXT,
     best_pitch_strategy   TEXT,
     personalization_hook  TEXT,
     website_text          TEXT,
-    website_quality_score FLOAT   DEFAULT 0,
-    issues                TEXT[],
-    conversion_gaps       TEXT[],
-    seo_gaps              TEXT[],
-    pitch_angles          TEXT[],
-    enriched_at           TIMESTAMP DEFAULT NOW()
+    website_quality_score REAL    DEFAULT 0,
+    issues                TEXT,
+    conversion_gaps       TEXT,
+    seo_gaps              TEXT,
+    pitch_angles          TEXT,
+    enriched_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_enriched_lead ON enriched_data (lead_id);
 
--- ── Enriched data — upgrade migrations (idempotent, safe on existing installs) ─
-ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS personalization_hook  TEXT;
-ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS website_quality_score FLOAT   DEFAULT 0;
-ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS issues                TEXT[];
-ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS conversion_gaps       TEXT[];
-ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS seo_gaps              TEXT[];
-ALTER TABLE enriched_data ADD COLUMN IF NOT EXISTS pitch_angles          TEXT[];
-
--- ── Data normalisation (idempotent — safe to run on every startup) ────────────
--- Collapse legacy pipeline statuses (ENRICHED, SCORED, MESSAGES_READY, FAILED)
--- into PENDING so the dashboard counts are correct.
-UPDATE leads
-SET status = 'PENDING'
-WHERE status IS NULL
-   OR status NOT IN ('PENDING', 'SENT', 'REPLIED', 'SKIPPED');
-
--- Mark campaigns that were still RUNNING when the server last shut down as FAILED.
-UPDATE campaign_runs
-SET status = 'FAILED', finished_at = NOW()
-WHERE status = 'RUNNING';
-
--- ── Scores breakdown (v3 new) ─────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS scores (
-    id                  SERIAL PRIMARY KEY,
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     lead_id             INTEGER UNIQUE REFERENCES leads(id) ON DELETE CASCADE,
-    digital_score       FLOAT DEFAULT 0,
-    website_score       FLOAT DEFAULT 0,
-    business_score      FLOAT DEFAULT 0,
-    opportunity_score   FLOAT DEFAULT 0,
-    final_score         FLOAT DEFAULT 0,
-    category            VARCHAR(10)  DEFAULT 'COLD',
-    key_problems        TEXT[],
+    digital_score       REAL    DEFAULT 0,
+    website_score       REAL    DEFAULT 0,
+    business_score      REAL    DEFAULT 0,
+    opportunity_score   REAL    DEFAULT 0,
+    final_score         REAL    DEFAULT 0,
+    category            TEXT    DEFAULT 'COLD',
+    key_problems        TEXT,
     opportunity_summary TEXT,
     pitch_angle         TEXT,
-    scored_at           TIMESTAMP DEFAULT NOW()
+    scored_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_scores_lead ON scores (lead_id);
 
--- ── Message sequences (v3 new) ────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS messages (
-    id            SERIAL      PRIMARY KEY,
-    lead_id       INTEGER     REFERENCES leads(id) ON DELETE CASCADE,
-    sequence_step INTEGER     DEFAULT 1,
-    message_type  VARCHAR(20),
-    subject       VARCHAR(500),
+    id            INTEGER   PRIMARY KEY AUTOINCREMENT,
+    lead_id       INTEGER   REFERENCES leads(id) ON DELETE CASCADE,
+    sequence_step INTEGER   DEFAULT 1,
+    message_type  TEXT,
+    subject       TEXT,
     body          TEXT,
-    status        VARCHAR(20) DEFAULT 'PENDING',
+    status        TEXT      DEFAULT 'PENDING',
     sent_at       TIMESTAMP,
     scheduled_for TIMESTAMP,
-    created_at    TIMESTAMP   DEFAULT NOW()
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_messages_lead   ON messages (lead_id);
 CREATE INDEX IF NOT EXISTS idx_messages_status ON messages (status);
 
--- ── Replies linked to messages (v3 new) ──────────────────────────────────────
 CREATE TABLE IF NOT EXISTS replies (
-    id              SERIAL     PRIMARY KEY,
-    lead_id         INTEGER    REFERENCES leads(id),
-    message_id      INTEGER    REFERENCES messages(id),
+    id              INTEGER   PRIMARY KEY AUTOINCREMENT,
+    lead_id         INTEGER   REFERENCES leads(id),
+    message_id      INTEGER   REFERENCES messages(id),
     reply_text      TEXT,
-    detected_intent VARCHAR(30),
-    raw_email_data  JSONB,
-    received_at     TIMESTAMP  DEFAULT NOW()
+    detected_intent TEXT,
+    raw_email_data  TEXT,
+    received_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_replies_lead ON replies (lead_id);
 
--- ── Campaigns high-level tracking (v3 new) ───────────────────────────────────
 CREATE TABLE IF NOT EXISTS campaigns (
-    id            SERIAL      PRIMARY KEY,
-    niche         VARCHAR(100),
-    city          VARCHAR(100),
-    country       VARCHAR(100),
-    sources       TEXT[],
-    channel       VARCHAR(20),
+    id            INTEGER   PRIMARY KEY AUTOINCREMENT,
+    niche         TEXT,
+    city          TEXT,
+    country       TEXT,
+    sources       TEXT,
+    channel       TEXT,
     daily_cap     INTEGER,
-    leads_found   INTEGER     DEFAULT 0,
-    leads_sent    INTEGER     DEFAULT 0,
-    leads_replied INTEGER     DEFAULT 0,
-    status        VARCHAR(20) DEFAULT 'RUNNING',
-    started_at    TIMESTAMP   DEFAULT NOW(),
+    leads_found   INTEGER   DEFAULT 0,
+    leads_sent    INTEGER   DEFAULT 0,
+    leads_replied INTEGER   DEFAULT 0,
+    status        TEXT      DEFAULT 'RUNNING',
+    started_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     completed_at  TIMESTAMP
 );
 """
 
 
-async def _run_migrations() -> None:
-    async with get_db() as conn:
-        await conn.execute(_SCHEMA_SQL)
+async def _add_col_if_missing(raw: aiosqlite.Connection, table: str, col: str, typedef: str) -> None:
+    async with raw.execute(f"PRAGMA table_info({table})") as cur:
+        existing = {row[1] async for row in cur}
+    if col not in existing:
+        try:
+            await raw.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}")
+            await raw.commit()
+            logger.info("Schema: added column %s.%s (%s)", table, col, typedef)
+        except Exception as exc:
+            logger.warning("Schema: could not add %s.%s — %s", table, col, exc)
+
+
+async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
+    await raw.execute("PRAGMA journal_mode=WAL")
+    await raw.execute("PRAGMA foreign_keys=ON")
+    # executescript implicitly commits; run schema creation
+    await raw.executescript(_SCHEMA_SQL)
+
+    # Upgrade missing columns for leads table (idempotent — safe on re-runs)
+    for col, typedef in [
+        ("country",        "TEXT"),
+        ("reviews_count",  "INTEGER"),
+        ("score_category", "TEXT DEFAULT 'COLD'"),
+    ]:
+        await _add_col_if_missing(raw, "leads", col, typedef)
+
+    # Upgrade columns for enriched_data (idempotent)
+    for col, typedef in [
+        ("personalization_hook",  "TEXT"),
+        ("website_quality_score", "REAL DEFAULT 0"),
+        ("issues",                "TEXT"),
+        ("conversion_gaps",       "TEXT"),
+        ("seo_gaps",              "TEXT"),
+        ("pitch_angles",          "TEXT"),
+    ]:
+        await _add_col_if_missing(raw, "enriched_data", col, typedef)
+
+    # Data normalisation
+    await raw.execute("""
+        UPDATE leads SET status = 'PENDING'
+        WHERE status IS NULL
+           OR status NOT IN ('PENDING','SENT','REPLIED','SKIPPED','MESSAGES_READY','ENRICHED','SCORED')
+    """)
+    await raw.execute("""
+        UPDATE campaign_runs SET status = 'FAILED', finished_at = CURRENT_TIMESTAMP
+        WHERE status = 'RUNNING'
+    """)
+    await raw.commit()
     logger.info("Schema migrations applied")
 
 
@@ -303,13 +381,11 @@ async def _run_migrations() -> None:
 # Type helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Columns that must be datetime objects (not strings) for asyncpg TIMESTAMP binding
 _TS_COLS = frozenset({
     "enriched_at", "sent_at", "followup_sent_at",
     "follow_up_1_sent_at", "follow_up_2_sent_at", "follow_up_3_sent_at",
 })
 
-# Whitelist of writable lead columns — prevents SQL injection via column names
 _LEAD_WRITABLE = frozenset({
     "business_name", "phone", "email", "website", "address",
     "niche", "city", "country", "rating", "reviews_count", "review_count",
@@ -325,14 +401,21 @@ _LEAD_WRITABLE = frozenset({
 
 
 def _coerce(col: str, val: Any) -> Any:
-    """Convert Python values to asyncpg-compatible types."""
     if val is None:
         return None
-    if col in _TS_COLS and isinstance(val, str):
-        try:
-            return datetime.fromisoformat(val.replace("Z", "+00:00"))
-        except ValueError:
-            return None
+    if isinstance(val, list):
+        return json.dumps(val)
+    if col in _TS_COLS:
+        if isinstance(val, datetime):
+            if val.tzinfo is not None:
+                val = val.replace(tzinfo=None)
+            return val.isoformat()
+        if isinstance(val, str):
+            try:
+                dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                return dt.replace(tzinfo=None).isoformat()
+            except ValueError:
+                return None
     return val
 
 
@@ -342,9 +425,7 @@ def _coerce(col: str, val: Any) -> Any:
 
 async def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
     async with get_db() as conn:
-        val = await conn.fetchval(
-            "SELECT value FROM app_settings WHERE key = $1", key
-        )
+        val = await conn.fetchval("SELECT value FROM app_settings WHERE key = $1", key)
     return val if val is not None else default
 
 
@@ -352,9 +433,9 @@ async def upsert_setting(key: str, value: str) -> None:
     async with get_db() as conn:
         await conn.execute(
             """INSERT INTO app_settings (key, value, updated_at)
-               VALUES ($1, $2, NOW())
+               VALUES ($1, $2, CURRENT_TIMESTAMP)
                ON CONFLICT (key) DO UPDATE
-                 SET value = EXCLUDED.value, updated_at = NOW()""",
+                 SET value = excluded.value, updated_at = CURRENT_TIMESTAMP""",
             key, value,
         )
 
@@ -371,52 +452,47 @@ async def get_all_settings() -> Dict[str, str]:
 
 async def get_dashboard_stats() -> Dict[str, Any]:
     async with get_db() as conn:
-        # Single pass over leads for all status + score counts
         lead_row = await conn.fetchrow("""
             SELECT
-                COUNT(*)                                                                   AS total,
-                COUNT(*) FILTER (WHERE status NOT IN ('SENT','REPLIED','SKIPPED')
-                                    OR status IS NULL)                                     AS pending,
-                COUNT(*) FILTER (WHERE status = 'SENT')                                   AS sent,
-                COUNT(*) FILTER (WHERE status = 'REPLIED')                                AS replied,
-                COUNT(*) FILTER (WHERE status = 'SKIPPED')                                AS skipped,
-                COUNT(*) FILTER (WHERE score > 0 AND score_label = 'HOT'
-                                    AND status != 'SKIPPED')                              AS hot_leads,
-                COUNT(*) FILTER (WHERE score > 0 AND score_label = 'WARM'
-                                    AND status != 'SKIPPED')                              AS warm_leads,
-                COUNT(*) FILTER (WHERE score > 0 AND score_label = 'COLD'
-                                    AND status != 'SKIPPED')                              AS cold_leads
+                COUNT(*) AS total,
+                SUM(CASE WHEN status NOT IN ('SENT','REPLIED','SKIPPED')
+                          OR status IS NULL THEN 1 ELSE 0 END)           AS pending,
+                SUM(CASE WHEN status = 'SENT'    THEN 1 ELSE 0 END)      AS sent,
+                SUM(CASE WHEN status = 'REPLIED' THEN 1 ELSE 0 END)      AS replied,
+                SUM(CASE WHEN status = 'SKIPPED' THEN 1 ELSE 0 END)      AS skipped,
+                SUM(CASE WHEN score > 0 AND score_label = 'HOT'
+                          AND status != 'SKIPPED' THEN 1 ELSE 0 END)     AS hot_leads,
+                SUM(CASE WHEN score > 0 AND score_label = 'WARM'
+                          AND status != 'SKIPPED' THEN 1 ELSE 0 END)     AS warm_leads,
+                SUM(CASE WHEN score > 0 AND score_label = 'COLD'
+                          AND status != 'SKIPPED' THEN 1 ELSE 0 END)     AS cold_leads
             FROM leads
         """)
 
-        # Today's sends per channel
         today_rows = await conn.fetch("""
             SELECT channel, COUNT(*) AS cnt
             FROM campaign_log
-            WHERE success = TRUE
+            WHERE success = 1
               AND action = 'SEND'
-              AND timestamp::date = CURRENT_DATE
+              AND DATE(timestamp) = DATE('now')
             GROUP BY channel
         """)
 
-        # Unread replies
         unread = await conn.fetchval(
-            "SELECT COUNT(*) FROM reply_inbox WHERE processed = FALSE"
+            "SELECT COUNT(*) FROM reply_inbox WHERE processed = 0"
         )
 
-        # Avg deal value from settings
         avg_deal_str = await conn.fetchval(
             "SELECT value FROM app_settings WHERE key = 'avg_deal_value'"
         )
 
-    by_channel = {r["channel"]: r["cnt"] for r in today_rows}
+    by_channel  = {r["channel"]: r["cnt"] for r in today_rows}
     email_today = by_channel.get("EMAIL", 0) + by_channel.get("BOTH", 0)
     wa_today    = by_channel.get("WHATSAPP", 0) + by_channel.get("BOTH", 0)
     sent_today  = sum(by_channel.values())
     avg_deal    = float(avg_deal_str) if avg_deal_str else 500.0
-
-    total   = lead_row["total"]   or 0
-    replied = lead_row["replied"] or 0
+    total       = lead_row["total"]   or 0
+    replied     = lead_row["replied"] or 0
 
     return {
         "total_leads":         total,
@@ -437,36 +513,33 @@ async def get_dashboard_stats() -> Dict[str, Any]:
 
 
 async def get_weekly_activity() -> List[Dict[str, Any]]:
-    """7-day outreach activity using PostgreSQL generate_series."""
     async with get_db() as conn:
         rows = await conn.fetch("""
-            WITH dates AS (
-                SELECT gs::date AS day
-                FROM generate_series(
-                    CURRENT_DATE - 6,
-                    CURRENT_DATE,
-                    INTERVAL '1 day'
-                ) gs
+            WITH RECURSIVE dates(day) AS (
+                SELECT DATE('now', '-6 days')
+                UNION ALL
+                SELECT DATE(day, '+1 day') FROM dates WHERE day < DATE('now')
             )
             SELECT
                 d.day,
-                TO_CHAR(d.day, 'Dy')                                          AS day_label,
+                CASE CAST(strftime('%w', d.day) AS INTEGER)
+                    WHEN 0 THEN 'Sun' WHEN 1 THEN 'Mon' WHEN 2 THEN 'Tue'
+                    WHEN 3 THEN 'Wed' WHEN 4 THEN 'Thu' WHEN 5 THEN 'Fri'
+                    ELSE 'Sat'
+                END AS day_label,
                 COALESCE((
-                    SELECT COUNT(*) FROM leads WHERE created_at::date = d.day
-                ), 0)                                                          AS leads_created,
-                COALESCE(SUM(
-                    CASE WHEN cl.action='SEND' AND cl.success
-                              AND cl.channel IN ('EMAIL','BOTH')
-                         THEN 1 ELSE 0 END), 0)                               AS email_sent,
-                COALESCE(SUM(
-                    CASE WHEN cl.action='SEND' AND cl.success
-                              AND cl.channel IN ('WHATSAPP','BOTH')
-                         THEN 1 ELSE 0 END), 0)                               AS whatsapp_sent,
-                COALESCE(SUM(
-                    CASE WHEN cl.action='SEND' AND cl.success
-                         THEN 1 ELSE 0 END), 0)                               AS total_sent
+                    SELECT COUNT(*) FROM leads WHERE DATE(created_at) = d.day
+                ), 0) AS leads_created,
+                COALESCE(SUM(CASE WHEN cl.action='SEND' AND cl.success=1
+                                   AND cl.channel IN ('EMAIL','BOTH')
+                              THEN 1 ELSE 0 END), 0) AS email_sent,
+                COALESCE(SUM(CASE WHEN cl.action='SEND' AND cl.success=1
+                                   AND cl.channel IN ('WHATSAPP','BOTH')
+                              THEN 1 ELSE 0 END), 0) AS whatsapp_sent,
+                COALESCE(SUM(CASE WHEN cl.action='SEND' AND cl.success=1
+                              THEN 1 ELSE 0 END), 0) AS total_sent
             FROM dates d
-            LEFT JOIN campaign_log cl ON cl.timestamp::date = d.day
+            LEFT JOIN campaign_log cl ON DATE(cl.timestamp) = d.day
             GROUP BY d.day
             ORDER BY d.day ASC
         """)
@@ -496,41 +569,30 @@ async def get_leads(
     _SORTABLE    = {"business_name", "created_at", "sent_at", "status", "niche", "city", "score"}
     _DATE_FIELDS = {"created_at", "sent_at"}
 
-    if sort_by not in _SORTABLE:
-        sort_by = "created_at"
-    if date_field not in _DATE_FIELDS:
-        date_field = "created_at"
+    if sort_by not in _SORTABLE:    sort_by = "created_at"
+    if date_field not in _DATE_FIELDS: date_field = "created_at"
     order = "DESC" if sort_dir.lower() == "desc" else "ASC"
 
-    # Build WHERE incrementally; p() appends to params and returns $N
     params: List[Any] = []
 
     def p(val: Any) -> str:
         params.append(val)
-        return f"${len(params)}"
+        return "?"
 
     conditions: List[str] = []
-
-    if status:
-        conditions.append(f"status = {p(status.upper())}")
-    if channel:
-        conditions.append(f"channel = {p(channel.upper())}")
-    if niche:
-        conditions.append(f"niche ILIKE {p(f'%{niche}%')}")
-    if city:
-        conditions.append(f"city ILIKE {p(f'%{city}%')}")
+    if status:       conditions.append(f"status = {p(status.upper())}")
+    if channel:      conditions.append(f"channel = {p(channel.upper())}")
+    if niche:        conditions.append(f"niche LIKE {p(f'%{niche}%')}")
+    if city:         conditions.append(f"city LIKE {p(f'%{city}%')}")
     if search:
         term = f"%{search}%"
-        ph   = p(term)
-        conditions.append(f"(business_name ILIKE {ph} OR email ILIKE {ph} OR phone ILIKE {ph})")
-    if date_from:
-        conditions.append(f"{date_field}::date >= {p(date_from)}::date")
-    if date_to:
-        conditions.append(f"{date_field}::date <= {p(date_to)}::date")
+        conditions.append(f"(business_name LIKE {p(term)} OR email LIKE {p(term)} OR phone LIKE {p(term)})")
+    if date_from:    conditions.append(f"DATE({date_field}) >= {p(date_from)}")
+    if date_to:      conditions.append(f"DATE({date_field}) <= {p(date_to)}")
     if score_label and score_label.upper() in ("HOT", "WARM", "COLD"):
         conditions.append(f"score_label = {p(score_label.upper())}")
     if enriched_only:
-        conditions.append("website_summary IS NOT NULL AND website_summary <> ''")
+        conditions.append("website_summary IS NOT NULL AND website_summary != ''")
 
     where  = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     offset = (page - 1) * page_size
@@ -540,10 +602,8 @@ async def get_leads(
             f"SELECT COUNT(*) FROM leads {where}", *params
         ) or 0
         rows = await conn.fetch(
-            f"""SELECT * FROM leads {where}
-                ORDER BY {sort_by} {order}
-                LIMIT {p(page_size)} OFFSET {p(offset)}""",
-            *params,
+            f"SELECT * FROM leads {where} ORDER BY {sort_by} {order} LIMIT ? OFFSET ?",
+            *params, page_size, offset,
         )
 
     return {
@@ -567,21 +627,22 @@ async def find_duplicate_lead(
     conditions, params = [], []
     if email:
         params.append(email.lower())
-        conditions.append(f"LOWER(email) = ${len(params)}")
+        conditions.append("LOWER(email) = ?")
     if phone:
         params.append(phone)
-        conditions.append(f"phone = ${len(params)}")
+        conditions.append("phone = ?")
     if not conditions:
         return None
     async with get_db() as conn:
         row = await conn.fetchrow(
-            f"SELECT * FROM leads WHERE ({' OR '.join(conditions)}) LIMIT 1", *params
+            f"SELECT * FROM leads WHERE ({' OR '.join(conditions)}) LIMIT 1",
+            *params,
         )
     return dict(row) if row else None
 
 
 async def create_lead(data: Dict[str, Any]) -> int:
-    """Insert a new lead; returns its id. Raises asyncpg.UniqueViolationError on duplicate."""
+    """Insert a new lead; returns its id. Raises sqlite3.IntegrityError on duplicate."""
     clean = {
         k: _coerce(k, v)
         for k, v in data.items()
@@ -591,7 +652,7 @@ async def create_lead(data: Dict[str, Any]) -> int:
         raise ValueError("No writable fields provided")
 
     cols         = ", ".join(clean.keys())
-    placeholders = ", ".join(f"${i+1}" for i in range(len(clean)))
+    placeholders = ", ".join("?" for _ in clean)
     values       = list(clean.values())
 
     async with get_db() as conn:
@@ -610,8 +671,7 @@ async def create_lead_deduped(data: Dict[str, Any]) -> Tuple[int, bool]:
     try:
         lead_id = await create_lead(data)
         return lead_id, True
-    except asyncpg.UniqueViolationError:
-        # Race condition: another request beat us to it
+    except sqlite3.IntegrityError:
         existing = await find_duplicate_lead(data.get("email"), data.get("phone"))
         if existing:
             return existing["id"], False
@@ -626,16 +686,12 @@ async def update_lead(lead_id: int, data: Dict[str, Any]) -> bool:
     }
     if not clean:
         return False
-
-    params: List[Any] = list(clean.values())
-    set_clause = ", ".join(
-        f"{col} = ${i+1}" for i, col in enumerate(clean.keys())
-    )
+    params     = list(clean.values())
+    set_clause = ", ".join(f"{col} = ?" for col in clean.keys())
     params.append(lead_id)
-
     async with get_db() as conn:
         result = await conn.execute(
-            f"UPDATE leads SET {set_clause} WHERE id = ${len(params)}", *params
+            f"UPDATE leads SET {set_clause} WHERE id = ?", *params
         )
     return _rows_affected(result) > 0
 
@@ -647,13 +703,10 @@ async def delete_lead(lead_id: int) -> bool:
 
 
 async def delete_all_leads(status: Optional[str] = None) -> int:
-    """Bulk-delete leads. Pass status to restrict to one status bucket."""
     valid = {"PENDING", "SENT", "REPLIED", "SKIPPED"}
     async with get_db() as conn:
         if status and status.upper() in valid:
-            result = await conn.execute(
-                "DELETE FROM leads WHERE status = $1", status.upper()
-            )
+            result = await conn.execute("DELETE FROM leads WHERE status = $1", status.upper())
         else:
             result = await conn.execute("DELETE FROM leads")
     return _rows_affected(result)
@@ -679,16 +732,14 @@ async def find_lead_by_email(email: str) -> Optional[Dict[str, Any]]:
 
 
 async def find_lead_by_business_name_in_subject(subject: str) -> Optional[Dict[str, Any]]:
-    """Match a lead by checking if their business_name appears in an email subject."""
     if not subject or not subject.strip():
         return None
     async with get_db() as conn:
         row = await conn.fetchrow(
             """SELECT * FROM leads
                WHERE status IN ('SENT', 'REPLIED')
-                 AND $1 ILIKE '%' || business_name || '%'
-               ORDER BY created_at DESC
-               LIMIT 1""",
+                 AND $1 LIKE '%' || business_name || '%'
+               ORDER BY created_at DESC LIMIT 1""",
             subject,
         )
     return dict(row) if row else None
@@ -705,13 +756,27 @@ async def get_leads_without_score(limit: int = 100) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+async def get_pending_leads_for_niche_city(
+    niche: str, city: str, limit: int = 200
+) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            """SELECT * FROM leads
+               WHERE status = 'PENDING'
+                 AND niche LIKE $1
+                 AND city  LIKE $2
+               ORDER BY created_at DESC LIMIT $3""",
+            f"%{niche}%", f"%{city}%", limit,
+        )
+    return [dict(r) for r in rows]
+
+
 async def get_score_distribution() -> Dict[str, int]:
     async with get_db() as conn:
         rows = await conn.fetch(
             """SELECT score_label, COUNT(*) AS cnt
                FROM leads
-               WHERE status != 'SKIPPED'
-                 AND score IS NOT NULL AND score > 0
+               WHERE status != 'SKIPPED' AND score IS NOT NULL AND score > 0
                GROUP BY score_label"""
         )
     dist = {"HOT": 0, "WARM": 0, "COLD": 0}
@@ -725,7 +790,7 @@ async def get_score_distribution() -> Dict[str, int]:
 async def get_avg_score() -> float:
     async with get_db() as conn:
         val = await conn.fetchval(
-            "SELECT COALESCE(AVG(score::float), 0) FROM leads WHERE score > 0"
+            "SELECT COALESCE(AVG(CAST(score AS REAL)), 0) FROM leads WHERE score > 0"
         )
     return round(float(val), 1) if val else 0.0
 
@@ -737,7 +802,7 @@ async def get_leads_due_for_followup(days: int = 3) -> List[Dict[str, Any]]:
                WHERE status = 'SENT'
                  AND followup_sent_at IS NULL
                  AND sent_at IS NOT NULL
-                 AND sent_at::date <= CURRENT_DATE - ($1 * INTERVAL '1 day')
+                 AND DATE(sent_at) <= DATE('now', '-' || $1 || ' days')
                LIMIT 50""",
             days,
         )
@@ -747,35 +812,26 @@ async def get_leads_due_for_followup(days: int = 3) -> List[Dict[str, Any]]:
 async def get_leads_due_for_stage(stage: int, limit: int = 50) -> List[Dict[str, Any]]:
     _DAYS = {1: 3, 2: 7, 3: 7}
     days  = _DAYS.get(stage, 3)
-
     if stage == 1:
-        sql = """
-            SELECT * FROM leads
-            WHERE status NOT IN ('REPLIED','SKIPPED')
-              AND status = 'SENT'
-              AND follow_up_1_sent_at IS NULL
-              AND sent_at IS NOT NULL
-              AND sent_at::date <= CURRENT_DATE - ($1 * INTERVAL '1 day')
-            LIMIT $2"""
+        sql = """SELECT * FROM leads
+                 WHERE status NOT IN ('REPLIED','SKIPPED') AND status = 'SENT'
+                   AND follow_up_1_sent_at IS NULL AND sent_at IS NOT NULL
+                   AND DATE(sent_at) <= DATE('now', '-' || ? || ' days')
+                 LIMIT ?"""
     elif stage == 2:
-        sql = """
-            SELECT * FROM leads
-            WHERE status NOT IN ('REPLIED','SKIPPED')
-              AND follow_up_1_sent_at IS NOT NULL
-              AND follow_up_2_sent_at IS NULL
-              AND follow_up_1_sent_at::date <= CURRENT_DATE - ($1 * INTERVAL '1 day')
-            LIMIT $2"""
+        sql = """SELECT * FROM leads
+                 WHERE status NOT IN ('REPLIED','SKIPPED')
+                   AND follow_up_1_sent_at IS NOT NULL AND follow_up_2_sent_at IS NULL
+                   AND DATE(follow_up_1_sent_at) <= DATE('now', '-' || ? || ' days')
+                 LIMIT ?"""
     elif stage == 3:
-        sql = """
-            SELECT * FROM leads
-            WHERE status NOT IN ('REPLIED','SKIPPED')
-              AND follow_up_2_sent_at IS NOT NULL
-              AND follow_up_3_sent_at IS NULL
-              AND follow_up_2_sent_at::date <= CURRENT_DATE - ($1 * INTERVAL '1 day')
-            LIMIT $2"""
+        sql = """SELECT * FROM leads
+                 WHERE status NOT IN ('REPLIED','SKIPPED')
+                   AND follow_up_2_sent_at IS NOT NULL AND follow_up_3_sent_at IS NULL
+                   AND DATE(follow_up_2_sent_at) <= DATE('now', '-' || ? || ' days')
+                 LIMIT ?"""
     else:
         return []
-
     async with get_db() as conn:
         rows = await conn.fetch(sql, days, limit)
     return [dict(r) for r in rows]
@@ -796,7 +852,7 @@ async def log_campaign_action(
         await conn.execute(
             """INSERT INTO campaign_log (lead_id, channel, action, success, error_msg)
                VALUES ($1, $2, $3, $4, $5)""",
-            lead_id, channel, action, bool(success), error_msg,
+            lead_id, channel, action, 1 if success else 0, error_msg,
         )
 
 
@@ -805,14 +861,10 @@ async def get_recent_logs(limit: int = 20) -> List[Dict[str, Any]]:
         rows = await conn.fetch("""
             SELECT
                 cl.id,
-                TO_CHAR(cl.timestamp, 'YYYY-MM-DD"T"HH24:MI:SS') AS timestamp,
-                cl.channel,
-                cl.action,
-                cl.success,
-                cl.error_msg,
+                strftime('%Y-%m-%dT%H:%M:%S', cl.timestamp) AS timestamp,
+                cl.channel, cl.action, cl.success, cl.error_msg,
                 COALESCE(l.business_name, 'Unknown') AS business_name,
-                l.niche,
-                l.city
+                l.niche, l.city
             FROM campaign_log cl
             LEFT JOIN leads l ON l.id = cl.lead_id
             ORDER BY cl.timestamp DESC
@@ -822,7 +874,7 @@ async def get_recent_logs(limit: int = 20) -> List[Dict[str, Any]]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Campaign runs (legacy — used by existing campaign router)
+# Campaign runs
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def create_campaign_run(
@@ -838,23 +890,36 @@ async def create_campaign_run(
     return run_id
 
 
+_CAMPAIGN_RUN_TS_COLS = frozenset({"finished_at"})
+
+
 async def update_campaign_run(run_id: int, data: Dict[str, Any]) -> bool:
     if not data:
         return False
-    params: List[Any] = list(data.values())
-    set_clause = ", ".join(
-        f"{col} = ${i+1}" for i, col in enumerate(data.keys())
-    )
+    coerced: Dict[str, Any] = {}
+    for col, val in data.items():
+        if col in _CAMPAIGN_RUN_TS_COLS:
+            if isinstance(val, str):
+                try:
+                    val = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                except ValueError:
+                    val = None
+            if isinstance(val, datetime):
+                if val.tzinfo is not None:
+                    val = val.replace(tzinfo=None)
+                val = val.isoformat()
+        coerced[col] = val
+    params     = list(coerced.values())
+    set_clause = ", ".join(f"{col} = ?" for col in coerced.keys())
     params.append(run_id)
     async with get_db() as conn:
         result = await conn.execute(
-            f"UPDATE campaign_runs SET {set_clause} WHERE id = ${len(params)}", *params
+            f"UPDATE campaign_runs SET {set_clause} WHERE id = ?", *params
         )
     return _rows_affected(result) > 0
 
 
 async def update_campaign_run_progress(run_id: int, leads_found: int, leads_sent: int) -> None:
-    """Lightweight in-progress update — called after each lead found/sent."""
     async with get_db() as conn:
         await conn.execute(
             "UPDATE campaign_runs SET leads_found=$1, leads_sent=$2 WHERE id=$3",
@@ -865,11 +930,10 @@ async def update_campaign_run_progress(run_id: int, leads_found: int, leads_sent
 async def get_campaign_history(limit: int = 10) -> List[Dict[str, Any]]:
     async with get_db() as conn:
         rows = await conn.fetch("""
-            SELECT
-                id, niche, city, channel, daily_cap, leads_found, leads_sent,
-                TO_CHAR(started_at,  'YYYY-MM-DD"T"HH24:MI:SS') AS started_at,
-                TO_CHAR(finished_at, 'YYYY-MM-DD"T"HH24:MI:SS') AS finished_at,
-                status
+            SELECT id, niche, city, channel, daily_cap, leads_found, leads_sent,
+                   strftime('%Y-%m-%dT%H:%M:%S', started_at)  AS started_at,
+                   strftime('%Y-%m-%dT%H:%M:%S', finished_at) AS finished_at,
+                   status
             FROM campaign_runs
             ORDER BY started_at DESC
             LIMIT $1
@@ -888,9 +952,9 @@ _INBOX_WRITABLE = frozenset({
 
 
 async def save_reply(data: Dict[str, Any]) -> int:
-    clean = {k: v for k, v in data.items() if k in _INBOX_WRITABLE and v is not None}
+    clean        = {k: v for k, v in data.items() if k in _INBOX_WRITABLE and v is not None}
     cols         = ", ".join(clean.keys())
-    placeholders = ", ".join(f"${i+1}" for i in range(len(clean)))
+    placeholders = ", ".join("?" for _ in clean)
     async with get_db() as conn:
         entry_id = await conn.fetchval(
             f"INSERT INTO reply_inbox ({cols}) VALUES ({placeholders}) RETURNING id",
@@ -919,13 +983,13 @@ async def get_inbox(
 
     def p(val: Any) -> str:
         params.append(val)
-        return f"${len(params)}"
+        return "?"
 
     conditions: List[str] = []
     if intent:
         conditions.append(f"ri.intent = {p(intent.upper())}")
     if processed is not None:
-        conditions.append(f"ri.processed = {p(processed)}")
+        conditions.append(f"ri.processed = {p(1 if processed else 0)}")
 
     where  = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     offset = (page - 1) * page_size
@@ -935,17 +999,15 @@ async def get_inbox(
             f"SELECT COUNT(*) FROM reply_inbox ri {where}", *params
         ) or 0
         rows = await conn.fetch(
-            f"""SELECT ri.*,
-                       COALESCE(l.business_name, '') AS business_name,
+            f"""SELECT ri.*, COALESCE(l.business_name, '') AS business_name,
                        l.niche, l.city, l.status AS lead_status
                 FROM reply_inbox ri
                 LEFT JOIN leads l ON l.id = ri.lead_id
                 {where}
                 ORDER BY ri.created_at DESC
-                LIMIT {p(page_size)} OFFSET {p(offset)}""",
-            *params,
+                LIMIT ? OFFSET ?""",
+            *params, page_size, offset,
         )
-
     return {
         "items":       [dict(r) for r in rows],
         "total":       total,
@@ -959,20 +1021,18 @@ async def update_inbox_entry(entry_id: int, data: Dict[str, Any]) -> bool:
     clean = {k: v for k, v in data.items() if k in _INBOX_WRITABLE and v is not None}
     if not clean:
         return False
-    params: List[Any] = list(clean.values())
-    set_clause = ", ".join(
-        f"{col} = ${i+1}" for i, col in enumerate(clean.keys())
-    )
+    params     = list(clean.values())
+    set_clause = ", ".join(f"{col} = ?" for col in clean.keys())
     params.append(entry_id)
     async with get_db() as conn:
         result = await conn.execute(
-            f"UPDATE reply_inbox SET {set_clause} WHERE id = ${len(params)}", *params
+            f"UPDATE reply_inbox SET {set_clause} WHERE id = ?", *params
         )
     return _rows_affected(result) > 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Enriched data (new table)
+# Enriched data
 # ─────────────────────────────────────────────────────────────────────────────
 
 _ENRICHED_WRITABLE = frozenset({
@@ -985,18 +1045,18 @@ _ENRICHED_WRITABLE = frozenset({
 
 
 async def upsert_enriched_data(lead_id: int, data: Dict[str, Any]) -> int:
-    """Insert or update enriched_data for a lead. Returns row id."""
-    clean = {k: v for k, v in data.items() if k in _ENRICHED_WRITABLE and v is not None}
+    clean = {
+        k: (json.dumps(v) if isinstance(v, list) else v)
+        for k, v in data.items()
+        if k in _ENRICHED_WRITABLE and v is not None
+    }
     cols         = ", ".join(["lead_id"] + list(clean.keys()))
-    placeholders = ", ".join(f"${i+1}" for i in range(len(clean) + 1))
-    update_set   = ", ".join(
-        f"{col} = EXCLUDED.{col}" for col in clean.keys()
-    ) + ", enriched_at = NOW()"
-
+    placeholders = ", ".join("?" for _ in range(len(clean) + 1))
+    update_set   = ", ".join(f"{c} = excluded.{c}" for c in clean.keys())
+    update_set  += ", enriched_at = CURRENT_TIMESTAMP"
     async with get_db() as conn:
         row_id = await conn.fetchval(
-            f"""INSERT INTO enriched_data ({cols})
-                VALUES ({placeholders})
+            f"""INSERT INTO enriched_data ({cols}) VALUES ({placeholders})
                 ON CONFLICT (lead_id) DO UPDATE SET {update_set}
                 RETURNING id""",
             lead_id, *clean.values(),
@@ -1013,7 +1073,7 @@ async def get_enriched_data(lead_id: int) -> Optional[Dict[str, Any]]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Scores (new table)
+# Scores
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SCORE_WRITABLE = frozenset({
@@ -1024,18 +1084,18 @@ _SCORE_WRITABLE = frozenset({
 
 
 async def upsert_score(lead_id: int, data: Dict[str, Any]) -> int:
-    """Insert or update the detailed score for a lead. Returns row id."""
-    clean      = {k: v for k, v in data.items() if k in _SCORE_WRITABLE and v is not None}
-    cols       = ", ".join(["lead_id"] + list(clean.keys()))
-    placeholders = ", ".join(f"${i+1}" for i in range(len(clean) + 1))
-    update_set = ", ".join(
-        f"{col} = EXCLUDED.{col}" for col in clean.keys()
-    ) + ", scored_at = NOW()"
-
+    clean = {
+        k: (json.dumps(v) if isinstance(v, list) else v)
+        for k, v in data.items()
+        if k in _SCORE_WRITABLE and v is not None
+    }
+    cols         = ", ".join(["lead_id"] + list(clean.keys()))
+    placeholders = ", ".join("?" for _ in range(len(clean) + 1))
+    update_set   = ", ".join(f"{c} = excluded.{c}" for c in clean.keys())
+    update_set  += ", scored_at = CURRENT_TIMESTAMP"
     async with get_db() as conn:
         row_id = await conn.fetchval(
-            f"""INSERT INTO scores ({cols})
-                VALUES ({placeholders})
+            f"""INSERT INTO scores ({cols}) VALUES ({placeholders})
                 ON CONFLICT (lead_id) DO UPDATE SET {update_set}
                 RETURNING id""",
             lead_id, *clean.values(),
@@ -1045,14 +1105,12 @@ async def upsert_score(lead_id: int, data: Dict[str, Any]) -> int:
 
 async def get_score(lead_id: int) -> Optional[Dict[str, Any]]:
     async with get_db() as conn:
-        row = await conn.fetchrow(
-            "SELECT * FROM scores WHERE lead_id = $1", lead_id
-        )
+        row = await conn.fetchrow("SELECT * FROM scores WHERE lead_id = $1", lead_id)
     return dict(row) if row else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Messages (new table)
+# Messages
 # ─────────────────────────────────────────────────────────────────────────────
 
 _MSG_WRITABLE = frozenset({
@@ -1062,9 +1120,9 @@ _MSG_WRITABLE = frozenset({
 
 
 async def create_message(data: Dict[str, Any]) -> int:
-    clean = {k: v for k, v in data.items() if k in _MSG_WRITABLE and v is not None}
+    clean        = {k: v for k, v in data.items() if k in _MSG_WRITABLE and v is not None}
     cols         = ", ".join(clean.keys())
-    placeholders = ", ".join(f"${i+1}" for i in range(len(clean)))
+    placeholders = ", ".join("?" for _ in clean)
     async with get_db() as conn:
         msg_id = await conn.fetchval(
             f"INSERT INTO messages ({cols}) VALUES ({placeholders}) RETURNING id",
@@ -1077,12 +1135,12 @@ async def update_message(message_id: int, data: Dict[str, Any]) -> bool:
     clean = {k: v for k, v in data.items() if k in _MSG_WRITABLE - {"lead_id"} and v is not None}
     if not clean:
         return False
-    params: List[Any] = list(clean.values())
-    set_clause = ", ".join(f"{col} = ${i+1}" for i, col in enumerate(clean.keys()))
+    params     = list(clean.values())
+    set_clause = ", ".join(f"{col} = ?" for col in clean.keys())
     params.append(message_id)
     async with get_db() as conn:
         result = await conn.execute(
-            f"UPDATE messages SET {set_clause} WHERE id = ${len(params)}", *params
+            f"UPDATE messages SET {set_clause} WHERE id = ?", *params
         )
     return _rows_affected(result) > 0
 
@@ -1097,23 +1155,24 @@ async def get_messages(lead_id: int) -> List[Dict[str, Any]]:
 
 
 async def delete_lead_messages(lead_id: int) -> int:
-    """Delete all messages for a lead. Returns number of rows deleted."""
     async with get_db() as conn:
-        result = await conn.execute(
-            "DELETE FROM messages WHERE lead_id = $1", lead_id
-        )
+        result = await conn.execute("DELETE FROM messages WHERE lead_id = $1", lead_id)
     return _rows_affected(result)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Replies (new table)
+# Replies
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def create_reply(data: Dict[str, Any]) -> int:
-    _writable = frozenset({"lead_id", "message_id", "reply_text", "detected_intent", "raw_email_data"})
-    clean = {k: v for k, v in data.items() if k in _writable and v is not None}
+    _writable    = frozenset({"lead_id", "message_id", "reply_text", "detected_intent", "raw_email_data"})
+    clean        = {
+        k: (json.dumps(v) if isinstance(v, dict) else v)
+        for k, v in data.items()
+        if k in _writable and v is not None
+    }
     cols         = ", ".join(clean.keys())
-    placeholders = ", ".join(f"${i+1}" for i in range(len(clean)))
+    placeholders = ", ".join("?" for _ in clean)
     async with get_db() as conn:
         reply_id = await conn.fetchval(
             f"INSERT INTO replies ({cols}) VALUES ({placeholders}) RETURNING id",
@@ -1132,11 +1191,10 @@ async def get_replies(lead_id: int) -> List[Dict[str, Any]]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Follow-up sequence engine helpers (Upgrade 6)
+# Follow-up helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def count_messages_for_lead(lead_id: int) -> int:
-    """Number of message records that exist for this lead (any status / step)."""
     async with get_db() as conn:
         return await conn.fetchval(
             "SELECT COUNT(*) FROM messages WHERE lead_id = $1", lead_id
@@ -1144,28 +1202,20 @@ async def count_messages_for_lead(lead_id: int) -> int:
 
 
 async def get_due_followup_messages(limit: int = 100) -> List[Dict[str, Any]]:
-    """
-    Return follow-up messages that are past their scheduled_for time and PENDING.
-    Joined with leads so the engine has all contact info and current lead status.
-    """
     async with get_db() as conn:
         rows = await conn.fetch("""
-            SELECT
-                m.id, m.lead_id, m.sequence_step,
-                m.subject          AS msg_subject,
-                m.body             AS msg_body,
-                TO_CHAR(m.scheduled_for, 'YYYY-MM-DD"T"HH24:MI:SS') AS scheduled_for,
-                l.business_name, l.email, l.phone, l.channel,
-                l.status           AS lead_status,
-                l.niche,           l.city,
-                l.ai_email_subject,
-                l.ai_followup_msg,
-                l.ai_follow_up_1,  l.ai_follow_up_2
+            SELECT m.id, m.lead_id, m.sequence_step,
+                   m.subject AS msg_subject, m.body AS msg_body,
+                   strftime('%Y-%m-%dT%H:%M:%S', m.scheduled_for) AS scheduled_for,
+                   l.business_name, l.email, l.phone, l.channel,
+                   l.status AS lead_status, l.niche, l.city,
+                   l.ai_email_subject, l.ai_followup_msg,
+                   l.ai_follow_up_1, l.ai_follow_up_2
             FROM messages m
             JOIN leads l ON l.id = m.lead_id
             WHERE m.status = 'PENDING'
               AND m.sequence_step IN (2, 3)
-              AND m.scheduled_for <= NOW()
+              AND m.scheduled_for <= CURRENT_TIMESTAMP
             ORDER BY m.scheduled_for ASC
             LIMIT $1
         """, limit)
@@ -1173,52 +1223,40 @@ async def get_due_followup_messages(limit: int = 100) -> List[Dict[str, Any]]:
 
 
 async def cancel_pending_followups(lead_id: int) -> int:
-    """Cancel all PENDING follow-up messages for a lead (e.g., lead replied)."""
     async with get_db() as conn:
         result = await conn.execute(
             """UPDATE messages SET status = 'CANCELLED'
-               WHERE lead_id = $1 AND status = 'PENDING'
-                 AND sequence_step IN (2, 3)""",
+               WHERE lead_id = $1 AND status = 'PENDING' AND sequence_step IN (2, 3)""",
             lead_id,
         )
     return _rows_affected(result)
 
 
 async def count_pending_followups() -> int:
-    """Total PENDING follow-up messages across all leads."""
     async with get_db() as conn:
         return await conn.fetchval(
-            """SELECT COUNT(*) FROM messages
-               WHERE status = 'PENDING' AND sequence_step IN (2, 3)"""
+            "SELECT COUNT(*) FROM messages WHERE status = 'PENDING' AND sequence_step IN (2, 3)"
         ) or 0
 
 
-async def get_followup_history(
-    page:      int = 1,
-    page_size: int = 50,
-) -> Dict[str, Any]:
-    """Paginated list of sent follow-up messages with lead info."""
+async def get_followup_history(page: int = 1, page_size: int = 50) -> Dict[str, Any]:
     offset = (page - 1) * page_size
     async with get_db() as conn:
         total = await conn.fetchval(
-            """SELECT COUNT(*) FROM messages
-               WHERE status = 'SENT' AND sequence_step IN (2, 3)"""
+            "SELECT COUNT(*) FROM messages WHERE status = 'SENT' AND sequence_step IN (2, 3)"
         ) or 0
         rows = await conn.fetch("""
-            SELECT
-                m.id, m.lead_id, m.sequence_step, m.status,
-                TO_CHAR(m.sent_at,       'YYYY-MM-DD"T"HH24:MI:SS') AS sent_at,
-                TO_CHAR(m.scheduled_for, 'YYYY-MM-DD"T"HH24:MI:SS') AS scheduled_for,
-                m.subject,
-                LEFT(m.body, 200)   AS body_snippet,
-                l.business_name, l.email, l.phone, l.channel,
-                l.status            AS lead_status,
-                l.niche, l.city
+            SELECT m.id, m.lead_id, m.sequence_step, m.status,
+                   strftime('%Y-%m-%dT%H:%M:%S', m.sent_at)       AS sent_at,
+                   strftime('%Y-%m-%dT%H:%M:%S', m.scheduled_for) AS scheduled_for,
+                   m.subject, SUBSTR(m.body, 1, 200) AS body_snippet,
+                   l.business_name, l.email, l.phone, l.channel,
+                   l.status AS lead_status, l.niche, l.city
             FROM messages m
             JOIN leads l ON l.id = m.lead_id
             WHERE m.status = 'SENT' AND m.sequence_step IN (2, 3)
             ORDER BY m.sent_at DESC
-            LIMIT $1 OFFSET $2
+            LIMIT ? OFFSET ?
         """, page_size, offset)
     return {
         "items":       [dict(r) for r in rows],
@@ -1230,22 +1268,15 @@ async def get_followup_history(
 
 
 async def get_recent_send_info(lead_id: int, hours: int = 24) -> Dict[str, Any]:
-    """
-    Check whether any message was sent to this lead within the last N hours,
-    and return the body of the most-recently-sent message for body-diff checking.
-    Used by followup_engine to detect and avoid duplicate sends.
-    """
     async with get_db() as conn:
         recent_count = await conn.fetchval(
             """SELECT COUNT(*) FROM messages
                WHERE lead_id = $1 AND status = 'SENT'
-                 AND sent_at > NOW() - ($2 * INTERVAL '1 hour')""",
+                 AND sent_at > datetime('now', '-' || $2 || ' hours')""",
             lead_id, hours,
         )
         last_row = await conn.fetchrow(
-            """SELECT body FROM messages
-               WHERE lead_id = $1 AND status = 'SENT'
-               ORDER BY sent_at DESC LIMIT 1""",
+            "SELECT body FROM messages WHERE lead_id = $1 AND status = 'SENT' ORDER BY sent_at DESC LIMIT 1",
             lead_id,
         )
     return {
@@ -1255,11 +1286,9 @@ async def get_recent_send_info(lead_id: int, hours: int = 24) -> Dict[str, Any]:
 
 
 async def get_reply_stats() -> Dict[str, Any]:
-    """Aggregate reply statistics for reply_detector.get_reply_summary()."""
     async with get_db() as conn:
-        intent_rows = await conn.fetch(
-            """SELECT detected_intent, COUNT(*) AS cnt
-               FROM replies GROUP BY detected_intent"""
+        intent_rows   = await conn.fetch(
+            "SELECT detected_intent, COUNT(*) AS cnt FROM replies GROUP BY detected_intent"
         )
         total_replies = await conn.fetchval("SELECT COUNT(*) FROM replies") or 0
         total_sent    = await conn.fetchval(
@@ -1268,16 +1297,15 @@ async def get_reply_stats() -> Dict[str, Any]:
         total_replied = await conn.fetchval(
             "SELECT COUNT(*) FROM leads WHERE status = 'REPLIED'"
         ) or 0
-        followup_rows = await conn.fetch(
-            """SELECT l.id, l.business_name, l.email, l.phone, l.niche, l.city,
-                      r.detected_intent,
-                      TO_CHAR(r.received_at, 'YYYY-MM-DD"T"HH24:MI:SS') AS received_at
-               FROM leads l
-               JOIN replies r ON r.lead_id = l.id
-               WHERE l.status = 'REPLIED'
-               ORDER BY r.received_at DESC
-               LIMIT 50"""
-        )
+        followup_rows = await conn.fetch("""
+            SELECT l.id, l.business_name, l.email, l.phone, l.niche, l.city,
+                   r.detected_intent,
+                   strftime('%Y-%m-%dT%H:%M:%S', r.received_at) AS received_at
+            FROM leads l
+            JOIN replies r ON r.lead_id = l.id
+            WHERE l.status = 'REPLIED'
+            ORDER BY r.received_at DESC LIMIT 50
+        """)
     return {
         "by_intent":          [dict(r) for r in intent_rows],
         "total_replies":      total_replies,
@@ -1288,7 +1316,7 @@ async def get_reply_stats() -> Dict[str, Any]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Campaigns (new table)
+# Campaigns table
 # ─────────────────────────────────────────────────────────────────────────────
 
 _CAMPAIGN_WRITABLE = frozenset({
@@ -1298,9 +1326,13 @@ _CAMPAIGN_WRITABLE = frozenset({
 
 
 async def create_campaign(data: Dict[str, Any]) -> int:
-    clean = {k: v for k, v in data.items() if k in _CAMPAIGN_WRITABLE and v is not None}
+    clean = {
+        k: (json.dumps(v) if isinstance(v, list) else v)
+        for k, v in data.items()
+        if k in _CAMPAIGN_WRITABLE and v is not None
+    }
     cols         = ", ".join(clean.keys())
-    placeholders = ", ".join(f"${i+1}" for i in range(len(clean)))
+    placeholders = ", ".join("?" for _ in clean)
     async with get_db() as conn:
         campaign_id = await conn.fetchval(
             f"INSERT INTO campaigns ({cols}) VALUES ({placeholders}) RETURNING id",
@@ -1313,21 +1345,19 @@ async def update_campaign(campaign_id: int, data: Dict[str, Any]) -> bool:
     clean = {k: v for k, v in data.items() if k in _CAMPAIGN_WRITABLE and v is not None}
     if not clean:
         return False
-    params: List[Any] = list(clean.values())
-    set_clause = ", ".join(f"{col} = ${i+1}" for i, col in enumerate(clean.keys()))
+    params     = list(clean.values())
+    set_clause = ", ".join(f"{col} = ?" for col in clean.keys())
     params.append(campaign_id)
     async with get_db() as conn:
         result = await conn.execute(
-            f"UPDATE campaigns SET {set_clause} WHERE id = ${len(params)}", *params
+            f"UPDATE campaigns SET {set_clause} WHERE id = ?", *params
         )
     return _rows_affected(result) > 0
 
 
 async def get_campaign(campaign_id: int) -> Optional[Dict[str, Any]]:
     async with get_db() as conn:
-        row = await conn.fetchrow(
-            "SELECT * FROM campaigns WHERE id = $1", campaign_id
-        )
+        row = await conn.fetchrow("SELECT * FROM campaigns WHERE id = $1", campaign_id)
     return dict(row) if row else None
 
 
@@ -1343,9 +1373,8 @@ async def list_campaigns(limit: int = 20) -> List[Dict[str, Any]]:
 # Internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _rows_affected(pg_status: str) -> int:
-    """Parse the integer row count from asyncpg execute() status string, e.g. 'UPDATE 3'."""
+def _rows_affected(status_str: str) -> int:
     try:
-        return int(pg_status.split()[-1])
+        return int(str(status_str).split()[-1])
     except (IndexError, ValueError):
         return 0

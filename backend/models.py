@@ -29,7 +29,11 @@ class LeadSource(str, Enum):
     YELP          = "YELP"
     YELLOW_PAGES  = "YELLOW_PAGES"
     GOOGLE_SEARCH = "GOOGLE_SEARCH"
-    BING_MAPS     = "BING_MAPS"
+    BING_SEARCH   = "BING_SEARCH"
+    HOTFROG       = "HOTFROG"
+    FOURSQUARE    = "FOURSQUARE"
+    TOP_LIST      = "TOP_LIST"
+    GENERIC_DIR   = "GENERIC_DIR"
 
 
 class ScoreLabel(str, Enum):

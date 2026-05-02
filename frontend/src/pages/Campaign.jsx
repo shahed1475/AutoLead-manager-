@@ -5,7 +5,7 @@ import {
   Radio, Activity, Trash2, MapPin, Bot, Mail,
   MessageSquare, AlertTriangle, Filter,
   TrendingUp, Users, Clock, Globe, Monitor,
-  Flame, Send, BarChart3, Zap,
+  Flame, Send, BarChart3, Zap, FlaskConical, Database,
 } from 'lucide-react'
 import { campaignApi, engineApi, statsApi, enrichApi } from '../api/client'
 import toast from 'react-hot-toast'
@@ -19,11 +19,30 @@ const CHANNELS = [
   { id: 'BOTH',     label: 'Both',     emoji: '📨' },
 ]
 
-const SOURCE_LIST = [
-  { id: 'GOOGLE_MAPS',   label: 'Google Maps',   emoji: '🗺️', estimate: 60, hasCap: true  },
-  { id: 'GOOGLE_SEARCH', label: 'Google Search',  emoji: '🔍', estimate: 40, hasCap: true  },
-  { id: 'YELLOW_PAGES',  label: 'Yellow Pages',   emoji: '📒', estimate: 20, hasCap: false },
+const SOURCE_GROUPS = [
+  {
+    label: 'Browser (Selenium)',
+    sources: [
+      { id: 'GOOGLE_MAPS',  label: 'Google Maps',  emoji: '🗺️' },
+    ],
+  },
+  {
+    label: 'HTTP Scrapers',
+    sources: [
+      { id: 'GOOGLE_SEARCH', label: 'Google Search', emoji: '🔍' },
+      { id: 'BING_SEARCH',   label: 'Bing Search',   emoji: '🔎' },
+      { id: 'YELP',          label: 'Yelp',           emoji: '⭐' },
+      { id: 'YELLOW_PAGES',  label: 'Yellow Pages',  emoji: '📒' },
+      { id: 'HOTFROG',       label: 'Hotfrog',        emoji: '🔥' },
+      { id: 'FOURSQUARE',    label: 'Foursquare',     emoji: '📍' },
+      { id: 'TOP_LIST',      label: 'Top Lists',      emoji: '📰' },
+      { id: 'GENERIC_DIR',   label: 'Directories',    emoji: '📂' },
+    ],
+  },
 ]
+
+// Flat list for helpers that need it
+const SOURCE_LIST = SOURCE_GROUPS.flatMap(g => g.sources)
 
 const PIPELINE_STEPS = [
   { n: 1, label: 'Scraping',  icon: '🕷️' },
@@ -306,18 +325,17 @@ export default function Campaign() {
   const qc = useQueryClient()
 
   // ── Form state ────────────────────────────────────────────────────────────
-  const [niche,           setNiche]           = useState('')
-  const [city,            setCity]            = useState('')
-  const [country,         setCountry]         = useState('')
-  const [channel,         setChannel]         = useState('EMAIL')
-  const [sources,         setSources]         = useState(['GOOGLE_MAPS', 'GOOGLE_SEARCH'])
-  const [hotWarmOnly,     setHotWarmOnly]     = useState(true)
-  const [googleMapsCap,   setGoogleMapsCap]   = useState(20)
-  const [googleSearchCap, setGoogleSearchCap] = useState(15)
-  const [headless,        setHeadless]        = useState(false)
-  const [logFilter,       setLogFilter]       = useState('all')
-  const [logs,            setLogs]            = useState([])
-  const [sseLive,         setSseLive]         = useState(false)
+  const [niche,       setNiche]       = useState('')
+  const [city,        setCity]        = useState('')
+  const [country,     setCountry]     = useState('')
+  const [channel,     setChannel]     = useState('EMAIL')
+  const [sources,     setSources]     = useState(['GOOGLE_MAPS', 'GOOGLE_SEARCH'])
+  const [hotWarmOnly, setHotWarmOnly] = useState(true)
+  const [dailyCap,    setDailyCap]    = useState(30)
+  const [headless,    setHeadless]    = useState(false)
+  const [logFilter,   setLogFilter]   = useState('all')
+  const [logs,        setLogs]        = useState([])
+  const [sseLive,     setSseLive]     = useState(false)
 
   const logEndRef = useRef(null)
   const esRef     = useRef(null)
@@ -409,26 +427,19 @@ export default function Campaign() {
 
   // ── Derived state ─────────────────────────────────────────────────────────
 
-  const estimatedLeads = SOURCE_LIST
-    .filter(s => sources.includes(s.id))
-    .reduce((sum, s) => sum + s.estimate, 0)
-
-  const totalCap = (
-    (sources.includes('GOOGLE_MAPS')   ? googleMapsCap   : 0) +
-    (sources.includes('GOOGLE_SEARCH') ? googleSearchCap : 0) +
-    (sources.includes('YELLOW_PAGES')  ? 15              : 0)
-  )
-
-  const hotWarmCount = (stats?.hot_leads ?? 0) + (stats?.warm_leads ?? 0)
-  const leadsFound   = engine?.campaign_leads_found ?? 0
-  const leadsSent    = engine?.campaign_leads_sent  ?? 0
+  const hotWarmCount   = (stats?.hot_leads ?? 0) + (stats?.warm_leads ?? 0)
+  const leadsFound     = engine?.campaign_leads_found ?? 0
+  const leadsSent      = engine?.campaign_leads_sent  ?? 0
+  const needsBrowser   = sources.includes('GOOGLE_MAPS')
+  const hasRunHistory  = (history?.length ?? 0) > 0
+  const dbEmpty        = !isRunning && hasRunHistory && (stats?.total_leads ?? 0) === 0
 
   const canStart = (
     niche.trim() !== '' &&
     city.trim()  !== '' &&
     !isRunning           &&
     sources.length > 0   &&
-    totalCap > 0
+    dailyCap > 0
   )
 
   const logCounts = logs.reduce((acc, l) => {
@@ -443,14 +454,12 @@ export default function Campaign() {
     mutationFn: () => campaignApi.start({
       niche,
       city,
-      country:           country || undefined,
+      country:       country || undefined,
       channel,
-      daily_cap:         totalCap,
+      daily_cap:     dailyCap,
       sources,
       headless,
-      hot_warm_only:     hotWarmOnly,
-      google_maps_cap:   sources.includes('GOOGLE_MAPS')   ? googleMapsCap   : undefined,
-      google_search_cap: sources.includes('GOOGLE_SEARCH') ? googleSearchCap : undefined,
+      hot_warm_only: hotWarmOnly,
     }),
     onSuccess: (data) => {
       refetchEngine()
@@ -464,6 +473,19 @@ export default function Campaign() {
     mutationFn: () => campaignApi.stop(),
     onSuccess: () => { refetchEngine(); toast.success('Stop signal sent') },
     onError: (e) => toast.error(e.message),
+  })
+
+  const testMut = useMutation({
+    mutationFn: () => campaignApi.testPipeline(),
+    onSuccess: (data) => {
+      if (data.result?.ok) {
+        toast.success(`DB OK — ${data.result.saved}/5 test leads saved (${data.result.total_leads} total in DB)`)
+      } else {
+        const errs = data.result?.errors?.join(', ') || 'unknown error'
+        toast.error(`DB write failed: ${errs}`)
+      }
+    },
+    onError: (e) => toast.error(`Test failed: ${e.message}`),
   })
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -488,6 +510,24 @@ export default function Campaign() {
           city={engine?.campaign_city}
         />
       </div>
+
+      {/* ── DB empty warning (shows after a run with 0 leads in DB) ───── */}
+      {dbEmpty && (
+        <div className="flex items-start gap-3 px-4 py-3 rounded-xl border
+                        border-amber-500/30 bg-amber-500/8 text-amber-300 shrink-0">
+          <Database size={15} className="shrink-0 mt-0.5 text-amber-400" />
+          <div className="min-w-0">
+            <p className="text-xs font-semibold">
+              Campaigns ran but 0 leads are in the database
+            </p>
+            <p className="text-[11px] text-amber-400/70 mt-0.5">
+              This usually means concurrent SQLite write failures. Click{' '}
+              <strong>Test DB Pipeline</strong> below to diagnose. If the test passes,
+              restart the backend to apply the busy_timeout fix.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ── Main layout ──────────────────────────────────────────────────── */}
       <div className="flex gap-5 flex-1 min-h-0">
@@ -559,86 +599,72 @@ export default function Campaign() {
             <div>
               <label className="label flex items-center gap-1.5">
                 <Zap size={10} /> Lead Sources
+                <span className="ml-auto text-[10px] text-slate-600 font-normal normal-case tracking-normal">
+                  {sources.length} selected
+                </span>
               </label>
-              <div className="space-y-2">
-                {SOURCE_LIST.map(({ id, label, emoji }) => {
-                  const checked = sources.includes(id)
-                  const onlyOne = checked && sources.length === 1
-                  return (
-                    <label
-                      key={id}
-                      className={clsx(
-                        'flex items-center gap-2.5 cursor-pointer group rounded-lg px-2.5 py-1.5 transition-colors',
-                        'border border-transparent',
-                        checked
-                          ? 'bg-brand-500/5 border-brand-500/20'
-                          : 'hover:bg-slate-800/40',
-                        (isRunning || onlyOne) && 'opacity-40 pointer-events-none',
-                      )}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => !onlyOne && toggleSource(id)}
-                        disabled={isRunning || onlyOne}
-                        className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 accent-brand-500
-                                   disabled:cursor-not-allowed shrink-0"
-                      />
-                      <span className="text-sm leading-none">{emoji}</span>
-                      <span className={clsx(
-                        'text-xs font-medium transition-colors',
-                        checked ? 'text-slate-200' : 'text-slate-500 group-hover:text-slate-300',
-                      )}>
-                        {label}
-                      </span>
-                    </label>
-                  )
-                })}
+
+              <div className="space-y-3">
+                {SOURCE_GROUPS.map(group => (
+                  <div key={group.label}>
+                    <p className="text-[9px] text-slate-600 uppercase tracking-widest font-bold mb-1.5 pl-0.5">
+                      {group.label}
+                    </p>
+                    <div className="grid grid-cols-2 gap-1">
+                      {group.sources.map(({ id, label, emoji }) => {
+                        const checked = sources.includes(id)
+                        const onlyOne = checked && sources.length === 1
+                        return (
+                          <label
+                            key={id}
+                            className={clsx(
+                              'flex items-center gap-1.5 cursor-pointer rounded-lg px-2 py-1.5 transition-colors',
+                              'border text-xs',
+                              checked
+                                ? 'bg-brand-500/8 border-brand-500/25 text-slate-200'
+                                : 'border-transparent text-slate-500 hover:bg-slate-800/40 hover:text-slate-300',
+                              (isRunning || onlyOne) && 'opacity-40 pointer-events-none',
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => !onlyOne && toggleSource(id)}
+                              disabled={isRunning || onlyOne}
+                              className="w-3 h-3 rounded border-slate-600 bg-slate-800 accent-brand-500
+                                         disabled:cursor-not-allowed shrink-0"
+                            />
+                            <span className="text-xs leading-none">{emoji}</span>
+                            <span className="font-medium truncate">{label}</span>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ))}
               </div>
-              <p className="text-[11px] text-slate-500 mt-2 pl-1">
-                ≈ <span className="font-bold text-slate-300">{estimatedLeads}</span> leads expected
-              </p>
             </div>
 
-            {/* ── Daily Cap per Source ──────────────────────────────────── */}
-            {(sources.includes('GOOGLE_MAPS') || sources.includes('GOOGLE_SEARCH')) && (
-              <div>
-                <label className="label flex items-center gap-1.5">
-                  <BarChart3 size={10} /> Daily Cap per Source
-                </label>
-                <div className="space-y-2">
-                  {sources.includes('GOOGLE_MAPS') && (
-                    <div className="flex items-center gap-2">
-                      <span className="text-[11px] text-slate-500 w-28 shrink-0">🗺️ Maps cap</span>
-                      <input
-                        type="number"
-                        min={1} max={200}
-                        value={googleMapsCap}
-                        onChange={e => setGoogleMapsCap(Math.max(1, Number(e.target.value)))}
-                        disabled={isRunning}
-                        className="input text-xs h-8 w-20 text-center tabular-nums"
-                      />
-                    </div>
-                  )}
-                  {sources.includes('GOOGLE_SEARCH') && (
-                    <div className="flex items-center gap-2">
-                      <span className="text-[11px] text-slate-500 w-28 shrink-0">🔍 Search cap</span>
-                      <input
-                        type="number"
-                        min={1} max={200}
-                        value={googleSearchCap}
-                        onChange={e => setGoogleSearchCap(Math.max(1, Number(e.target.value)))}
-                        disabled={isRunning}
-                        className="input text-xs h-8 w-20 text-center tabular-nums"
-                      />
-                    </div>
-                  )}
-                  <p className="text-[10px] text-slate-600 pl-0.5">
-                    Total: <span className="font-mono font-bold text-slate-400">{totalCap}</span> leads / run
-                  </p>
-                </div>
+            {/* ── Daily Cap ─────────────────────────────────────────────── */}
+            <div>
+              <label className="label flex items-center gap-1.5">
+                <BarChart3 size={10} /> Daily Cap (total leads)
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1} max={500}
+                  value={dailyCap}
+                  onChange={e => setDailyCap(Math.max(1, Number(e.target.value)))}
+                  disabled={isRunning}
+                  className="input text-sm h-9 w-24 text-center tabular-nums font-mono"
+                />
+                <p className="text-[10px] text-slate-500">
+                  Split proportionally across{' '}
+                  <span className="font-bold text-slate-300">{sources.length}</span> source{sources.length !== 1 ? 's' : ''}
+                </p>
               </div>
-            )}
+            </div>
 
             {/* ── Scoring Filter ────────────────────────────────────────── */}
             <div className="rounded-lg bg-slate-900/50 border border-slate-700/40 p-3 space-y-2">
@@ -689,21 +715,23 @@ export default function Campaign() {
               </div>
             </div>
 
-            {/* ── Show Browser Window ───────────────────────────────────── */}
-            <label className="flex items-center gap-2 cursor-pointer group select-none">
-              <input
-                type="checkbox"
-                checked={!headless}
-                onChange={e => setHeadless(!e.target.checked)}
-                disabled={isRunning}
-                className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 accent-emerald-500
-                           disabled:opacity-40 disabled:cursor-not-allowed"
-              />
-              <Monitor size={11} className="text-slate-500" />
-              <span className="text-xs text-slate-400 group-hover:text-slate-300 transition-colors">
-                Show Browser Window
-              </span>
-            </label>
+            {/* ── Show Browser Window (only relevant for Google Maps) ────── */}
+            {needsBrowser && (
+              <label className="flex items-center gap-2 cursor-pointer group select-none">
+                <input
+                  type="checkbox"
+                  checked={!headless}
+                  onChange={e => setHeadless(!e.target.checked)}
+                  disabled={isRunning}
+                  className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 accent-emerald-500
+                             disabled:opacity-40 disabled:cursor-not-allowed"
+                />
+                <Monitor size={11} className="text-slate-500" />
+                <span className="text-xs text-slate-400 group-hover:text-slate-300 transition-colors">
+                  Show Browser Window
+                </span>
+              </label>
+            )}
 
             {/* ── Start / Stop buttons ──────────────────────────────────── */}
             <div className="flex flex-col gap-2 pt-1">
@@ -742,6 +770,23 @@ export default function Campaign() {
                   Enter niche &amp; city to enable launch
                 </p>
               )}
+
+              {/* ── DB diagnostic button ──────────────────────────────── */}
+              <button
+                onClick={() => testMut.mutate()}
+                disabled={isRunning || testMut.isPending}
+                title="Insert 5 dummy leads to verify the database write path works"
+                className="w-full py-2 rounded-xl font-medium text-xs tracking-wide uppercase
+                           bg-slate-800/60 hover:bg-slate-700/60 text-slate-500 hover:text-slate-300
+                           border border-slate-700/40 hover:border-slate-600/50
+                           disabled:opacity-25 disabled:cursor-not-allowed
+                           transition-all duration-150 active:scale-[0.98]
+                           flex items-center justify-center gap-1.5"
+              >
+                {testMut.isPending
+                  ? <><RefreshCw size={11} className="animate-spin" /> Testing DB…</>
+                  : <><FlaskConical size={11} /> Test DB Pipeline</>}
+              </button>
             </div>
           </div>
 

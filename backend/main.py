@@ -180,48 +180,76 @@ async def recent_logs(limit: int = Query(20, ge=1, le=100)):
 @app.get("/api/logs/stream")
 async def stream_logs(request: Request):
     """
-    SSE endpoint — pushes new campaign_log entries every 2 s.
+    SSE endpoint — merges two log sources every 2 s:
+      1. campaign_log DB table  (persisted FOUND/SEND/AI actions)
+      2. log_stream SimpleQueue (real-time scrape progress + send events)
     Client receives: { message: string, timestamp: string }
     """
+    from .log_stream import drain as _drain_queue
+    from datetime import datetime, timezone as _tz
 
     async def event_gen():
-        async with get_db() as conn:
-            last_id: int = await conn.fetchval(
-                "SELECT COALESCE(MAX(id), 0) FROM campaign_log"
-            ) or 0
+        try:
+            async with get_db() as conn:
+                last_id: int = await conn.fetchval(
+                    "SELECT COALESCE(MAX(id), 0) FROM campaign_log"
+                ) or 0
+        except Exception:
+            last_id = 0
+        last_id = last_id or 0
 
+        tick = 0
         try:
             while True:
                 if await request.is_disconnected():
                     break
 
-                async with get_db() as conn:
-                    rows = await conn.fetch(
-                        """SELECT cl.id,
-                                  cl.channel,
-                                  cl.action,
-                                  cl.success,
-                                  cl.error_msg,
-                                  TO_CHAR(cl.timestamp, 'HH24:MI:SS') AS ts,
-                                  COALESCE(l.business_name, 'Unknown') AS business_name,
-                                  l.email,
-                                  l.phone
-                           FROM campaign_log cl
-                           LEFT JOIN leads l ON l.id = cl.lead_id
-                           WHERE cl.id > $1
-                           ORDER BY cl.id ASC
-                           LIMIT 50""",
-                        last_id,
-                    )
+                # ── Source 1: DB campaign_log ─────────────────────────────
+                try:
+                    async with get_db() as conn:
+                        rows = await conn.fetch(
+                            """SELECT cl.id,
+                                      cl.channel,
+                                      cl.action,
+                                      cl.success,
+                                      cl.error_msg,
+                                      strftime('%H:%M:%S', cl.timestamp) AS ts,
+                                      COALESCE(l.business_name, 'Unknown') AS business_name,
+                                      l.email,
+                                      l.phone
+                               FROM campaign_log cl
+                               LEFT JOIN leads l ON l.id = cl.lead_id
+                               WHERE cl.id > $1
+                               ORDER BY cl.id ASC
+                               LIMIT 50""",
+                            last_id,
+                        )
 
-                for row in rows:
-                    d       = dict(row)
-                    last_id = d["id"]
+                    for row in rows:
+                        d       = dict(row)
+                        last_id = d["id"]
+                        payload = json.dumps({
+                            "message":   _fmt_log(d),
+                            "timestamp": d["ts"] or "",
+                        })
+                        yield f"data: {payload}\n\n"
+
+                except Exception:
+                    pass  # transient DB error — skip this tick
+
+                # ── Source 2: in-memory log_stream (scrape progress) ──────
+                now_ts = datetime.now(_tz.utc).strftime("%H:%M:%S")
+                for entry in _drain_queue():
                     payload = json.dumps({
-                        "message":   _fmt_log(d),
-                        "timestamp": d["ts"] or "",
+                        "message":   entry.get("message", ""),
+                        "timestamp": entry.get("timestamp", now_ts),
                     })
                     yield f"data: {payload}\n\n"
+
+                # keepalive every 15 s
+                tick += 1
+                if tick % 8 == 0:
+                    yield ": keepalive\n\n"
 
                 await asyncio.sleep(2)
 

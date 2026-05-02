@@ -188,13 +188,12 @@ def _country_tld(country: str) -> str:
 # ── Query variants builder ────────────────────────────────────────────────────
 
 def _build_queries(niche: str, city: str, country: str) -> List[str]:
-    tld = _country_tld(country)
     ctx = f"{city} {country}".strip()
     return [
         f"top {niche} in {city}",
         f"{niche} services {ctx}",
         f"{niche} company {city} email contact",
-        f"{niche} {city} site:.{tld}",
+        f"best {niche} near {city}",
     ]
 
 

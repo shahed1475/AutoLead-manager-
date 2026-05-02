@@ -318,6 +318,30 @@ async def test_connection(config: Optional[Dict[str, Any]] = None) -> Dict[str, 
 # ── Legacy high-level API (called by scheduler.py and campaigns.py) ────────────
 
 
+_PLACEHOLDER_USERS = frozenset({"", "you@gmail.com", "your@email.com", "user@gmail.com"})
+_PLACEHOLDER_PWDS  = frozenset({"", "your_app_password_here", "your-app-password", "yourpassword", "password"})
+_MSG_GARBAGE       = ("[Generation failed", "[Message generation failed", "[Subject —", "[Body —")
+
+
+def _clean_subject(raw: Optional[str]) -> str:
+    if raw and not any(raw.startswith(g) for g in _MSG_GARBAGE):
+        return raw
+    return "Quick question about your business"
+
+
+def _clean_body(raw: Optional[str]) -> str:
+    if raw and not any(raw.startswith(g) for g in _MSG_GARBAGE):
+        return raw
+    return (
+        "Hi,\n\n"
+        "I came across your business and wanted to reach out about a growth opportunity.\n\n"
+        "We help local businesses attract more customers through targeted digital marketing "
+        "— typically seeing results within the first 30 days.\n\n"
+        "Would you be open to a quick 10-minute call to see if we'd be a good fit?\n\n"
+        "Best regards"
+    )
+
+
 async def send_email_lead(lead: Dict[str, Any]) -> None:
     """
     Send initial outreach email for a lead.
@@ -327,9 +351,19 @@ async def send_email_lead(lead: Dict[str, Any]) -> None:
     if not to_email:
         raise ValueError(f"Lead {lead.get('id')} has no email address")
 
-    subject  = lead.get("ai_email_subject") or "Quick question about your business"
-    body     = lead.get("ai_email_body")    or "Hi, I wanted to connect about your business."
     cfg_dict = await _smtp_cfg()
+
+    if cfg_dict.get("username", "") in _PLACEHOLDER_USERS:
+        raise ValueError(
+            "SMTP email not configured — open Settings → Email and enter your Gmail address."
+        )
+    if cfg_dict.get("password", "") in _PLACEHOLDER_PWDS:
+        raise ValueError(
+            "SMTP password not configured — open Settings → Email and enter your Gmail App Password."
+        )
+
+    subject = _clean_subject(lead.get("ai_email_subject"))
+    body    = _clean_body(lead.get("ai_email_body"))
 
     _emit("INFO", "EMAIL", f"Sending → {lead.get('business_name', to_email)}")
 
@@ -344,9 +378,19 @@ async def send_followup_email(lead: Dict[str, Any]) -> None:
     if not to_email:
         raise ValueError(f"Lead {lead.get('id')} has no email address")
 
-    body     = lead.get("ai_followup_msg") or "Just circling back on my previous note."
-    subject  = f"Re: {lead.get('ai_email_subject') or 'Quick question about your business'}"
     cfg_dict = await _smtp_cfg()
+
+    if cfg_dict.get("username", "") in _PLACEHOLDER_USERS:
+        raise ValueError(
+            "SMTP email not configured — open Settings → Email and enter your Gmail address."
+        )
+    if cfg_dict.get("password", "") in _PLACEHOLDER_PWDS:
+        raise ValueError(
+            "SMTP password not configured — open Settings → Email and enter your Gmail App Password."
+        )
+
+    body    = _clean_body(lead.get("ai_followup_msg"))
+    subject = f"Re: {_clean_subject(lead.get('ai_email_subject'))}"
 
     _emit("INFO", "EMAIL", f"Follow-up → {lead.get('business_name', to_email)}")
 

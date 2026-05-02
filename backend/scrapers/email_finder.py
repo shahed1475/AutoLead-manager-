@@ -152,7 +152,7 @@ _JS_CONCAT_RE = re.compile(
     r'|'
     r'"([a-zA-Z0-9._%+\-]{1,40})"\s*\+\s*"(@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})"'
 )
-_ATOB_RE = re.compile(r'atob\(["\']([A-Za-z0-9+/=]{8,})["\'])')
+_ATOB_RE = re.compile(r"""atob\(["']([A-Za-z0-9+/=]{8,})["']\)""")
 _UNICODE_ESC_RE = re.compile(r'(?:\\u[0-9a-fA-F]{4})+')
 _HTML_ENTITY_EMAIL_HINT = re.compile(r"&#(?:64|x40);")   # quick check before full decode
 

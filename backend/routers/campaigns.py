@@ -3,12 +3,14 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from typing import Dict, List, Optional
 from .. import database as db
-from .. import email_sender, whatsapp_sender, ai_brain, scraper
+from .. import email_sender, whatsapp_sender, ai_brain
+from .. import scrapers
 from ..followup_engine import schedule_followups_for_lead as _schedule_fu
+from ..log_stream import emit as _ls_emit
 from ..models import CampaignSendRequest, CampaignStartRequest
 
-# Progress update every N leads to avoid hammering the DB on every iteration
-_PROGRESS_EVERY = 5
+# Update DB after every lead so real-time counts are always accurate
+_PROGRESS_EVERY = 1
 
 logger = logging.getLogger(__name__)
 
@@ -45,66 +47,65 @@ def _now_iso() -> str:
 # ── Internal send helper ──────────────────────────────────────────────────────
 
 async def _send_one(lead_id: int, channel: str) -> dict:
-    """Send initial outreach to a single lead via the given channel."""
+    """Send initial outreach to a single lead via the given channel.
+
+    Channel-adaptive: if the preferred channel is unavailable (no email or no phone),
+    automatically falls back to the other channel rather than failing silently.
+    """
     lead = await db.get_lead_by_id(lead_id)
     if not lead:
         return {"lead_id": lead_id, "success": False, "error": "Lead not found"}
 
-    channel = channel.upper()
+    channel    = channel.upper()
+    has_email  = bool(lead.get("email"))
+    has_phone  = bool(lead.get("phone"))
     errors: list[str] = []
+    sent_any   = False
 
-    try:
-        if channel == "EMAIL":
-            await email_sender.send_email_lead(lead)
-            now_dt = datetime.now(timezone.utc)
-            await db.update_lead(lead_id, {"status": "SENT", "sent_at": now_dt.isoformat()})
-            await db.log_campaign_action(lead_id, channel, "SEND", True)
-            await _schedule_fu(lead_id, now_dt, dict(lead))
-            return {"lead_id": lead_id, "success": True}
-
-        elif channel == "WHATSAPP":
-            await whatsapp_sender.send_whatsapp_lead(lead)
-            now_dt = datetime.now(timezone.utc)
-            await db.update_lead(lead_id, {"status": "SENT", "sent_at": now_dt.isoformat()})
-            await db.log_campaign_action(lead_id, channel, "SEND", True)
-            await _schedule_fu(lead_id, now_dt, dict(lead))
-            return {"lead_id": lead_id, "success": True}
-
-        elif channel == "BOTH":
-            # Attempt both independently — one failure should not block the other
-            sent_any = False
-            try:
-                await email_sender.send_email_lead(lead)
-                await db.log_campaign_action(lead_id, "EMAIL", "SEND", True)
-                sent_any = True
-            except Exception as exc:
-                errors.append(f"email: {exc}")
-                await db.log_campaign_action(lead_id, "EMAIL", "SEND", False, str(exc))
-
-            try:
-                await whatsapp_sender.send_whatsapp_lead(lead)
-                await db.log_campaign_action(lead_id, "WHATSAPP", "SEND", True)
-                sent_any = True
-            except Exception as exc:
-                errors.append(f"whatsapp: {exc}")
-                await db.log_campaign_action(lead_id, "WHATSAPP", "SEND", False, str(exc))
-
-            if sent_any:
-                now_dt = datetime.now(timezone.utc)
-                await db.update_lead(lead_id, {"status": "SENT", "sent_at": now_dt.isoformat()})
-                await _schedule_fu(lead_id, now_dt, dict(lead))
-                return {
-                    "lead_id": lead_id,
-                    "success": True,
-                    "partial_errors": errors if errors else None,
-                }
-            return {"lead_id": lead_id, "success": False, "error": "; ".join(errors)}
-
+    # ── Resolve effective channels based on what contact info is available ────
+    if channel == "EMAIL":
+        # Prefer email; fall back to WhatsApp if no email but phone exists
+        effective = ["EMAIL"] if has_email else (["WHATSAPP"] if has_phone else [])
+    elif channel == "WHATSAPP":
+        # Prefer WhatsApp; fall back to email if no phone but email exists
+        effective = ["WHATSAPP"] if has_phone else (["EMAIL"] if has_email else [])
+    elif channel == "BOTH":
+        effective = (["EMAIL"] if has_email else []) + (["WHATSAPP"] if has_phone else [])
+    else:
         return {"lead_id": lead_id, "success": False, "error": f"Unknown channel: {channel}"}
 
-    except Exception as exc:
-        await db.log_campaign_action(lead_id, channel, "SEND", False, str(exc))
-        return {"lead_id": lead_id, "success": False, "error": str(exc)}
+    if not effective:
+        msg = f"Lead {lead_id} has no email and no phone — cannot send"
+        await db.log_campaign_action(lead_id, channel, "SEND", False, msg)
+        return {"lead_id": lead_id, "success": False, "error": msg}
+
+    # ── Attempt each effective channel ────────────────────────────────────────
+    for ch in effective:
+        try:
+            if ch == "EMAIL":
+                await email_sender.send_email_lead(lead)
+            else:
+                await whatsapp_sender.send_whatsapp_lead(lead)
+
+            await db.log_campaign_action(lead_id, ch, "SEND", True)
+            sent_any = True
+
+        except Exception as exc:
+            errors.append(f"{ch}: {exc}")
+            await db.log_campaign_action(lead_id, ch, "SEND", False, str(exc))
+            logger.warning("Send failed lead=%s channel=%s: %s", lead_id, ch, exc)
+
+    if sent_any:
+        now_dt = datetime.now(timezone.utc)
+        await db.update_lead(lead_id, {"status": "SENT", "sent_at": now_dt.isoformat()})
+        await _schedule_fu(lead_id, now_dt, dict(lead))
+        return {
+            "lead_id":       lead_id,
+            "success":       True,
+            "partial_errors": errors if errors else None,
+        }
+
+    return {"lead_id": lead_id, "success": False, "error": "; ".join(errors)}
 
 
 # ── Background campaign task ──────────────────────────────────────────────────
@@ -119,68 +120,117 @@ async def _run_campaign_task(
         sources = ["GOOGLE_MAPS"]
 
     try:
-        scraped_leads = await scraper.scrape_multi_source(
-            sources     = sources,
-            niche       = niche,
-            city        = city,
-            max_results = daily_cap,
-            headless    = headless,
-            source_caps = source_caps or None,
+        def _log_sync(msg: str) -> None:
+            _ls_emit("INFO", "SCRAPE", msg)
+            logger.info("[campaign] %s", msg)
+
+        # ── Bulk scrape: dedup + validate + email-enrich + DB save all handled ──
+        scraped_leads = await scrapers.run_bulk_scrape(
+            campaign={
+                "niche":     niche,
+                "city":      city,
+                "country":   country or "",
+                "sources":   sources,
+                "max_leads": daily_cap,
+                "headless":  headless,
+            },
+            log_callback=_log_sync,
+        )
+        n_from_scraper = len(scraped_leads)
+
+        # ── Merge with existing PENDING leads so repeat runs aren't empty ──────
+        existing_pending = await db.get_pending_leads_for_niche_city(
+            niche, city, limit=daily_cap * 3
+        )
+        all_leads_map: Dict[int, dict] = {l["id"]: l for l in scraped_leads}
+        for lead in existing_pending:
+            if lead["id"] not in all_leads_map:
+                all_leads_map[lead["id"]] = lead
+
+        all_leads = list(all_leads_map.values())[:daily_cap]
+        _run_state["leads_found"] = len(all_leads)
+        _log_sync(
+            f"📋 Leads to process: {len(all_leads)} "
+            f"({n_from_scraper} from scraper, "
+            f"{len(existing_pending)} existing PENDING)"
         )
 
-        leads_scraped_total = len(scraped_leads)
+        await db.update_campaign_run_progress(
+            run_id, _run_state["leads_found"], _run_state["leads_sent"]
+        )
 
-        for lead_data in scraped_leads:
+        # ── HOT/WARM filter — auto-disable if all leads would be skipped ───────
+        if hot_warm_only:
+            n_passing = sum(
+                1 for l in all_leads
+                if not (
+                    (l.get("score") or 0) > 0
+                    and (l.get("score_label") or "COLD").upper() == "COLD"
+                )
+            )
+            if n_passing == 0:
+                _log_sync(
+                    "⚠️  hot_warm_only: all leads are unscored or COLD — "
+                    "processing all PENDING leads anyway"
+                )
+                hot_warm_only = False
+
+        if not all_leads:
+            _log_sync("⚠️  No leads available to process — nothing to score, generate, or send")
+            _log_sync(
+                "💡 Tip: run POST /api/campaign/test-pipeline to verify the DB write path"
+            )
+
+        # ── Per-lead: filter → AI generate → send ─────────────────────────────
+        for lead in all_leads:
             if _run_state["stop_requested"]:
                 break
 
-            # Deduplication — skip if we already know this business
-            lead_id, is_new = await db.create_lead_deduped(lead_data)
-            if not is_new:
-                continue
+            lead_id = lead["id"]
+            biz     = lead.get("business_name", f"lead#{lead_id}")
 
             # HOT+WARM filter — skip COLD leads that have already been scored
             if hot_warm_only:
-                lead_check = await db.get_lead_by_id(lead_id)
-                if lead_check:
-                    score = lead_check.get("score") or 0
-                    label = (lead_check.get("score_label") or "COLD").upper()
-                    if score > 0 and label == "COLD":
-                        await db.update_lead(lead_id, {"status": "SKIPPED"})
-                        continue
-
-            await db.log_campaign_action(lead_id, "SCRAPE", "FOUND", True)
-            _run_state["leads_found"] += 1
+                score = lead.get("score") or 0
+                label = (lead.get("score_label") or "COLD").upper()
+                if score > 0 and label == "COLD":
+                    _log_sync(f"⏭️  Skipping COLD lead: {biz}")
+                    await db.update_lead(lead_id, {"status": "SKIPPED"})
+                    continue
 
             await db.update_lead(lead_id, {"channel": channel})
-            lead = await db.get_lead_by_id(lead_id)
+            lead_fresh = await db.get_lead_by_id(lead_id)
 
-            # Generate AI messages
+            _log_sync(f"✍️  Generating AI messages for: {biz}")
+
+            # Generate AI messages — failure is non-fatal; email_sender has fallbacks
             try:
-                msgs = await ai_brain.generate_all_messages(dict(lead))
+                msgs = await ai_brain.generate_all_messages(dict(lead_fresh))
                 await db.update_lead(lead_id, {
-                    "ai_whatsapp_msg":  msgs.get("whatsapp"),
+                    "ai_whatsapp_msg":  msgs.get("whatsapp") or msgs.get("whatsapp_message"),
                     "ai_email_subject": msgs.get("email_subject"),
                     "ai_email_body":    msgs.get("email_body"),
-                    "ai_followup_msg":  msgs.get("follow_up_1"),
-                    "ai_follow_up_1":   msgs.get("follow_up_1"),
-                    "ai_follow_up_2":   msgs.get("follow_up_2"),
-                    "ai_follow_up_3":   msgs.get("follow_up_3"),
+                    "ai_followup_msg":  msgs.get("follow_up_1") or msgs.get("followup_day3_body"),
+                    "ai_follow_up_1":   msgs.get("follow_up_1") or msgs.get("followup_day3_body"),
+                    "ai_follow_up_2":   msgs.get("follow_up_2") or msgs.get("followup_day7_body"),
+                    "ai_follow_up_3":   msgs.get("follow_up_3") or msgs.get("followup_day7_body"),
                 })
                 await db.log_campaign_action(lead_id, "AI", "GENERATE", True)
-                lead = await db.get_lead_by_id(lead_id)
+                lead_fresh = await db.get_lead_by_id(lead_id)
             except Exception as exc:
                 await db.log_campaign_action(lead_id, "AI", "GENERATE", False, str(exc))
+                _log_sync(f"⚠️  AI generation failed for {biz}: {exc} — using fallback messages")
                 logger.warning("AI generation failed for lead %s: %s", lead_id, exc)
-                continue  # skip send if no messages were generated
 
-            # Send outreach
+            # Send outreach (proceeds even if AI failed — sender has built-in fallbacks)
+            _log_sync(f"📤 Sending {channel} to: {biz}")
             result = await _send_one(lead_id, channel)
             if result.get("success"):
                 _run_state["leads_sent"] += 1
+            else:
+                _log_sync(f"❌ Send failed for {biz}: {result.get('error', 'unknown')}")
 
-            # Push live progress to DB every N leads
-            if (_run_state["leads_found"] % _PROGRESS_EVERY) == 0:
+            if (_run_state["leads_sent"] % _PROGRESS_EVERY) == 0:
                 await db.update_campaign_run_progress(
                     run_id, _run_state["leads_found"], _run_state["leads_sent"]
                 )
@@ -190,7 +240,7 @@ async def _run_campaign_task(
             "status":      final_status,
             "leads_found": _run_state["leads_found"],
             "leads_sent":  _run_state["leads_sent"],
-            "finished_at": _now_iso(),
+            "finished_at": datetime.now(timezone.utc),
         })
 
     except Exception as exc:
@@ -199,7 +249,7 @@ async def _run_campaign_task(
             "status":      "FAILED",
             "leads_found": _run_state["leads_found"],
             "leads_sent":  _run_state["leads_sent"],
-            "finished_at": _now_iso(),
+            "finished_at": datetime.now(timezone.utc),
         })
 
     finally:
@@ -344,3 +394,42 @@ async def bulk_send(payload: CampaignSendRequest, background_tasks: BackgroundTa
 
     background_tasks.add_task(_run)
     return {"queued": len(payload.lead_ids), "channel": payload.channel}
+
+
+@router.post("/test-pipeline")
+async def test_pipeline():
+    """
+    Diagnostic: inserts 5 dummy leads, reads them back, confirms DB write/read works.
+    Use this to verify the pipeline before running a real campaign.
+    Dummy leads are tagged source='TEST' and can be deleted via DELETE /api/leads?status=PENDING.
+    """
+    def _log(msg: str) -> None:
+        _ls_emit("INFO", "TEST", msg)
+        logger.info("[test-pipeline] %s", msg)
+
+    result = await scrapers.run_test_pipeline(log_callback=_log)
+    return {"ok": result["ok"], "result": result}
+
+
+@router.get("/db-health")
+async def db_health():
+    """Quick DB write/read health check — returns counts and any error."""
+    try:
+        async with db.get_db() as conn:
+            total      = await conn.fetchval("SELECT COUNT(*) FROM leads") or 0
+            pending    = await conn.fetchval(
+                "SELECT COUNT(*) FROM leads WHERE status = 'PENDING'"
+            ) or 0
+            runs       = await conn.fetchval("SELECT COUNT(*) FROM campaign_runs") or 0
+            log_count  = await conn.fetchval("SELECT COUNT(*) FROM campaign_log") or 0
+        return {
+            "ok":         True,
+            "db_path":    db.DB_PATH,
+            "total_leads": total,
+            "pending":     pending,
+            "runs":        runs,
+            "log_entries": log_count,
+        }
+    except Exception as exc:
+        logger.error("DB health check failed: %s", exc, exc_info=True)
+        return {"ok": False, "error": str(exc), "db_path": db.DB_PATH}

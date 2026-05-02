@@ -244,13 +244,29 @@ def _extract_json(
 # ── Fallback messages ──────────────────────────────────────────────────────────
 
 def _fallback_wa(reason: str = "") -> Dict[str, str]:
-    note = f"[Generation failed{': ' + reason if reason else ''}. Please retry.]"
-    return {"first_message": note, "follow_up_1": note, "follow_up_2": note, "follow_up_3": note}
+    logger.warning("ai_brain: WhatsApp fallback used — %s", reason or "no model response")
+    return {
+        "first_message":  "Hi! I came across your business and wanted to reach out. We help local businesses grow with digital marketing. Would you be open to a quick chat?",
+        "follow_up_1":    "Just following up on my earlier message. We've helped many businesses in your area attract more customers. Happy to share how — interested?",
+        "follow_up_2":    "One more note — we specialise in helping businesses get more visible online and convert more leads. Let me know if this sounds useful!",
+        "follow_up_3":    "No pressure at all. If you ever want to explore growth options for your business, feel free to reach out anytime. Wishing you continued success!",
+    }
 
 
 def _fallback_email(reason: str = "") -> Dict[str, str]:
-    note = f"[Generation failed{': ' + reason if reason else ''}. Please retry.]"
-    return {"email_subject": note, "email_body": note}
+    logger.warning("ai_brain: email fallback used — %s", reason or "no model response")
+    return {
+        "email_subject": "Quick question about your business",
+        "email_body":    (
+            "Hi,\n\n"
+            "I came across your business and wanted to reach out about a growth opportunity "
+            "that might interest you.\n\n"
+            "We help local businesses attract more customers through targeted digital marketing "
+            "— typically seeing results within the first 30 days.\n\n"
+            "Would you be open to a quick 10-minute call to see if we'd be a good fit?\n\n"
+            "Best regards"
+        ),
+    }
 
 
 def _fallback_messages(reason: str = "") -> Dict[str, str]:
@@ -258,15 +274,29 @@ def _fallback_messages(reason: str = "") -> Dict[str, str]:
 
 
 def _fallback_v2(reason: str = "") -> Dict[str, str]:
-    tag = f"[Message generation failed{': ' + reason if reason else ''}. Use Regenerate.]"
+    logger.warning("ai_brain: v2 fallback used — %s", reason or "no model response")
     return {
-        "email_subject":         "[Subject — please retry]",
-        "email_body":            tag,
-        "whatsapp_message":      tag,
-        "followup_day3_subject": "[Follow-up subject — please retry]",
-        "followup_day3_body":    tag,
-        "followup_day7_subject": "[Final subject — please retry]",
-        "followup_day7_body":    tag,
+        "email_subject":         "Quick question about your business",
+        "email_body":            (
+            "Hi,\n\n"
+            "I came across your business and wanted to reach out about a growth opportunity.\n\n"
+            "We help local businesses attract more customers through targeted digital marketing.\n\n"
+            "Would you be open to a quick call to see if we'd be a good fit?\n\n"
+            "Best regards"
+        ),
+        "whatsapp_message":      "Hi! I found your business and wanted to reach out. We help businesses like yours grow with digital marketing. Would you be open to a quick chat?",
+        "followup_day3_subject": "Following up — growth opportunity for your business",
+        "followup_day3_body":    (
+            "Hi,\n\nJust following up on my previous email. "
+            "We've helped businesses in your area see measurable growth within weeks.\n\n"
+            "Happy to share a quick example — interested?\n\nBest regards"
+        ),
+        "followup_day7_subject": "Last note — digital growth for your business",
+        "followup_day7_body":    (
+            "Hi,\n\nI know you're busy, so I'll keep this brief. "
+            "If you ever want to explore how we can help your business grow online, "
+            "just reply and we'll set up a quick call.\n\nBest regards"
+        ),
     }
 
 

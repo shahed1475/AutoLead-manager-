@@ -62,6 +62,8 @@ export const campaignApi = {
   start: (payload) => api.post('/campaign/start', payload).then((r) => r.data),
   stop: () => api.post('/campaign/stop').then((r) => r.data),
   history: () => api.get('/campaign/history').then((r) => r.data),
+  testPipeline: () => api.post('/campaign/test-pipeline').then((r) => r.data),
+  dbHealth: () => api.get('/campaign/db-health').then((r) => r.data),
 }
 
 export const scraperApi = {

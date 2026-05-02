@@ -3,9 +3,10 @@ fastapi>=0.115.5
 uvicorn[standard]>=0.32.1
 python-multipart>=0.0.12
 
-# ── Database — PostgreSQL (async) ────────────────────────────────────────────
-asyncpg>=0.29.0
-psycopg2-binary>=2.9.9       # sync driver (migrations / admin scripts)
+# ── Database — SQLite (local dev) / PostgreSQL (production) ─────────────────
+aiosqlite>=0.20.0            # async SQLite driver (local development)
+asyncpg>=0.29.0              # async PostgreSQL driver (production)
+psycopg2-binary>=2.9.9       # sync PostgreSQL driver (migrations / admin)
 
 # ── Redis & async job queue ───────────────────────────────────────────────────
 redis[asyncio]>=5.0.3

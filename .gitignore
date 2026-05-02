@@ -12,8 +12,10 @@ dist/
 build/
 *.js.map
 
-# Logs
+# Logs & process output
 *.log
+*.err
+*.out
 logs/
 
 # Database & data
