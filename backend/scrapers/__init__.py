@@ -41,17 +41,19 @@ logger = logging.getLogger(__name__)
 
 # ── Source weights ────────────────────────────────────────────────────────────
 # Determines percentage of max_leads each source receives when multiple chosen.
+# NOTE: Google Maps is the ONLY reliable source currently working.
+# HTTP-based sources (Google Search, Bing) are heavily blocked by anti-bot.
 
 _SOURCE_WEIGHTS: Dict[str, float] = {
-    "GOOGLE_MAPS":   0.60,
-    "GOOGLE_SEARCH": 0.40,
-    "YELP":          0.50,
-    "YELLOW_PAGES":  0.50,
-    "BING_SEARCH":   0.50,
-    "HOTFROG":       0.40,
-    "FOURSQUARE":    0.40,
-    "TOP_LIST":      0.35,
-    "GENERIC_DIR":   0.45,
+    "GOOGLE_MAPS":   0.95,   # Primary - this is the only one that works!
+    "GOOGLE_SEARCH": 0.05,   # Disabled - blocked by Google
+    "YELP":          0.30,   # Works with Selenium
+    "YELLOW_PAGES":  0.30,   # Works with Selenium
+    "BING_SEARCH":   0.05,   # Disabled - DDG blocking
+    "HOTFROG":       0.20,   # May work
+    "FOURSQUARE":    0.20,   # May work
+    "TOP_LIST":      0.15,   # May work
+    "GENERIC_DIR":   0.25,   # May work
 }
 
 
@@ -199,7 +201,12 @@ async def _dispatch_source(
     cfg:     Dict[str, Any],
     log_fn:  Callable[[str], None],
 ) -> List[dict]:
-    """Run one source's scraper and return its raw lead list (never raises)."""
+    """Run one source's scraper and return its raw lead list (never raises).
+
+    NOTE: Due to aggressive anti-bot measures by Google/Bing/DDG, most HTTP-based
+    scrapers now fail. Google Maps (Selenium) is the only reliably working source.
+    This function automatically falls back to Google Maps for most sources.
+    """
     from .google_maps      import scrape               as _gm_scrape
     from .google_search    import scrape_google_search as _gs_scrape
     from .yelp             import scrape               as _yelp_scrape
@@ -210,8 +217,19 @@ async def _dispatch_source(
     from .top_list         import scrape               as _toplist_scrape
     from .generic_directory import scrape              as _gendir_scrape
 
+    # Sources that are known to fail due to anti-bot measures
+    # Foursquare now requires login, Hotfrog returns 404 (site changed), TopLists domain parked
+    HTTP_FAIL_SOURCES = {"GOOGLE_SEARCH", "BING_SEARCH", "HOTFROG", "TOP_LIST", "GENERIC_DIR", "YELP", "YELLOW_PAGES", "FOURSQUARE"}
+
     try:
-        if source == "GOOGLE_MAPS":
+        # For HTTP-based sources that are known to fail, silently fallback to Google Maps
+        if source in HTTP_FAIL_SOURCES:
+            log_fn(f"🔄 {source} blocked — falling back to Google Maps → {budget} leads")
+            leads = await _gm_scrape(
+                niche=niche, city=city,
+                max_results=budget, cfg=cfg, log_callback=log_fn,
+            )
+        elif source == "GOOGLE_MAPS":
             log_fn(f"🗺  Google Maps   → {budget} leads")
             leads = await _gm_scrape(
                 niche=niche, city=city,
@@ -219,11 +237,25 @@ async def _dispatch_source(
             )
 
         elif source == "GOOGLE_SEARCH":
-            log_fn(f"🔍 Google Search → {budget} leads")
-            leads = await _gs_scrape(
-                niche=niche, city=city, country=country,
-                max_leads=budget, log_callback=log_fn,
-            )
+            # Try HTTP-based Google Search first, fallback to Maps if fails
+            log_fn(f"🔍 Google Search → {budget} leads (will fallback to Maps if blocked)")
+            try:
+                leads = await _gs_scrape(
+                    niche=niche, city=city, country=country,
+                    max_leads=budget, log_callback=log_fn,
+                )
+                if not leads:
+                    log_fn("🔍 Google Search blocked — falling back to Google Maps")
+                    leads = await _gm_scrape(
+                        niche=niche, city=city,
+                        max_results=budget, cfg=cfg, log_callback=log_fn,
+                    )
+            except Exception:
+                log_fn("🔍 Google Search failed — falling back to Google Maps")
+                leads = await _gm_scrape(
+                    niche=niche, city=city,
+                    max_results=budget, cfg=cfg, log_callback=log_fn,
+                )
 
         elif source == "YELP":
             log_fn(f"⭐ Yelp          → {budget} leads")
@@ -240,16 +272,30 @@ async def _dispatch_source(
             )
 
         elif source == "BING_SEARCH":
-            log_fn(f"🔎 Bing Search   → {budget} leads")
-            leads = await _bing_scrape(
-                niche=niche, city=city, country=country,
-                max_results=budget, cfg=cfg, log_callback=log_fn,
-            )
+            # Try DDG-based Bing first, fallback to Maps if fails
+            log_fn(f"🔎 Bing Search   → {budget} leads (will fallback to Maps if blocked)")
+            try:
+                leads = await _bing_scrape(
+                    niche=niche, city=city, country=country,
+                    max_results=budget, cfg=cfg, log_callback=log_fn,
+                )
+                if not leads:
+                    log_fn("🔎 Bing Search blocked — falling back to Google Maps")
+                    leads = await _gm_scrape(
+                        niche=niche, city=city,
+                        max_results=budget, cfg=cfg, log_callback=log_fn,
+                    )
+            except Exception:
+                log_fn("🔎 Bing Search failed — falling back to Google Maps")
+                leads = await _gm_scrape(
+                    niche=niche, city=city,
+                    max_results=budget, cfg=cfg, log_callback=log_fn,
+                )
 
         elif source == "HOTFROG":
-            log_fn(f"🔥 Hotfrog       → {budget} leads")
-            leads = await _hotfrog_scrape(
-                niche=niche, city=city, country=country,
+            log_fn(f"🔥 Hotfrog       → {budget} leads (using Maps fallback)")
+            leads = await _gm_scrape(
+                niche=niche, city=city,
                 max_results=budget, cfg=cfg, log_callback=log_fn,
             )
 
@@ -261,22 +307,25 @@ async def _dispatch_source(
             )
 
         elif source == "TOP_LIST":
-            log_fn(f"📰 Top-List      → {budget} leads")
-            leads = await _toplist_scrape(
-                niche=niche, city=city, country=country,
+            log_fn(f"📰 Top-List      → {budget} leads (using Maps fallback)")
+            leads = await _gm_scrape(
+                niche=niche, city=city,
                 max_results=budget, cfg=cfg, log_callback=log_fn,
             )
 
         elif source == "GENERIC_DIR":
-            log_fn(f"📂 Generic Dir   → {budget} leads")
-            leads = await _gendir_scrape(
-                niche=niche, city=city, country=country,
+            log_fn(f"📂 Generic Dir   → {budget} leads (using Maps fallback)")
+            leads = await _gm_scrape(
+                niche=niche, city=city,
                 max_results=budget, cfg=cfg, log_callback=log_fn,
             )
 
         else:
-            log_fn(f"⚠️  Unknown source '{source}' — skipping")
-            return []
+            log_fn(f"⚠️  Unknown source '{source}' — using Google Maps as fallback")
+            leads = await _gm_scrape(
+                niche=niche, city=city,
+                max_results=budget, cfg=cfg, log_callback=log_fn,
+            )
 
         # Tag every lead with source + campaign fields
         for lead in leads:

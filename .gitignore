@@ -19,7 +19,7 @@ build/
 logs/
 
 # Database & data
-backend/data/leads.db
+backend/data/
 backend/data/*.db
 
 # Browser automation data
