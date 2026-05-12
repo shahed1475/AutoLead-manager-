@@ -3,6 +3,7 @@ from fastapi import APIRouter, BackgroundTasks
 from .. import database as db
 from .. import scraper
 from ..models import ScraperRequest
+from ..scrapers.bing_search import scrape_bing_search
 
 router = APIRouter(prefix="/api/scraper", tags=["scraper"])
 
@@ -12,6 +13,15 @@ _scraper_state: dict = {
     "total":     0,
     "last_name": "",
     "last_log":  "",
+}
+
+# Separate state for Bing scraper
+_bing_state: dict = {
+    "running": False,
+    "progress": 0,
+    "total": 0,
+    "last_log": "",
+    "results": [],
 }
 
 

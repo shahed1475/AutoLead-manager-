@@ -102,28 +102,66 @@ async def _scraper_cfg() -> Dict[str, Any]:
 
 # ── Chrome driver factory ─────────────────────────────────────────────────────
 
-def _build_driver(headless: bool) -> "webdriver.Chrome":
-    opts = ChromeOptions()
-    if headless:
-        opts.add_argument("--headless=new")          # modern headless API
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--window-size=1920,1080")
-    opts.add_argument("--lang=en-US")
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument(f"user-agent={_USER_AGENT}")
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-    opts.add_experimental_option("useAutomationExtension", False)
+def _build_driver(headless: bool, log_fn: Callable[[str], None] = None) -> Optional["webdriver.Chrome"]:
+    """Build Chrome driver with proper error handling and logging."""
+    def _log(msg: str) -> None:
+        if log_fn:
+            try:
+                log_fn(msg)
+            except Exception:
+                pass
 
-    service = ChromeService(ChromeDriverManager().install())
-    driver  = webdriver.Chrome(service=service, options=opts)
+    _log("🔧 Initializing Chrome driver...")
 
-    # Stealth: hide navigator.webdriver from page scripts
-    driver.execute_script(
-        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-    )
-    return driver
+    try:
+        opts = ChromeOptions()
+        if headless:
+            opts.add_argument("--headless=new")          # modern headless API
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("--window-size=1920,1080")
+        opts.add_argument("--lang=en-US")
+        opts.add_argument("--disable-blink-features=AutomationControlled")
+        opts.add_argument(f"user-agent={_USER_AGENT}")
+        opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+        opts.add_experimental_option("useAutomationExtension", False)
+
+        # Add logging for debugging
+        opts.set_capability("goog:loggingPrefs", {"browser": "ALL"})
+
+        _log("📦 Installing ChromeDriver...")
+        service = ChromeService(ChromeDriverManager().install())
+
+        _log("🚀 Launching Chrome browser...")
+        driver  = webdriver.Chrome(service=service, options=opts)
+
+        # Stealth: hide navigator.webdriver from page scripts
+        driver.execute_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+
+        # Verify browser is working
+        driver.get("about:blank")
+        _log("✅ Chrome driver ready")
+        return driver
+
+    except Exception as exc:
+        _log(f"❌ Chrome driver failed: {type(exc).__name__}: {exc}")
+        # Save error details for debugging
+        try:
+            import os
+            debug_dir = os.path.join(os.path.dirname(__file__), "data", "debug")
+            os.makedirs(debug_dir, exist_ok=True)
+            from datetime import datetime
+            error_file = os.path.join(debug_dir, f"chrome_error_{datetime.now():%Y%m%d_%H%M%S}.txt")
+            with open(error_file, "w") as f:
+                f.write(f"Chrome Driver Error: {type(exc).__name__}: {exc}\n")
+                import traceback
+                f.write(traceback.format_exc())
+        except:
+            pass
+        return None
 
 
 # ── Element helpers ───────────────────────────────────────────────────────────
