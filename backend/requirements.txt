@@ -3,14 +3,10 @@ fastapi>=0.115.5
 uvicorn[standard]>=0.32.1
 python-multipart>=0.0.12
 
-# ── Database — SQLite (local dev) / PostgreSQL (production) ─────────────────
-aiosqlite>=0.20.0            # async SQLite driver (local development)
-asyncpg>=0.29.0              # async PostgreSQL driver (production)
-psycopg2-binary>=2.9.9       # sync PostgreSQL driver (migrations / admin)
-
-# ── Redis & async job queue ───────────────────────────────────────────────────
-redis[asyncio]>=5.0.3
-arq>=0.25.0                  # async Redis queue (asyncio-native alternative to rq)
+# ── Database ─────────────────────────────────────────────────────────────────
+# SQLite is the only DB this app runs on — a single file, ideal for a
+# one-click desktop installer. No external DB server to install or manage.
+aiosqlite>=0.20.0
 
 # ── AI / LLM ─────────────────────────────────────────────────────────────────
 ollama>=0.3.0
@@ -28,6 +24,18 @@ python-whois>=0.9.4
 pydantic>=2.10.0
 pydantic[email]>=2.10.0
 pydantic-settings>=2.7.0
+
+# ── Auth & rate limiting ───────────────────────────────────────────────────────
+bcrypt>=4.1.0
+slowapi>=0.1.9
+
+# ── Testing (dev) ──────────────────────────────────────────────────────────
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+respx>=0.21.0
+
+# ── At-rest secrets encryption (SMTP/IMAP passwords, cloud LLM API keys) ──────
+cryptography>=42.0.0
 
 # ── Email (SMTP send + IMAP receive) ─────────────────────────────────────────
 aiosmtplib>=3.0.0
