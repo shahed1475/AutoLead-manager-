@@ -38,8 +38,9 @@ settings = get_settings()
 DB_PATH = settings.database_path
 
 _JSON_ARRAY_COLS = frozenset({
-    "marketing_gaps", "issues", "conversion_gaps",
-    "seo_gaps", "pitch_angles", "key_problems", "sources",
+    "marketing_gaps", "issues", "conversion_gaps", "seo_gaps",
+    "pitch_angles", "key_problems", "sources",
+    "services", "products", "social_profiles", "tech_stack", "partnerships",
 })
 
 _PG_PARAM_RE = re.compile(r'\$\d+')
@@ -370,6 +371,92 @@ CREATE TABLE IF NOT EXISTS campaigns (
     started_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     completed_at  TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS company_profiles (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id                  INTEGER UNIQUE REFERENCES leads(id) ON DELETE CASCADE,
+    status                   TEXT DEFAULT 'PENDING',
+    qualification_status     TEXT,
+    qualification_reason     TEXT,
+    qualification_confidence REAL,
+    industry                 TEXT,
+    services                 TEXT,
+    products                 TEXT,
+    company_description      TEXT,
+    social_profiles          TEXT,
+    tech_stack               TEXT,
+    company_size_estimate    TEXT,
+    maturity_estimate        TEXT,
+    hiring_signal            INTEGER,
+    recent_activity_summary  TEXT,
+    partnerships             TEXT,
+    research_confidence      REAL,
+    researched_at            TIMESTAMP,
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_company_profiles_status ON company_profiles (status);
+
+CREATE TABLE IF NOT EXISTS research_evidence (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_profile_id INTEGER REFERENCES company_profiles(id) ON DELETE CASCADE,
+    agent_name         TEXT,
+    field_name         TEXT,
+    source_type        TEXT,
+    source_url         TEXT,
+    snippet            TEXT,
+    collected_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_research_evidence_profile ON research_evidence (company_profile_id);
+
+CREATE TABLE IF NOT EXISTS decision_makers (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_profile_id  INTEGER REFERENCES company_profiles(id) ON DELETE CASCADE,
+    full_name           TEXT,
+    role_title           TEXT,
+    seniority_rank       INTEGER,
+    email                TEXT,
+    phone                TEXT,
+    linkedin_url         TEXT,
+    source_type          TEXT,
+    source_url           TEXT,
+    confidence           REAL,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_decision_makers_profile ON decision_makers (company_profile_id);
+
+CREATE TABLE IF NOT EXISTS verification_results (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_maker_id  INTEGER REFERENCES decision_makers(id) ON DELETE CASCADE,
+    check_name         TEXT,
+    passed             INTEGER,
+    detail             TEXT,
+    created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sales_scores (
+    id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_profile_id           INTEGER UNIQUE REFERENCES company_profiles(id) ON DELETE CASCADE,
+    company_quality_score        REAL,
+    decision_maker_quality_score REAL,
+    contact_confidence_score     REAL,
+    icp_match_score              REAL,
+    outreach_readiness_score     REAL,
+    overall_prospect_score       REAL,
+    briefing                     TEXT,
+    scored_at                    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS personalization_context (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_profile_id  INTEGER UNIQUE REFERENCES company_profiles(id) ON DELETE CASCADE,
+    outreach_angle       TEXT,
+    value_proposition    TEXT,
+    talking_points        TEXT,
+    email_tone            TEXT,
+    whatsapp_tone         TEXT,
+    recommended_cta       TEXT,
+    created_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -482,6 +569,10 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
     await raw.execute("""
         UPDATE campaign_runs SET status = 'FAILED', stage = 'FAILED', finished_at = CURRENT_TIMESTAMP
         WHERE status = 'RUNNING'
+    """)
+    await raw.execute("""
+        UPDATE company_profiles SET status = 'PENDING'
+        WHERE status IN ('QUALIFYING', 'RESEARCHING')
     """)
     await raw.commit()
     logger.info("Schema migrations applied")
@@ -1371,6 +1462,96 @@ async def get_score(lead_id: int) -> Optional[Dict[str, Any]]:
     async with get_db() as conn:
         row = await conn.fetchrow("SELECT * FROM scores WHERE lead_id = $1", lead_id)
     return dict(row) if row else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sales Intelligence — company research
+# ─────────────────────────────────────────────────────────────────────────────
+
+_COMPANY_PROFILE_WRITABLE = frozenset({
+    "status", "qualification_status", "qualification_reason", "qualification_confidence",
+    "industry", "services", "products", "company_description", "social_profiles",
+    "tech_stack", "company_size_estimate", "maturity_estimate", "hiring_signal",
+    "recent_activity_summary", "partnerships", "research_confidence", "researched_at",
+})
+
+
+async def upsert_company_profile(lead_id: int, data: Dict[str, Any]) -> int:
+    """Insert or update the company_profiles row for lead_id. Returns its id."""
+    clean = {
+        k: (json.dumps(v) if isinstance(v, list) else v)
+        for k, v in data.items()
+        if k in _COMPANY_PROFILE_WRITABLE and v is not None
+    }
+    if not clean:
+        existing = await get_company_profile(lead_id)
+        if existing:
+            return existing["id"]
+        clean = {"status": "PENDING"}
+    cols         = ", ".join(["lead_id"] + list(clean.keys()))
+    placeholders = ", ".join("?" for _ in range(len(clean) + 1))
+    update_set   = ", ".join(f"{c} = excluded.{c}" for c in clean.keys())
+    async with get_db() as conn:
+        await conn.execute(
+            f"""INSERT INTO company_profiles ({cols}) VALUES ({placeholders})
+                ON CONFLICT (lead_id) DO UPDATE SET {update_set}""",
+            lead_id, *clean.values(),
+        )
+        row = await conn.fetchrow(
+            "SELECT id FROM company_profiles WHERE lead_id = $1",
+            lead_id,
+        )
+    return row["id"] if row else None
+
+
+async def get_company_profile(lead_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow("SELECT * FROM company_profiles WHERE lead_id = $1", lead_id)
+    return dict(row) if row else None
+
+
+async def add_research_evidence(company_profile_id: int, items: List[Dict[str, Any]]) -> None:
+    if not items:
+        return
+    async with get_db() as conn:
+        for item in items:
+            await conn.execute(
+                """INSERT INTO research_evidence
+                   (company_profile_id, agent_name, field_name, source_type, source_url, snippet)
+                   VALUES ($1, $2, $3, $4, $5, $6)""",
+                company_profile_id, item.get("agent_name"), item.get("field_name"),
+                item.get("source_type"), item.get("source_url"), item.get("snippet"),
+            )
+
+
+async def get_research_evidence(company_profile_id: int) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM research_evidence WHERE company_profile_id = $1 ORDER BY collected_at",
+            company_profile_id,
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_leads_without_company_profile(limit: int = 50) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            """SELECT l.* FROM leads l
+               LEFT JOIN company_profiles cp ON cp.lead_id = l.id
+               WHERE cp.id IS NULL
+               ORDER BY l.created_at DESC LIMIT $1""",
+            limit,
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_pending_company_profiles(limit: int = 50) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM company_profiles WHERE status = 'PENDING' ORDER BY created_at LIMIT $1",
+            limit,
+        )
+    return [dict(r) for r in rows]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
