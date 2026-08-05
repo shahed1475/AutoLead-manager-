@@ -223,6 +223,7 @@ async def analyze_website(url: str, timeout: int = 10) -> Dict[str, Any]:
         "url":               norm,
         "has_ssl":           has_ssl,
         "error":             None,
+        "raw_html":          "",
         # Content
         "page_title":        "",
         "meta_description":  "",
@@ -263,6 +264,7 @@ async def analyze_website(url: str, timeout: int = 10) -> Dict[str, Any]:
         return result
 
     soup = BeautifulSoup(html, "lxml")
+    result["raw_html"] = html[:200_000]  # capped — used only for in-request tech-stack detection, never persisted
 
     # ── Title ──────────────────────────────────────────────────────────────────
     tag = soup.find("title")
