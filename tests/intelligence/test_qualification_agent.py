@@ -54,6 +54,29 @@ async def test_rejects_unreachable_website():
     assert "website unreachable" in result.reason
 
 
+async def test_head_fails_but_get_succeeds():
+    """When HEAD raises an exception but GET succeeds, lead should not be penalized for unreachable website."""
+    lead = {
+        "business_name": "Charlie Corp",
+        "email": "info@charliecorp.io",
+        "website": "https://charliecorp.io",
+    }
+    campaign = None
+
+    with respx.mock:
+        # HEAD raises (common for servers that don't support HEAD properly)
+        respx.head("https://charliecorp.io").mock(side_effect=httpx.RemoteProtocolError("server doesn't support HEAD"))
+        # GET succeeds
+        respx.get("https://charliecorp.io").mock(return_value=httpx.Response(200))
+        agent = QualificationAgent()
+        result = await agent.run(lead, campaign)
+
+    # Should qualify despite HEAD failure, since GET succeeded
+    assert result.status == "ok"
+    assert result.data["qualification_status"] == "QUALIFIED"
+    assert "website unreachable" not in (result.reason or "")
+
+
 async def test_niche_mismatch_recorded_in_reason():
     lead = {
         "business_name": "Gamma Cafe",

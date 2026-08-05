@@ -31,15 +31,19 @@ async def _check_website_reachable(url: Optional[str]) -> Optional[bool]:
     if not url:
         return None
     target = url if url.startswith(("http://", "https://")) else f"https://{url}"
-    try:
-        async with httpx.AsyncClient(timeout=_REACHABILITY_TIMEOUT, follow_redirects=True, verify=False) as client:
+    async with httpx.AsyncClient(timeout=_REACHABILITY_TIMEOUT, follow_redirects=True, verify=False) as client:
+        try:
             resp = await client.head(target)
-            if resp.status_code >= 400:
-                resp = await client.get(target)
+            if resp.status_code < 400:
+                return True
+        except Exception as exc:
+            logger.debug("qualification: HEAD request failed for %s: %s", url, exc)
+        try:
+            resp = await client.get(target)
             return resp.status_code < 400
-    except Exception as exc:
-        logger.debug("qualification: reachability check failed for %s: %s", url, exc)
-        return False
+        except Exception as exc:
+            logger.debug("qualification: GET fallback failed for %s: %s", url, exc)
+            return False
 
 
 def _niche_matches(lead_niche: Optional[str], campaign_niche: Optional[str]) -> Optional[bool]:
