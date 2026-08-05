@@ -140,3 +140,20 @@ async def test_resume_after_interruption(clean_db, monkeypatch):
 async def test_run_pending_research_returns_zero_when_nothing_pending(clean_db):
     outcome = await orch_module.run_pending_research()
     assert outcome == {"processed": 0, "results": []}
+
+
+async def test_lead_missing_id_returns_failed_instead_of_raising():
+    # lead_id extraction (lead["id"]) must happen inside the try block — a malformed
+    # lead argument must never escape run_research_pipeline as an uncaught exception,
+    # since this is wired into live campaign traffic.
+    result = await orch_module.run_research_pipeline({"business_name": "No ID Co"})
+    assert result["status"] == "FAILED"
+    assert result["lead_id"] is None
+    assert "error" in result
+
+
+async def test_none_lead_returns_failed_instead_of_raising():
+    result = await orch_module.run_research_pipeline(None)
+    assert result["status"] == "FAILED"
+    assert result["lead_id"] is None
+    assert "error" in result

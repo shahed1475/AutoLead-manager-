@@ -35,9 +35,9 @@ async def _persist(lead_id: int, result: AgentResult, agent_name: str, extra: Di
 async def run_research_pipeline(lead: Dict[str, Any], campaign: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Run Qualification then (if qualified) Company Research for one lead.
     Persists after each agent so a crash never loses earlier progress. Never raises."""
-    lead_id = lead["id"]
-
+    lead_id = None
     try:
+        lead_id = lead["id"]
         await db.upsert_company_profile(lead_id, {"status": "QUALIFYING"})
 
         qual_result = await _qualification_agent.run(lead, campaign)
@@ -62,10 +62,11 @@ async def run_research_pipeline(lead: Dict[str, Any], campaign: Optional[Dict[st
 
     except Exception as exc:
         logger.error("Research pipeline failed for lead %s: %s", lead_id, exc, exc_info=True)
-        try:
-            await db.upsert_company_profile(lead_id, {"status": "FAILED"})
-        except Exception:
-            pass
+        if lead_id is not None:
+            try:
+                await db.upsert_company_profile(lead_id, {"status": "FAILED"})
+            except Exception:
+                pass
         return {"lead_id": lead_id, "status": "FAILED", "error": str(exc)}
 
 
