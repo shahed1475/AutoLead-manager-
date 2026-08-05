@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   X, Copy, Edit2, Check, Send, RefreshCw,
   MessageSquare, Mail, Reply, Clock,
@@ -8,6 +8,7 @@ import { leadsApi, aiApi } from '../api/client'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import EnrichmentCard from './EnrichmentCard'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 
 const TABS = [
   { id: 'whatsapp', label: 'WhatsApp', icon: MessageSquare, channel: 'WHATSAPP', regenType: 'whatsapp' },
@@ -31,6 +32,7 @@ function CopyBtn({ text }) {
         setTimeout(() => setCopied(false), 2000)
       }}
       title="Copy"
+      aria-label={copied ? 'Copied' : 'Copy to clipboard'}
       className="p-1.5 rounded text-slate-500 hover:text-slate-300 hover:bg-slate-700 transition-all"
     >
       {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
@@ -110,19 +112,33 @@ export default function ViewMessagesModal({ lead, onClose }) {
     ? (draft.ai_follow_up_1 || draft.ai_follow_up_2 || draft.ai_follow_up_3)
     : draft.ai_whatsapp_msg
 
+  const dialogRef = useFocusTrap(true)
+
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
   return (
     <div
       className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="view-messages-title"
         className="card w-full max-w-2xl max-h-[82vh] flex flex-col shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-start justify-between px-5 py-4 border-b border-slate-700/50">
           <div className="min-w-0">
-            <h2 className="font-semibold text-slate-100 truncate">{lead.business_name}</h2>
+            <h2 id="view-messages-title" className="font-semibold text-slate-100 truncate">{lead.business_name}</h2>
             <div className="flex items-center gap-3 mt-1 flex-wrap">
               <p className="text-xs text-slate-500">AI-Generated Messages</p>
               <EnrichmentCard lead={lead} />
@@ -130,6 +146,7 @@ export default function ViewMessagesModal({ lead, onClose }) {
           </div>
           <button
             onClick={onClose}
+            aria-label="Close"
             className="p-1.5 rounded hover:bg-slate-700 text-slate-400 transition-all shrink-0 ml-3"
           >
             <X size={16} />

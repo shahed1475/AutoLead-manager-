@@ -1,10 +1,13 @@
 import csv
 import io
+import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import Response
 from .. import database as db
 from ..models import Lead, LeadCreate, LeadUpdate, LeadListResponse, StatusUpdate
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/leads", tags=["leads"])
 
@@ -46,16 +49,27 @@ async def create_lead(payload: LeadCreate):
 
 @router.get("/export/csv")
 async def export_csv(
-    status: Optional[str] = None,
-    channel: Optional[str] = None,
-    niche: Optional[str] = None,
-    city: Optional[str] = None,
+    status:        Optional[str] = None,
+    channel:       Optional[str] = None,
+    niche:         Optional[str] = None,
+    city:          Optional[str] = None,
+    search:        Optional[str] = None,
+    date_from:     Optional[str] = None,
+    date_to:       Optional[str] = None,
+    date_field:    str           = Query("created_at"),
+    score_label:   Optional[str] = None,
+    enriched_only: bool          = False,
 ):
-    result = await db.get_leads(page_size=10_000, status=status, channel=channel, niche=niche, city=city)
+    result = await db.get_leads(
+        page_size=10_000, status=status, channel=channel, niche=niche, city=city,
+        search=search, date_from=date_from, date_to=date_to, date_field=date_field,
+        score_label=score_label, enriched_only=enriched_only,
+    )
     items = result["items"]
     output = io.StringIO()
     export_cols = [
-        "id", "business_name", "phone", "email", "website", "niche", "city",
+        "id", "business_name", "phone", "email", "website", "niche", "city", "country", "address",
+        "source", "score", "score_label", "rating", "reviews_count",
         "status", "channel", "ai_whatsapp_msg", "ai_email_subject", "ai_email_body",
         "ai_followup_msg", "created_at", "sent_at", "followup_sent_at",
     ]
@@ -92,6 +106,7 @@ async def import_csv(file: UploadFile = File(...)):
             })
             created += 1
         except Exception as exc:
+            logger.warning("CSV import row %d failed: %s", i, exc)
             errors.append(f"Row {i}: {exc}")
     return {"created": created, "errors": errors}
 
@@ -198,7 +213,8 @@ async def regenerate_messages(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        logger.error("Message regeneration failed for lead %s: %s", lead_id, exc, exc_info=True)
+        raise HTTPException(500, "Message regeneration failed — see server logs")
 
 
 @router.post("/{lead_id}/skip", response_model=Lead)

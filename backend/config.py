@@ -10,19 +10,8 @@ class Settings(BaseSettings):
     debug:    bool = False
 
     # ── Database ──────────────────────────────────────────────────────────────
-    # Set DATABASE_URL env var to point to PostgreSQL.
-    # Local default assumes docker-compose postgres service.
-    database_url: str = "postgresql://autolead:autolead_secret@localhost:5432/autolead"
-
-    # Legacy SQLite path kept for migration utility only
+    # SQLite — a single file, no external DB server. Ideal for a desktop app.
     database_path: str = str(BASE_DIR / "data" / "leads.db")
-
-    # ── Redis ─────────────────────────────────────────────────────────────────
-    redis_url: str = "redis://localhost:6379/0"
-
-    # ── Connection pool ───────────────────────────────────────────────────────
-    db_pool_min: int = 5
-    db_pool_max: int = 20
 
     # ── Ollama (local AI) ─────────────────────────────────────────────────────
     ollama_base_url: str = "http://localhost:11434"

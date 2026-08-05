@@ -18,8 +18,10 @@ asyncio.run_coroutine_threadsafe when SSE streaming is needed.
 """
 
 import asyncio
+import os
 import random
 import re
+import sys
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -76,7 +78,41 @@ _SEL_CAPTCHA      = 'form#captcha-form, div#captcha, iframe[src*="recaptcha"], d
 
 # ── Driver factory ────────────────────────────────────────────────────────────
 
+def _system_chrome_paths() -> tuple[Optional[str], Optional[str]]:
+    """
+    Return (chrome_binary, chromedriver_path) from CHROME_BIN / CHROMEDRIVER_PATH
+    env vars when both point to real files on disk (set inside the Docker image,
+    where system Chromium + a version-matched chromedriver are pre-installed).
+
+    webdriver-manager always downloads the LATEST chromedriver, which can be a
+    version ahead of an apt-installed Chromium and fails with
+    SessionNotCreatedException — using the pre-matched system pair avoids that
+    entirely. Returns (None, None) when unset (e.g. native Windows/venv runs),
+    so callers fall back to webdriver-manager's auto-detection there.
+    """
+    chrome_bin = os.environ.get("CHROME_BIN")
+    driver_bin = os.environ.get("CHROMEDRIVER_PATH")
+    if chrome_bin and driver_bin and os.path.isfile(chrome_bin) and os.path.isfile(driver_bin):
+        return chrome_bin, driver_bin
+    return None, None
+
+
+def _resolve_headless(requested: bool) -> bool:
+    """
+    Force headless on a Linux host with no X display (e.g. inside Docker) —
+    a visible Chrome window can never render there, and Selenium fails
+    immediately with SessionNotCreatedException ("Chrome instance exited")
+    if a non-headless launch is attempted. The UI's "show browser window"
+    checkbox is unchecked (non-headless) by default, so without this the
+    scraper silently finds zero leads on every Docker deployment.
+    """
+    if not requested and sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+        return True
+    return requested
+
+
 def _build_driver(headless: bool, user_agent: Optional[str] = None) -> "webdriver.Chrome":
+    headless = _resolve_headless(headless)
     ua   = user_agent or random.choice(_USER_AGENTS)
     opts = ChromeOptions()
     if headless:
@@ -91,7 +127,10 @@ def _build_driver(headless: bool, user_agent: Optional[str] = None) -> "webdrive
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
 
-    service = ChromeService(ChromeDriverManager().install())
+    chrome_bin, driver_bin = _system_chrome_paths()
+    if chrome_bin:
+        opts.binary_location = chrome_bin
+    service = ChromeService(driver_bin or ChromeDriverManager().install())
     driver  = webdriver.Chrome(service=service, options=opts)
 
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
@@ -223,6 +262,7 @@ def _extract_detail(
     total: int,
     log_fn: Callable[[str], None],
     captcha_retried: bool,
+    country: str = "",
 ) -> Optional[Dict[str, Any]]:
     """
     Navigate to a Maps business detail URL and extract all fields.
@@ -322,12 +362,15 @@ def _extract_detail(
         except (NoSuchElementException, StaleElementReferenceException):
             pass
 
-        # ── Country hint from address ─────────────────────────────────────────
-        country: Optional[str] = None
-        if address:
+        # ── Country: prefer the campaign's actual country param over guessing
+        # from the address — the last comma-segment of a scraped address is
+        # often a postal code or state, not a country. Only fall back to that
+        # heuristic when the caller didn't supply a country at all.
+        country_out: Optional[str] = country.strip() if country else None
+        if not country_out and address:
             parts = [p.strip() for p in address.split(",")]
             if len(parts) >= 2:
-                country = parts[-1]
+                country_out = parts[-1]
 
         log_fn(
             f"✅ [{idx}/{total}] {name}"
@@ -345,7 +388,7 @@ def _extract_detail(
             "reviews_count": reviews_count,
             "niche":         niche,
             "city":          city,
-            "country":       country,
+            "country":       country_out,
             "source":        "GOOGLE_MAPS",
             "raw_url":       url,
             "email":         None,
@@ -364,6 +407,7 @@ def scrape_sync(
     max_results: int,
     cfg: Dict[str, Any],
     log_fn: Callable[[str], None],
+    country: str = "",
 ) -> List[Dict[str, Any]]:
     """
     Selenium-driven Google Maps scraper with 3 query variants, pagination,
@@ -375,6 +419,10 @@ def scrape_sync(
     if not _SELENIUM_OK:
         log_fn("❌ Selenium not installed. Run: pip install selenium webdriver-manager")
         return []
+
+    if not cfg.get("headless") and _resolve_headless(False):
+        log_fn("🖥️  No display available on this host — forcing headless Chrome")
+        cfg = {**cfg, "headless": True}
 
     # 3 query variants — each may surface different listings
     query_variants = [
@@ -454,6 +502,7 @@ def scrape_sync(
                     total=max_results,
                     log_fn=log_fn,
                     captcha_retried=captcha_retried,
+                    country=country,
                 )
 
                 if result is None:
@@ -472,6 +521,7 @@ def scrape_sync(
                             total=max_results,
                             log_fn=log_fn,
                             captcha_retried=True,
+                            country=country,
                         )
                         if not result or result.get("__captcha__"):
                             log_fn("❌ CAPTCHA persists — stopping this query")
@@ -520,6 +570,7 @@ async def scrape(
     max_results: int = 60,
     cfg: Optional[Dict[str, Any]] = None,
     log_callback: Optional[Callable[[str], None]] = None,
+    country: str = "",
 ) -> List[Dict[str, Any]]:
     """
     Async wrapper for the Google Maps scraper.
@@ -549,5 +600,5 @@ async def scrape(
                 pass
 
     _log(f"🚀 Google Maps scraper starting: {niche} in {city} (max {max_results})")
-    leads = await asyncio.to_thread(scrape_sync, niche, city, max_results, effective_cfg, _log)
+    leads = await asyncio.to_thread(scrape_sync, niche, city, max_results, effective_cfg, _log, country)
     return leads

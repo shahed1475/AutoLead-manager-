@@ -1,13 +1,18 @@
+import asyncio
 import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Request
 from typing import Dict, List, Optional
 from .. import database as db
 from .. import email_sender, whatsapp_sender, ai_brain
 from .. import scrapers
+from ..enrichment.ai_enricher import enrich_lead_with_ai
+from ..enrichment.website_analyzer import analyze_website
 from ..followup_engine import schedule_followups_for_lead as _schedule_fu
 from ..log_stream import emit as _ls_emit
 from ..models import CampaignSendRequest, CampaignStartRequest
+from ..rate_limit import limiter
+from ..scoring.lead_scorer import score_lead
 
 # Update DB after every lead so real-time counts are always accurate
 _PROGRESS_EVERY = 1
@@ -17,9 +22,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/campaign", tags=["campaign"])
 
 # ── In-memory campaign run state ──────────────────────────────────────────────
+# `stage` is the fine-grained pipeline phase shown in the UI (mirrors
+# campaign_runs.stage in the DB): QUEUED, STARTING, SCRAPING, ENRICHING,
+# SCORING, WRITING, SENDING, COMPLETED, STOPPED, FAILED, PAUSED.
 _run_state: dict = {
     "running":          False,
     "stop_requested":   False,
+    "paused":           False,
+    "stage":            "QUEUED",
     "niche":            None,
     "city":             None,
     "country":          None,
@@ -33,6 +43,9 @@ _run_state: dict = {
     "leads_found":      0,
     "leads_sent":       0,
     "run_id":           None,
+    "current_lead":     None,   # business_name of the lead currently being written/sent
+    "messages_generated": 0,
+    "started_at":       None,   # ISO timestamp — drives leads/min + ETA in /api/engine/status
 }
 
 
@@ -119,10 +132,29 @@ async def _run_campaign_task(
     if sources is None:
         sources = ["GOOGLE_MAPS"]
 
+    def _log_sync(msg: str) -> None:
+        _ls_emit("INFO", "SCRAPE", msg)
+        logger.info("[campaign] %s", msg)
+
+    async def _set_stage(stage: str) -> None:
+        """Persist the real pipeline stage — mirrors campaign_runs.stage in the DB
+        so the UI reflects what's actually happening, not a log-text guess."""
+        _run_state["stage"] = stage
+        try:
+            await db.update_campaign_run(run_id, {"stage": stage})
+        except Exception as exc:
+            logger.debug("Stage persist failed (run_id=%s, stage=%s): %s", run_id, stage, exc)
+
+    async def _wait_while_paused() -> bool:
+        """Blocks between leads while paused. Stop always wins over pause.
+        Returns True if the caller should stop (stop was requested)."""
+        while _run_state["paused"] and not _run_state["stop_requested"]:
+            await asyncio.sleep(1)
+        return _run_state["stop_requested"]
+
     try:
-        def _log_sync(msg: str) -> None:
-            _ls_emit("INFO", "SCRAPE", msg)
-            logger.info("[campaign] %s", msg)
+        await _set_stage("STARTING")
+        _log_sync("🚀 Starting campaign...")
 
         # ── Bulk scrape: dedup + validate + email-enrich + DB save all handled ──
         scraped_leads = await scrapers.run_bulk_scrape(
@@ -135,6 +167,8 @@ async def _run_campaign_task(
                 "headless":  headless,
             },
             log_callback=_log_sync,
+            stage_callback=_set_stage,
+            pause_callback=lambda: _wait_while_paused(),
         )
         n_from_scraper = len(scraped_leads)
 
@@ -159,6 +193,56 @@ async def _run_campaign_task(
             run_id, _run_state["leads_found"], _run_state["leads_sent"]
         )
 
+        # ── Enrich every lead that has a website with business intelligence ────
+        # (website structure + AI summary/gaps/growth) — this used to only run
+        # via a manual single-lead endpoint, so scoring below always saw an
+        # empty enriched_data row. Bounded concurrency (3) since each lead
+        # does one HTTP fetch + one LLM call.
+        await _set_stage("ENRICHING")
+        if not await _wait_while_paused():
+            leads_with_site = [l for l in all_leads if l.get("website")]
+            if leads_with_site:
+                _log_sync(f"🔎 Enriching {len(leads_with_site)} lead(s) with business intelligence...")
+                company_dna = ai_brain._load_company_dna()
+                sem = asyncio.Semaphore(3)
+
+                async def _enrich_one(lead: dict) -> None:
+                    async with sem:
+                        try:
+                            website_data = await analyze_website(lead["website"])
+                            await enrich_lead_with_ai(dict(lead), website_data, company_dna)
+                        except Exception as exc:
+                            logger.warning("Enrichment failed for lead %s: %s", lead.get("id"), exc)
+
+                await asyncio.gather(*[_enrich_one(l) for l in leads_with_site])
+
+                # Re-fetch (batched — one query, not one per lead) so scoring
+                # below sees the enriched_at/status fields
+                fresh_map = await db.get_leads_by_ids([l["id"] for l in all_leads])
+                all_leads = [fresh_map.get(l["id"], l) for l in all_leads]
+
+        # ── Score every lead that hasn't been scored yet ────────────────────────
+        await _set_stage("SCORING")
+        unscored = [l for l in all_leads if not (l.get("score") or 0)]
+        if unscored:
+            _log_sync(f"📊 Scoring {len(unscored)} lead(s)...")
+            for lead in unscored:
+                if await _wait_while_paused():
+                    break
+                try:
+                    enriched = await db.get_enriched_data(lead["id"])
+                    scored = await score_lead(dict(lead), enriched=enriched)
+                    _log_sync(
+                        f"   📊 AI Score: {scored.get('final_score', 0):.0f} "
+                        f"({scored.get('category', 'COLD')}) — {lead.get('business_name', '?')}"
+                    )
+                except Exception as exc:
+                    logger.warning("Scoring failed for lead %s: %s", lead.get("id"), exc)
+
+            # Re-fetch (batched) so the hot/warm filter below sees persisted scores
+            fresh_map = await db.get_leads_by_ids([l["id"] for l in all_leads])
+            all_leads = [fresh_map.get(l["id"], l) for l in all_leads]
+
         # ── HOT/WARM filter — auto-disable if all leads would be skipped ───────
         if hot_warm_only:
             n_passing = sum(
@@ -181,13 +265,16 @@ async def _run_campaign_task(
                 "💡 Tip: run POST /api/campaign/test-pipeline to verify the DB write path"
             )
 
-        # ── Per-lead: filter → AI generate → send ─────────────────────────────
+        # ── WRITING: filter → generate AI messages for every eligible lead ─────
+        await _set_stage("WRITING")
+        to_send: List[int] = []
         for lead in all_leads:
-            if _run_state["stop_requested"]:
+            if await _wait_while_paused():
                 break
 
             lead_id = lead["id"]
             biz     = lead.get("business_name", f"lead#{lead_id}")
+            _run_state["current_lead"] = biz
 
             # HOT+WARM filter — skip COLD leads that have already been scored
             if hot_warm_only:
@@ -216,13 +303,24 @@ async def _run_campaign_task(
                     "ai_follow_up_3":   msgs.get("follow_up_3") or msgs.get("followup_day7_body"),
                 })
                 await db.log_campaign_action(lead_id, "AI", "GENERATE", True)
-                lead_fresh = await db.get_lead_by_id(lead_id)
+                _run_state["messages_generated"] += 1
             except Exception as exc:
                 await db.log_campaign_action(lead_id, "AI", "GENERATE", False, str(exc))
                 _log_sync(f"⚠️  AI generation failed for {biz}: {exc} — using fallback messages")
                 logger.warning("AI generation failed for lead %s: %s", lead_id, exc)
 
-            # Send outreach (proceeds even if AI failed — sender has built-in fallbacks)
+            to_send.append(lead_id)
+
+        # ── SENDING: send outreach to every generated lead ─────────────────────
+        await _set_stage("SENDING")
+        for lead_id in to_send:
+            if await _wait_while_paused():
+                break
+
+            lead = await db.get_lead_by_id(lead_id)
+            biz  = (lead or {}).get("business_name", f"lead#{lead_id}")
+            _run_state["current_lead"] = biz
+
             _log_sync(f"📤 Sending {channel} to: {biz}")
             result = await _send_one(lead_id, channel)
             if result.get("success"):
@@ -235,9 +333,12 @@ async def _run_campaign_task(
                     run_id, _run_state["leads_found"], _run_state["leads_sent"]
                 )
 
-        final_status = "STOPPED" if _run_state["stop_requested"] else "COMPLETED"
+        _run_state["current_lead"] = None
+        final_stage = "STOPPED" if _run_state["stop_requested"] else "COMPLETED"
+        await _set_stage(final_stage)
+        _log_sync(f"🏁 Campaign {final_stage.lower()} — {_run_state['leads_sent']} sent")
         await db.update_campaign_run(run_id, {
-            "status":      final_status,
+            "status":      final_stage,
             "leads_found": _run_state["leads_found"],
             "leads_sent":  _run_state["leads_sent"],
             "finished_at": datetime.now(timezone.utc),
@@ -245,6 +346,7 @@ async def _run_campaign_task(
 
     except Exception as exc:
         logger.error("Campaign task failed (run_id=%s): %s", run_id, exc, exc_info=True)
+        await _set_stage("FAILED")
         await db.update_campaign_run(run_id, {
             "status":      "FAILED",
             "leads_found": _run_state["leads_found"],
@@ -255,12 +357,15 @@ async def _run_campaign_task(
     finally:
         _run_state["running"]        = False
         _run_state["stop_requested"] = False
+        _run_state["paused"]         = False
+        _run_state["current_lead"]   = None
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.post("/start")
-async def start_campaign(payload: CampaignStartRequest, background_tasks: BackgroundTasks):
+@limiter.limit("5/minute")
+async def start_campaign(request: Request, payload: CampaignStartRequest, background_tasks: BackgroundTasks):
     if _run_state["running"]:
         raise HTTPException(409, "A campaign is already running")
 
@@ -275,12 +380,14 @@ async def start_campaign(payload: CampaignStartRequest, background_tasks: Backgr
 
     run_id = await db.create_campaign_run(
         payload.niche, payload.city, payload.channel.value, payload.daily_cap,
-        sources=",".join(sources_list),
+        sources=",".join(sources_list), country=payload.country,
     )
 
     _run_state.update({
         "running":          True,
         "stop_requested":   False,
+        "paused":           False,
+        "stage":            "QUEUED",
         "niche":            payload.niche,
         "city":             payload.city,
         "country":          payload.country,
@@ -294,6 +401,9 @@ async def start_campaign(payload: CampaignStartRequest, background_tasks: Backgr
         "leads_found":      0,
         "leads_sent":       0,
         "run_id":           run_id,
+        "current_lead":     None,
+        "messages_generated": 0,
+        "started_at":       datetime.now(timezone.utc).isoformat(),
     })
 
     background_tasks.add_task(
@@ -310,12 +420,58 @@ async def stop_campaign():
     if not _run_state["running"]:
         return {"stopped": False, "message": "No campaign is currently running"}
     _run_state["stop_requested"] = True
+    _run_state["paused"]         = False  # stop always wins over pause
     return {"stopped": True, "message": "Stop signal sent — finishing current lead"}
 
 
+@router.post("/pause")
+async def pause_campaign():
+    """
+    Sets the `paused` flag only — `stage` is deliberately left alone so it
+    keeps showing the real phase (e.g. "WRITING") the campaign will resume
+    into. The frontend renders `paused` as an overlay on top of that stage.
+    """
+    if not _run_state["running"]:
+        return {"paused": False, "message": "No campaign is currently running"}
+    if _run_state["paused"]:
+        return {"paused": True, "message": "Already paused"}
+    _run_state["paused"] = True
+    _ls_emit("INFO", "SYSTEM", "⏸️  Campaign paused — will hold after the current lead")
+    return {"paused": True, "message": "Pausing — finishing current lead, then holding"}
+
+
+@router.post("/resume")
+async def resume_campaign():
+    if not _run_state["running"]:
+        return {"resumed": False, "message": "No campaign is currently running"}
+    if not _run_state["paused"]:
+        return {"resumed": False, "message": "Campaign is not paused"}
+    _run_state["paused"] = False
+    _ls_emit("INFO", "SYSTEM", "▶️  Campaign resumed")
+    return {"resumed": True}
+
+
 @router.get("/history")
-async def campaign_history(limit: int = Query(10, ge=1, le=50)):
+async def campaign_history(limit: int = Query(50, ge=1, le=200)):
     return await db.get_campaign_history(limit)
+
+
+@router.get("/history/{run_id}")
+async def campaign_history_detail(run_id: int):
+    run = await db.get_campaign_run_by_id(run_id)
+    if not run:
+        raise HTTPException(404, "Campaign run not found")
+    return run
+
+
+@router.delete("/history/{run_id}")
+async def delete_campaign_history(run_id: int):
+    if _run_state.get("run_id") == run_id and _run_state["running"]:
+        raise HTTPException(409, "Cannot delete the currently running campaign")
+    ok = await db.delete_campaign_run(run_id)
+    if not ok:
+        raise HTTPException(404, "Campaign run not found")
+    return {"deleted": True, "run_id": run_id}
 
 
 @router.get("/stats")
@@ -324,12 +480,14 @@ async def campaign_stats():
 
 
 @router.post("/send/{lead_id}")
-async def send_to_lead(lead_id: int, channel: str = Query("EMAIL")):
+@limiter.limit("60/minute")
+async def send_to_lead(request: Request, lead_id: int, channel: str = Query("EMAIL")):
     return await _send_one(lead_id, channel.upper())
 
 
 @router.post("/send-followup/{lead_id}")
-async def send_followup(lead_id: int, channel: str = Query("EMAIL")):
+@limiter.limit("60/minute")
+async def send_followup(request: Request, lead_id: int, channel: str = Query("EMAIL")):
     lead = await db.get_lead_by_id(lead_id)
     if not lead:
         raise HTTPException(404, "Lead not found")
@@ -344,8 +502,9 @@ async def send_followup(lead_id: int, channel: str = Query("EMAIL")):
             await db.log_campaign_action(lead_id, "EMAIL", "FOLLOWUP", True)
             sent_via.append("EMAIL")
         except Exception as exc:
+            logger.error("Follow-up email failed for lead %s: %s", lead_id, exc, exc_info=True)
             await db.log_campaign_action(lead_id, "EMAIL", "FOLLOWUP", False, str(exc))
-            errors.append(f"email: {exc}")
+            errors.append("email: send failed — see server logs")
 
     if channel in ("WHATSAPP", "BOTH") and lead.get("phone"):
         try:
@@ -353,8 +512,9 @@ async def send_followup(lead_id: int, channel: str = Query("EMAIL")):
             await db.log_campaign_action(lead_id, "WHATSAPP", "FOLLOWUP", True)
             sent_via.append("WHATSAPP")
         except Exception as exc:
+            logger.error("Follow-up WhatsApp failed for lead %s: %s", lead_id, exc, exc_info=True)
             await db.log_campaign_action(lead_id, "WHATSAPP", "FOLLOWUP", False, str(exc))
-            errors.append(f"whatsapp: {exc}")
+            errors.append("whatsapp: send failed — see server logs")
 
     if sent_via:
         now = _now_iso()
@@ -387,7 +547,8 @@ async def mark_replied(lead_id: int):
 
 
 @router.post("/bulk-send")
-async def bulk_send(payload: CampaignSendRequest, background_tasks: BackgroundTasks):
+@limiter.limit("10/minute")
+async def bulk_send(request: Request, payload: CampaignSendRequest, background_tasks: BackgroundTasks):
     async def _run():
         for lead_id in payload.lead_ids:
             await _send_one(lead_id, payload.channel.value)

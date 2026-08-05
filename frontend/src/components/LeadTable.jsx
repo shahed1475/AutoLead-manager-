@@ -1,62 +1,24 @@
+import { useRef } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   Trash2, SkipForward, Eye, RotateCcw, CheckCircle2,
-  ChevronLeft, ChevronRight, ArrowUp, ArrowDown, ArrowUpDown,
-  Sparkles,
+  ChevronLeft, ChevronRight,
+  Sparkles, Users,
 } from 'lucide-react'
 import clsx from 'clsx'
 import ScoreBadge from './ScoreBadge'
+import { SkeletonTableRows } from './ui/Skeleton'
+import EmptyState from './ui/EmptyState'
+import SortableHeader from './ui/SortableHeader'
+import { useResizableColumns } from '../hooks/useResizableColumns'
+import { STATUS_BADGE, CHANNEL_BADGE, SOURCE_BADGE, SOURCE_LABEL } from '../lib/badges'
 
-const STATUS_BADGE = {
-  PENDING:        'badge-pending',
-  ENRICHED:       'badge-enriched',
-  SCORED:         'badge-scored',
-  MESSAGES_READY: 'badge-messages-ready',
-  SENT:           'badge-sent',
-  REPLIED:        'badge-replied',
-  SKIPPED:        'badge-skipped',
-  FAILED:         'badge-failed',
-}
+const TABLE_COLS = 9
+const ROW_HEIGHT = 53
 
-const CHANNEL_BADGE = {
-  EMAIL:    'badge-email',
-  WHATSAPP: 'badge-whatsapp',
-  BOTH:     'badge bg-teal-500/20 text-teal-400 border border-teal-500/30',
-}
-
-const SOURCE_BADGE = {
-  GOOGLE_MAPS:   'badge bg-blue-500/20 text-blue-400 border border-blue-500/30',
-  YELP:          'badge bg-red-500/20 text-red-400 border border-red-500/30',
-  YELLOW_PAGES:  'badge bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
-  GOOGLE_SEARCH: 'badge bg-purple-500/20 text-purple-400 border border-purple-500/30',
-  BING_MAPS:     'badge bg-sky-500/20 text-sky-400 border border-sky-500/30',
-}
-
-const SOURCE_LABEL = {
-  GOOGLE_MAPS:   '🗺 Maps',
-  YELP:          '⭐ Yelp',
-  YELLOW_PAGES:  '📒 YP',
-  GOOGLE_SEARCH: '🔍 Search',
-  BING_MAPS:     '🔷 Bing',
-}
-
-function SortTh({ label, field, sortBy, sortDir, onSort, className = '' }) {
-  const active = sortBy === field
-  return (
-    <th
-      onClick={() => onSort?.(field)}
-      className={`py-3 px-4 text-left font-medium text-slate-400 text-xs uppercase tracking-wide cursor-pointer select-none hover:text-slate-200 transition-colors ${className}`}
-    >
-      <span className="flex items-center gap-1">
-        {label}
-        {active
-          ? sortDir === 'asc'
-            ? <ArrowUp size={11} className="text-brand-400" />
-            : <ArrowDown size={11} className="text-brand-400" />
-          : <ArrowUpDown size={11} className="text-slate-600" />
-        }
-      </span>
-    </th>
-  )
+const DEFAULT_WIDTHS = {
+  business: 220, nicheCity: 140, contact: 170,
+  score: 100, status: 130, channel: 110, source: 110, sent: 110,
 }
 
 function fmtDate(ts) {
@@ -82,26 +44,46 @@ export default function LeadTable({
   sortBy,
   sortDir,
   onSort,
+  pageSize,
+  onPageSizeChange,
 }) {
   const { items = [], total = 0 } = data || {}
+  const scrollRef = useRef(null)
+  const [colWidths, startResize] = useResizableColumns('autolead:leads-col-widths', DEFAULT_WIDTHS)
+
+  const rowVirtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 10,
+  })
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-20 text-slate-500 text-sm">
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
-          Loading leads…
-        </div>
+      <div className="overflow-x-auto flex-1">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-slate-700/50">
+              {Array.from({ length: TABLE_COLS }).map((_, i) => (
+                <th key={i} className="py-3 px-4" />
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            <SkeletonTableRows rows={10} cols={TABLE_COLS} />
+          </tbody>
+        </table>
       </div>
     )
   }
 
   if (!items.length) {
     return (
-      <div className="flex flex-col items-center justify-center py-20 text-slate-500">
-        <p className="text-sm">No leads found</p>
-        <p className="text-xs mt-1 text-slate-600">Import a CSV or run the scraper to get started</p>
-      </div>
+      <EmptyState
+        icon={Users}
+        title="No leads found"
+        description="Import a CSV or run the scraper to get started."
+      />
     )
   }
 
@@ -122,181 +104,234 @@ export default function LeadTable({
     )
   }
 
+  const virtualRows = rowVirtualizer.getVirtualItems()
+  const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0
+  const paddingBottom = virtualRows.length > 0
+    ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end
+    : 0
+
   return (
     <div className="flex flex-col h-full">
-      <div className="overflow-x-auto flex-1">
-        <table className="w-full text-sm">
-          <thead>
+      <div ref={scrollRef} className="overflow-auto flex-1">
+        <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
+          <thead className="sticky top-0 z-10 bg-slate-900">
             <tr className="border-b border-slate-700/50">
               <th className="py-3 px-4 text-left w-10">
                 <input
                   type="checkbox"
                   checked={allSelected}
                   onChange={toggleAll}
+                  aria-label={allSelected ? 'Deselect all leads on this page' : 'Select all leads on this page'}
                   className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 accent-brand-500"
                 />
               </th>
-              <SortTh label="Business"     field="business_name" sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
-              <SortTh label="Niche / City" field="niche"         sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
-              <th className="py-3 px-4 text-left font-medium text-slate-400 text-xs uppercase tracking-wide">Contact</th>
-              <SortTh label="Score"        field="score"         sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
-              <SortTh label="Status"       field="status"        sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
-              <th className="py-3 px-4 text-left font-medium text-slate-400 text-xs uppercase tracking-wide">Channel</th>
-              <th className="py-3 px-4 text-left font-medium text-slate-400 text-xs uppercase tracking-wide">Source</th>
-              <SortTh label="Sent"         field="sent_at"       sortBy={sortBy} sortDir={sortDir} onSort={onSort} />
+              <SortableHeader label="Business"     field="business_name" sortBy={sortBy} sortDir={sortDir} onSort={onSort} width={colWidths.business}  onResizeStart={startResize('business')} />
+              <SortableHeader label="Niche / City" field="niche"         sortBy={sortBy} sortDir={sortDir} onSort={onSort} width={colWidths.nicheCity} onResizeStart={startResize('nicheCity')} />
+              <th style={{ width: colWidths.contact }} className="relative py-3 px-4 text-left font-medium text-slate-400 text-xs uppercase tracking-wide">
+                Contact
+                <span onMouseDown={startResize('contact')} role="separator" aria-orientation="vertical" aria-label="Resize Contact column" className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-brand-500/40" />
+              </th>
+              <SortableHeader label="Score"  field="score"   sortBy={sortBy} sortDir={sortDir} onSort={onSort} width={colWidths.score}   onResizeStart={startResize('score')} />
+              <SortableHeader label="Status" field="status"  sortBy={sortBy} sortDir={sortDir} onSort={onSort} width={colWidths.status}  onResizeStart={startResize('status')} />
+              <th style={{ width: colWidths.channel }} className="relative py-3 px-4 text-left font-medium text-slate-400 text-xs uppercase tracking-wide">
+                Channel
+                <span onMouseDown={startResize('channel')} role="separator" aria-orientation="vertical" aria-label="Resize Channel column" className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-brand-500/40" />
+              </th>
+              <th style={{ width: colWidths.source }} className="relative py-3 px-4 text-left font-medium text-slate-400 text-xs uppercase tracking-wide">
+                Source
+                <span onMouseDown={startResize('source')} role="separator" aria-orientation="vertical" aria-label="Resize Source column" className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-brand-500/40" />
+              </th>
+              <SortableHeader label="Sent" field="sent_at" sortBy={sortBy} sortDir={sortDir} onSort={onSort} width={colWidths.sent} onResizeStart={startResize('sent')} />
               <th className="py-3 px-4 text-right font-medium text-slate-400 text-xs uppercase tracking-wide w-52">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/60">
-            {items.map((lead) => (
-              <tr
-                key={lead.id}
-                onClick={() => onRowClick?.(lead)}
-                className={clsx(
-                  'group hover:bg-slate-800/40 transition-colors',
-                  onRowClick && 'cursor-pointer',
-                  selected.includes(lead.id) && 'bg-brand-600/5'
-                )}
-              >
-                <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
-                  <input
-                    type="checkbox"
-                    checked={selected.includes(lead.id)}
-                    onChange={() => toggleOne(lead.id)}
-                    className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 accent-brand-500"
-                  />
-                </td>
+            {paddingTop > 0 && (
+              <tr aria-hidden="true"><td style={{ height: paddingTop }} colSpan={TABLE_COLS} /></tr>
+            )}
 
-                <td className="py-3 px-4 max-w-[180px]">
-                  <p className="font-medium text-slate-200 text-sm truncate">{lead.business_name}</p>
-                  {lead.website && (
-                    <a
-                      href={lead.website}
-                      target="_blank"
-                      rel="noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="text-xs text-slate-500 hover:text-brand-400 transition-colors truncate block"
-                    >
-                      {lead.website.replace(/^https?:\/\//, '')}
-                    </a>
+            {virtualRows.map((vRow) => {
+              const lead = items[vRow.index]
+              return (
+                <tr
+                  key={lead.id}
+                  data-index={vRow.index}
+                  ref={rowVirtualizer.measureElement}
+                  onClick={() => onRowClick?.(lead)}
+                  className={clsx(
+                    'group hover:bg-slate-800/40 transition-colors',
+                    onRowClick && 'cursor-pointer',
+                    selected.includes(lead.id) && 'bg-brand-600/5'
                   )}
-                </td>
+                >
+                  <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={selected.includes(lead.id)}
+                      onChange={() => toggleOne(lead.id)}
+                      aria-label={`Select ${lead.business_name}`}
+                      className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 accent-brand-500"
+                    />
+                  </td>
 
-                <td className="py-3 px-4">
-                  <p className="text-slate-300 text-xs">{lead.niche || '—'}</p>
-                  <p className="text-slate-500 text-xs">{lead.city  || '—'}</p>
-                </td>
+                  <td className="py-3 px-4 overflow-hidden">
+                    <p className="font-medium text-slate-200 text-sm truncate">{lead.business_name}</p>
+                    {lead.website && (
+                      <a
+                        href={lead.website}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-xs text-slate-500 hover:text-brand-400 transition-colors truncate block"
+                      >
+                        {lead.website.replace(/^https?:\/\//, '')}
+                      </a>
+                    )}
+                  </td>
 
-                <td className="py-3 px-4 max-w-[160px]">
-                  {lead.email && <p className="text-xs text-slate-300 truncate">{lead.email}</p>}
-                  {lead.phone && <p className="text-xs text-slate-500">{lead.phone}</p>}
-                  {!lead.email && !lead.phone && <p className="text-xs text-slate-600 italic">No contact</p>}
-                </td>
+                  <td className="py-3 px-4 overflow-hidden">
+                    <p className="text-slate-300 text-xs truncate">{lead.niche || '—'}</p>
+                    <p className="text-slate-500 text-xs truncate">{lead.city  || '—'}</p>
+                  </td>
 
-                <td className="py-3 px-4">
-                  <ScoreBadge score={lead.score} label={lead.score_label} />
-                </td>
+                  <td className="py-3 px-4 overflow-hidden">
+                    {lead.email && <p className="text-xs text-slate-300 truncate">{lead.email}</p>}
+                    {lead.phone && <p className="text-xs text-slate-500 truncate">{lead.phone}</p>}
+                    {!lead.email && !lead.phone && <p className="text-xs text-slate-600 italic">No contact</p>}
+                  </td>
 
-                <td className="py-3 px-4">
-                  <span className={STATUS_BADGE[lead.status] || 'badge'}>{lead.status}</span>
-                </td>
+                  <td className="py-3 px-4">
+                    <ScoreBadge score={lead.score} label={lead.score_label} />
+                  </td>
 
-                <td className="py-3 px-4">
-                  {lead.channel
-                    ? <span className={CHANNEL_BADGE[lead.channel] || 'badge'}>{lead.channel}</span>
-                    : <span className="text-xs text-slate-600">—</span>
-                  }
-                </td>
+                  <td className="py-3 px-4">
+                    <span className={STATUS_BADGE[lead.status] || 'badge'}>{lead.status}</span>
+                  </td>
 
-                <td className="py-3 px-4">
-                  {lead.source
-                    ? <span className={SOURCE_BADGE[lead.source] || 'badge'}>
-                        {SOURCE_LABEL[lead.source] || lead.source}
-                      </span>
-                    : <span className="text-xs text-slate-600">—</span>
-                  }
-                </td>
+                  <td className="py-3 px-4">
+                    {lead.channel
+                      ? <span className={CHANNEL_BADGE[lead.channel] || 'badge'}>{lead.channel}</span>
+                      : <span className="text-xs text-slate-600">—</span>
+                    }
+                  </td>
 
-                <td className="py-3 px-4 text-xs text-slate-500 whitespace-nowrap">
-                  {fmtDate(lead.sent_at)}
-                </td>
+                  <td className="py-3 px-4">
+                    {lead.source
+                      ? <span className={SOURCE_BADGE[lead.source] || 'badge'}>
+                          {SOURCE_LABEL[lead.source] || lead.source}
+                        </span>
+                      : <span className="text-xs text-slate-600">—</span>
+                    }
+                  </td>
 
-                <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
-                  <div className="flex items-center gap-1 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={() => onEnrich?.(lead.id)}
-                      title="Enrich with AI"
-                      className="p-1.5 rounded text-slate-500 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all"
-                    >
-                      <Sparkles size={13} />
-                    </button>
-                    <button
-                      onClick={() => onViewMessages?.(lead)}
-                      title="View AI Messages"
-                      className="p-1.5 rounded text-slate-500 hover:text-brand-400 hover:bg-brand-500/10 transition-all"
-                    >
-                      <Eye size={13} />
-                    </button>
-                    <button
-                      onClick={() => onResend?.(lead.id, lead.channel || 'EMAIL')}
-                      title="Re-send"
-                      className="p-1.5 rounded text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 transition-all"
-                    >
-                      <RotateCcw size={13} />
-                    </button>
-                    <button
-                      onClick={() => onMarkReplied?.(lead.id)}
-                      title="Mark Replied"
-                      className="p-1.5 rounded text-slate-500 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all"
-                    >
-                      <CheckCircle2 size={13} />
-                    </button>
-                    <button
-                      onClick={() => onSkip?.(lead.id)}
-                      title="Skip"
-                      className="p-1.5 rounded text-slate-500 hover:text-amber-400 hover:bg-amber-500/10 transition-all"
-                    >
-                      <SkipForward size={13} />
-                    </button>
-                    <button
-                      onClick={() => onDelete?.(lead.id)}
-                      title="Delete"
-                      className="p-1.5 rounded text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-all"
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+                  <td className="py-3 px-4 text-xs text-slate-500 whitespace-nowrap">
+                    {fmtDate(lead.sent_at)}
+                  </td>
+
+                  <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex items-center gap-1 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={() => onEnrich?.(lead.id)}
+                        title="Enrich with AI"
+                        aria-label={`Enrich ${lead.business_name} with AI`}
+                        className="p-1.5 rounded text-slate-500 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all"
+                      >
+                        <Sparkles size={13} />
+                      </button>
+                      <button
+                        onClick={() => onViewMessages?.(lead)}
+                        title="View AI Messages"
+                        aria-label={`View AI messages for ${lead.business_name}`}
+                        className="p-1.5 rounded text-slate-500 hover:text-brand-400 hover:bg-brand-500/10 transition-all"
+                      >
+                        <Eye size={13} />
+                      </button>
+                      <button
+                        onClick={() => onResend?.(lead.id, lead.channel || 'EMAIL')}
+                        title="Re-send"
+                        aria-label={`Re-send message to ${lead.business_name}`}
+                        className="p-1.5 rounded text-slate-500 hover:text-blue-400 hover:bg-blue-500/10 transition-all"
+                      >
+                        <RotateCcw size={13} />
+                      </button>
+                      <button
+                        onClick={() => onMarkReplied?.(lead.id)}
+                        title="Mark Replied"
+                        aria-label={`Mark ${lead.business_name} as replied`}
+                        className="p-1.5 rounded text-slate-500 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all"
+                      >
+                        <CheckCircle2 size={13} />
+                      </button>
+                      <button
+                        onClick={() => onSkip?.(lead.id)}
+                        title="Skip"
+                        aria-label={`Skip ${lead.business_name}`}
+                        className="p-1.5 rounded text-slate-500 hover:text-amber-400 hover:bg-amber-500/10 transition-all"
+                      >
+                        <SkipForward size={13} />
+                      </button>
+                      <button
+                        onClick={() => onDelete?.(lead.id)}
+                        title="Delete"
+                        aria-label={`Delete ${lead.business_name}`}
+                        className="p-1.5 rounded text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-all"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+
+            {paddingBottom > 0 && (
+              <tr aria-hidden="true"><td style={{ height: paddingBottom }} colSpan={TABLE_COLS} /></tr>
+            )}
           </tbody>
         </table>
       </div>
 
       {/* Pagination */}
-      <div className="flex items-center justify-between px-4 py-3 border-t border-slate-800/60">
+      <div className="flex items-center justify-between px-4 py-3 border-t border-slate-800/60 gap-3 flex-wrap">
         <p className="text-xs text-slate-500">
           {total} total leads
           {selected.length > 0 && (
             <span className="ml-2 text-brand-400">{selected.length} selected</span>
           )}
         </p>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => onPageChange?.(page - 1)}
-            disabled={page <= 1}
-            className="p-1.5 rounded text-slate-500 hover:text-slate-300 disabled:opacity-30 hover:bg-slate-800 transition-all"
-          >
-            <ChevronLeft size={14} />
-          </button>
-          <span className="text-xs text-slate-400 px-2">{page} / {totalPages || 1}</span>
-          <button
-            onClick={() => onPageChange?.(page + 1)}
-            disabled={page >= (totalPages || 1)}
-            className="p-1.5 rounded text-slate-500 hover:text-slate-300 disabled:opacity-30 hover:bg-slate-800 transition-all"
-          >
-            <ChevronRight size={14} />
-          </button>
+        <div className="flex items-center gap-3">
+          {onPageSizeChange && (
+            <label className="flex items-center gap-1.5 text-xs text-slate-500">
+              Rows
+              <select
+                value={pageSize}
+                onChange={(e) => onPageSizeChange(Number(e.target.value))}
+                aria-label="Rows per page"
+                className="input !py-1 !w-auto text-xs"
+              >
+                {[25, 50, 100, 200].map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => onPageChange?.(page - 1)}
+              disabled={page <= 1}
+              aria-label="Previous page"
+              className="p-1.5 rounded text-slate-500 hover:text-slate-300 disabled:opacity-30 hover:bg-slate-800 transition-all"
+            >
+              <ChevronLeft size={14} />
+            </button>
+            <span className="text-xs text-slate-400 px-2">{page} / {totalPages || 1}</span>
+            <button
+              onClick={() => onPageChange?.(page + 1)}
+              disabled={page >= (totalPages || 1)}
+              aria-label="Next page"
+              className="p-1.5 rounded text-slate-500 hover:text-slate-300 disabled:opacity-30 hover:bg-slate-800 transition-all"
+            >
+              <ChevronRight size={14} />
+            </button>
+          </div>
         </div>
       </div>
     </div>

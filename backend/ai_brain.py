@@ -165,14 +165,44 @@ async def _detect_available_model(base_url: str, preferred: str) -> str:
         return preferred
 
 
+_CLOUD_DEFAULT_MODELS = {
+    "openai":    "gpt-4o-mini",
+    "anthropic": "claude-3-5-haiku-20241022",
+}
+
+
 async def _ollama_cfg() -> Dict[str, Any]:
-    """Build runtime Ollama config from DB settings with .env fallback."""
+    """
+    Build runtime LLM config from DB settings with .env fallback.
+
+    Defaults to local Ollama (free, private, fully offline). Routes to a
+    cloud provider instead only when the user has explicitly set
+    llm_provider + a matching API key in Settings — see _call_llm_raw().
+    """
     stored   = await db.get_all_settings()
     base_url = stored.get("ollama_base_url") or _env.ollama_base_url
-    model    = stored.get("ollama_model")    or _env.ollama_model
     timeout  = int(stored.get("ollama_timeout") or _env.ollama_timeout)
-    model    = await _detect_available_model(base_url, model)
-    return {"base_url": base_url, "model": model, "timeout": timeout}
+
+    provider = (stored.get("llm_provider") or "ollama").lower()
+    if provider in ("openai", "anthropic"):
+        api_key = stored.get(f"{provider}_api_key")
+        if api_key:
+            model = stored.get(f"{provider}_model") or _CLOUD_DEFAULT_MODELS[provider]
+            return {
+                "provider": provider,
+                "api_key":  api_key,
+                "model":    model,
+                "base_url": base_url,  # unused by cloud providers; kept so callers that log cfg['base_url'] don't break
+                "timeout":  timeout,
+            }
+        logger.warning(
+            "ai_brain: llm_provider=%s but no %s_api_key set — falling back to Ollama",
+            provider, provider,
+        )
+
+    model = stored.get("ollama_model") or _env.ollama_model
+    model = await _detect_available_model(base_url, model)
+    return {"provider": "ollama", "base_url": base_url, "model": model, "timeout": timeout}
 
 
 def _load_company_dna() -> str:
@@ -568,6 +598,74 @@ async def _call_ollama_raw(
         return _strip_thinking(_fix_mojibake(raw))
 
 
+# ── Optional cloud LLM call layer ───────────────────────────────────────────────
+# Only reached when the user configures llm_provider + an API key in Settings.
+# Ollama stays the default so the app works fully offline out of the box.
+
+async def _call_openai_raw(
+    prompt:      str,
+    cfg:         Dict[str, Any],
+    temperature: Optional[float] = None,
+    num_predict: int = 800,
+) -> str:
+    temp = temperature if temperature is not None else round(random.uniform(*_TEMPERATURE_RANGE), 2)
+    async with httpx.AsyncClient(timeout=cfg["timeout"]) as client:
+        r = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {cfg['api_key']}"},
+            json={
+                "model":       cfg["model"],
+                "messages":    [{"role": "user", "content": prompt}],
+                "temperature": temp,
+                "max_tokens":  num_predict,
+            },
+        )
+        r.raise_for_status()
+        raw = r.json()["choices"][0]["message"]["content"]
+        return _strip_thinking(_fix_mojibake(raw))
+
+
+async def _call_anthropic_raw(
+    prompt:      str,
+    cfg:         Dict[str, Any],
+    temperature: Optional[float] = None,
+    num_predict: int = 800,
+) -> str:
+    temp = temperature if temperature is not None else round(random.uniform(*_TEMPERATURE_RANGE), 2)
+    async with httpx.AsyncClient(timeout=cfg["timeout"]) as client:
+        r = await client.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key":         cfg["api_key"],
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model":       cfg["model"],
+                "max_tokens":  num_predict,
+                "temperature": temp,
+                "messages":    [{"role": "user", "content": prompt}],
+            },
+        )
+        r.raise_for_status()
+        raw = "".join(block.get("text", "") for block in r.json().get("content", []))
+        return _strip_thinking(_fix_mojibake(raw))
+
+
+async def _call_llm_raw(
+    prompt:      str,
+    cfg:         Dict[str, Any],
+    temperature: Optional[float] = None,
+    num_predict: int = 800,
+) -> str:
+    """Dispatches to whichever provider `cfg` (from _ollama_cfg()) resolved to."""
+    provider = cfg.get("provider", "ollama")
+    if provider == "openai":
+        return await _call_openai_raw(prompt, cfg, temperature, num_predict)
+    if provider == "anthropic":
+        return await _call_anthropic_raw(prompt, cfg, temperature, num_predict)
+    return await _call_ollama_raw(prompt, cfg, temperature, num_predict)
+
+
 # ── Generic JSON generation loop ───────────────────────────────────────────────
 
 async def _generate_phase(
@@ -591,7 +689,7 @@ async def _generate_phase(
             active_prompt = prompt if attempt == 1 else _build_repair_prompt(last_output, required, attempt)
             temp          = round(random.uniform(*_TEMPERATURE_RANGE), 2) if attempt == 1 else 0.25
 
-            raw         = await _call_ollama_raw(active_prompt, cfg, temperature=temp, num_predict=num_predict)
+            raw         = await _call_llm_raw(active_prompt, cfg, temperature=temp, num_predict=num_predict)
             last_output = raw
             parsed      = _extract_json(raw, required, aliases)
 
@@ -927,9 +1025,9 @@ async def generate_message(lead: Dict[str, Any], message_type: str) -> str:
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            return await _call_ollama_raw(prompt, cfg, temperature=0.72, num_predict=400)
+            return await _call_llm_raw(prompt, cfg, temperature=0.72, num_predict=400)
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 404:
+            if exc.response.status_code == 404 and cfg.get("provider", "ollama") == "ollama":
                 healed = await _detect_available_model(cfg["base_url"], cfg["model"])
                 if healed != cfg["model"]:
                     cfg = {**cfg, "model": healed}
@@ -938,7 +1036,7 @@ async def generate_message(lead: Dict[str, Any], message_type: str) -> str:
                 raise
         except (httpx.ConnectError, httpx.TimeoutException) as exc:
             if attempt == MAX_RETRIES:
-                raise RuntimeError(f"Ollama unreachable after {MAX_RETRIES} attempts: {exc}") from exc
+                raise RuntimeError(f"LLM provider unreachable after {MAX_RETRIES} attempts: {exc}") from exc
             await asyncio.sleep(1.5 * attempt)
         except Exception as exc:
             logger.error("generate_message attempt %d failed: %s", attempt, exc)
@@ -951,8 +1049,19 @@ async def generate_message(lead: Dict[str, Any], message_type: str) -> str:
 # ── Status check ───────────────────────────────────────────────────────────────
 
 async def get_ollama_status() -> Dict[str, Any]:
-    """Ping Ollama — returns connected state, active model, and available models."""
+    """Ping Ollama — returns connected state, active model, and available models.
+    When a cloud provider is configured (Settings → LLM provider), reports that
+    provider as connected without pinging Ollama, since Ollama isn't in use."""
     cfg = await _ollama_cfg()
+
+    if cfg.get("provider") in ("openai", "anthropic"):
+        return {
+            "connected":        True,
+            "model":            cfg["model"],
+            "provider":         cfg["provider"],
+            "available_models": [cfg["model"]],
+        }
+
     try:
         if _HAS_OLLAMA_LIB:
             client = _ollama_pkg.AsyncClient(host=cfg["base_url"], timeout=5)
@@ -967,12 +1076,13 @@ async def get_ollama_status() -> Dict[str, Any]:
                 r.raise_for_status()
                 models = [m["name"] for m in r.json().get("models", [])]
 
-        return {"connected": True, "model": cfg["model"], "available_models": models}
+        return {"connected": True, "model": cfg["model"], "provider": "ollama", "available_models": models}
 
     except Exception as exc:
         return {
             "connected":        False,
             "model":            cfg["model"],
+            "provider":         "ollama",
             "available_models": [],
             "error":            str(exc),
         }

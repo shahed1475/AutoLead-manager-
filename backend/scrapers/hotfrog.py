@@ -31,6 +31,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from ..validators import clean_phone
+from ._shared import resolve_delay
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -256,6 +257,7 @@ def scrape_sync(
     country:   str,
     max_leads: int,
     log_fn:    Callable[[str], None],
+    cfg:       Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Synchronous Hotfrog scraper — always called inside asyncio.to_thread().
@@ -264,6 +266,7 @@ def scrape_sync(
     Phase 2: Visit each listing's detail page to get the external website URL.
     """
     log_fn(f"🔥 Hotfrog: '{niche}' in '{city}' (target {max_leads})")
+    delay_min, delay_max = resolve_delay(cfg, 3.0, 7.0)
 
     session    = requests.Session()
     ua         = _get_ua()
@@ -301,7 +304,7 @@ def scrape_sync(
             log_fn(f"  Page {page}: {new_count} new listings ({len(pool)} total)")
             if len(pool) >= max_leads * 2 or new_count == 0:
                 break
-            time.sleep(random.uniform(3.0, 7.0))
+            time.sleep(random.uniform(delay_min, delay_max))
 
         if got_results:
             break  # found results — no need to try other URL formats
@@ -356,6 +359,7 @@ async def scrape_hotfrog(
     country:      str = "",
     max_leads:    int = 30,
     log_callback: Optional[Callable[[str], None]] = None,
+    cfg:          Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Async entry-point — delegates sync work to asyncio.to_thread()."""
     def _log(msg: str) -> None:
@@ -365,7 +369,7 @@ async def scrape_hotfrog(
             except Exception:
                 pass
     _log(f"🚀 Hotfrog scraper: {niche} in {city} (max {max_leads})")
-    return await asyncio.to_thread(scrape_sync, niche, city, country, max_leads, _log)
+    return await asyncio.to_thread(scrape_sync, niche, city, country, max_leads, _log, cfg)
 
 
 async def scrape(
@@ -379,5 +383,5 @@ async def scrape(
     """Orchestrator-compatible dispatch alias."""
     return await scrape_hotfrog(
         niche=niche, city=city, country=country,
-        max_leads=max_results, log_callback=log_callback,
+        max_leads=max_results, log_callback=log_callback, cfg=cfg,
     )

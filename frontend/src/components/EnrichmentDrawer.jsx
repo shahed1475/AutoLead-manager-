@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { enrichApi } from '../api/client'
 import ScoreBadge from './ScoreBadge'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 
 // ── SVG score ring ────────────────────────────────────────────────────────────
 
@@ -137,6 +138,7 @@ function BulletList({ items, dotColor = 'text-red-400' }) {
 
 export default function EnrichmentDrawer({ lead, onClose, onEnrich, onViewMessages }) {
   const isOpen = Boolean(lead)
+  const drawerRef = useFocusTrap(isOpen)
 
   // Close on Escape
   useEffect(() => {
@@ -169,6 +171,10 @@ export default function EnrichmentDrawer({ lead, onClose, onEnrich, onViewMessag
 
       {/* Drawer panel */}
       <div
+        ref={drawerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="enrichment-drawer-title"
         className={`fixed top-0 right-0 h-full w-[380px] bg-slate-900 border-l border-slate-700/60
                     shadow-2xl z-50 flex flex-col overflow-hidden
                     transition-transform duration-300 ease-out
@@ -177,7 +183,7 @@ export default function EnrichmentDrawer({ lead, onClose, onEnrich, onViewMessag
         {/* ── Header ─────────────────────────────────────────────────────── */}
         <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-slate-800 shrink-0">
           <div className="flex-1 min-w-0 pr-3">
-            <h2 className="font-bold text-slate-100 text-sm truncate leading-tight">
+            <h2 id="enrichment-drawer-title" className="font-bold text-slate-100 text-sm truncate leading-tight">
               {lead?.business_name || '—'}
             </h2>
             <div className="flex items-center gap-2 mt-1.5 flex-wrap">
@@ -190,6 +196,7 @@ export default function EnrichmentDrawer({ lead, onClose, onEnrich, onViewMessag
           </div>
           <button
             onClick={onClose}
+            aria-label="Close details"
             className="p-1.5 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-all shrink-0"
           >
             <X size={15} />
@@ -365,6 +372,7 @@ export default function EnrichmentDrawer({ lead, onClose, onEnrich, onViewMessag
           </button>
           <button
             onClick={onClose}
+            aria-label="Close details"
             className="p-2 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-all"
           >
             <X size={14} />

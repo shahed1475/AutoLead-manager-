@@ -41,19 +41,23 @@ logger = logging.getLogger(__name__)
 
 # ── Source weights ────────────────────────────────────────────────────────────
 # Determines percentage of max_leads each source receives when multiple chosen.
-# NOTE: Google Maps is the ONLY reliable source currently working.
-# HTTP-based sources (Google Search, Bing) are heavily blocked by anti-bot.
+# Google Maps (Selenium) is the most reliable/highest-volume source, so it
+# gets the largest share by default — but every source below runs its OWN
+# real scraper (see _dispatch_source); none of them are silently rerouted.
+# HTTP-based sources can still get rate-limited or blocked by anti-bot
+# measures on a given run — when that happens the run falls back to Google
+# Maps for that source's budget, and the live feed says so explicitly.
 
 _SOURCE_WEIGHTS: Dict[str, float] = {
-    "GOOGLE_MAPS":   0.95,   # Primary - this is the only one that works!
-    "GOOGLE_SEARCH": 0.05,   # Disabled - blocked by Google
-    "YELP":          0.30,   # Works with Selenium
-    "YELLOW_PAGES":  0.30,   # Works with Selenium
-    "BING_SEARCH":   0.05,   # Disabled - DDG blocking
-    "HOTFROG":       0.20,   # May work
-    "FOURSQUARE":    0.20,   # May work
-    "TOP_LIST":      0.15,   # May work
-    "GENERIC_DIR":   0.25,   # May work
+    "GOOGLE_MAPS":   0.35,
+    "GOOGLE_SEARCH": 0.10,
+    "YELP":          0.12,
+    "YELLOW_PAGES":  0.12,
+    "BING_SEARCH":   0.08,
+    "HOTFROG":       0.06,
+    "FOURSQUARE":    0.06,
+    "TOP_LIST":      0.05,
+    "GENERIC_DIR":   0.06,
 }
 
 
@@ -192,6 +196,56 @@ def _validate_and_clean(
 
 # ── Scraper dispatch (one per source) ─────────────────────────────────────────
 
+async def _run_with_maps_fallback(
+    source:  str,
+    label:   str,
+    coro_fn: Callable[[], Any],
+    niche:   str,
+    city:    str,
+    budget:  int,
+    cfg:     Dict[str, Any],
+    log_fn:  Callable[[str], None],
+    country: str = "",
+) -> List[dict]:
+    """
+    Await `coro_fn()` — that source's REAL scraper. Falls back to Google Maps
+    only if it genuinely raises or returns zero results, and always logs the
+    fallback explicitly so the live feed never silently claims a source ran
+    when it was actually replaced.
+    """
+    from .google_maps import scrape as _gm_scrape
+
+    leads: List[dict] = []
+    try:
+        leads = await coro_fn()
+    except Exception as exc:
+        log_fn(f"   ⚠️  {label} failed ({exc}) — falling back to Google Maps")
+        logger.warning("%s scraper raised: %s", source, exc, exc_info=True)
+        await _log_source_event(source, "FAILED", str(exc))
+        leads = []
+
+    if not leads:
+        log_fn(f"   ⚠️  {label} returned 0 results — falling back to Google Maps")
+        await _log_source_event(source, "FALLBACK_TO_MAPS", "returned 0 results")
+        leads = await _gm_scrape(
+            niche=niche, city=city,
+            max_results=budget, cfg=cfg, log_callback=log_fn, country=country,
+        )
+    return leads
+
+
+async def _log_source_event(source: str, action: str, detail: str) -> None:
+    """
+    Persist a scraper failure/fallback to campaign_log (lead_id=NULL) so it's
+    visible in campaign history later — the live SSE feed is not the only
+    record of what happened during a run.
+    """
+    try:
+        await db.log_campaign_action(None, "SCRAPER", f"{source}:{action}", False, detail[:500])
+    except Exception:
+        logger.debug("Failed to persist source event %s:%s", source, action, exc_info=True)
+
+
 async def _dispatch_source(
     source:  str,
     niche:   str,
@@ -203,9 +257,11 @@ async def _dispatch_source(
 ) -> List[dict]:
     """Run one source's scraper and return its raw lead list (never raises).
 
-    NOTE: Due to aggressive anti-bot measures by Google/Bing/DDG, most HTTP-based
-    scrapers now fail. Google Maps (Selenium) is the only reliably working source.
-    This function automatically falls back to Google Maps for most sources.
+    Every selected source calls its OWN real scraper first — none of them
+    are silently rerouted. A source only falls back to Google Maps if its
+    real scraper genuinely raises or comes back empty (e.g. blocked by
+    anti-bot measures on that particular run), and that fallback is always
+    logged explicitly to the live feed.
     """
     from .google_maps      import scrape               as _gm_scrape
     from .google_search    import scrape_google_search as _gs_scrape
@@ -217,117 +273,60 @@ async def _dispatch_source(
     from .top_list         import scrape               as _toplist_scrape
     from .generic_directory import scrape              as _gendir_scrape
 
-    # Sources that are known to fail due to anti-bot measures
-    # Foursquare now requires login, Hotfrog returns 404 (site changed), TopLists domain parked
-    HTTP_FAIL_SOURCES = {"GOOGLE_SEARCH", "BING_SEARCH", "HOTFROG", "TOP_LIST", "GENERIC_DIR", "YELP", "YELLOW_PAGES", "FOURSQUARE"}
+    # Sources sharing the uniform "orchestrator-compatible" scrape() signature:
+    # (niche, city, max_results, cfg, log_callback, country) -> List[dict]
+    _UNIFORM_SOURCES: Dict[str, Tuple[str, str, Callable]] = {
+        "YELP":         ("⭐", "Yelp",               _yelp_scrape),
+        "YELLOW_PAGES": ("📒", "Yellow Pages",       _yp_scrape),
+        "BING_SEARCH":  ("🔎", "Bing Search",        _bing_scrape),
+        "HOTFROG":      ("🔥", "Hotfrog",            _hotfrog_scrape),
+        "FOURSQUARE":   ("📍", "Foursquare",         _fsq_scrape),
+        "TOP_LIST":     ("📰", "Top List",           _toplist_scrape),
+        "GENERIC_DIR":  ("📂", "Business Directory", _gendir_scrape),
+    }
 
     try:
-        # For HTTP-based sources that are known to fail, silently fallback to Google Maps
-        if source in HTTP_FAIL_SOURCES:
-            log_fn(f"🔄 {source} blocked — falling back to Google Maps → {budget} leads")
+        if source == "GOOGLE_MAPS":
+            log_fn(f"🗺  Google Maps        → {budget} leads")
             leads = await _gm_scrape(
                 niche=niche, city=city,
-                max_results=budget, cfg=cfg, log_callback=log_fn,
-            )
-        elif source == "GOOGLE_MAPS":
-            log_fn(f"🗺  Google Maps   → {budget} leads")
-            leads = await _gm_scrape(
-                niche=niche, city=city,
-                max_results=budget, cfg=cfg, log_callback=log_fn,
+                max_results=budget, cfg=cfg, log_callback=log_fn, country=country,
             )
 
         elif source == "GOOGLE_SEARCH":
-            # Try HTTP-based Google Search first, fallback to Maps if fails
-            log_fn(f"🔍 Google Search → {budget} leads (will fallback to Maps if blocked)")
-            try:
-                leads = await _gs_scrape(
+            log_fn(f"🔍 Google Search      → {budget} leads")
+            leads = await _run_with_maps_fallback(
+                source, "Google Search",
+                lambda: _gs_scrape(
                     niche=niche, city=city, country=country,
                     max_leads=budget, log_callback=log_fn,
-                )
-                if not leads:
-                    log_fn("🔍 Google Search blocked — falling back to Google Maps")
-                    leads = await _gm_scrape(
-                        niche=niche, city=city,
-                        max_results=budget, cfg=cfg, log_callback=log_fn,
-                    )
-            except Exception:
-                log_fn("🔍 Google Search failed — falling back to Google Maps")
-                leads = await _gm_scrape(
-                    niche=niche, city=city,
-                    max_results=budget, cfg=cfg, log_callback=log_fn,
-                )
-
-        elif source == "YELP":
-            log_fn(f"⭐ Yelp          → {budget} leads")
-            leads = await _yelp_scrape(
-                niche=niche, city=city, country=country,
-                max_results=budget, cfg=cfg, log_callback=log_fn,
+                ),
+                niche, city, budget, cfg, log_fn, country=country,
             )
 
-        elif source == "YELLOW_PAGES":
-            log_fn(f"📒 Yellow Pages  → {budget} leads")
-            leads = await _yp_scrape(
-                niche=niche, city=city, country=country,
-                max_results=budget, cfg=cfg, log_callback=log_fn,
-            )
-
-        elif source == "BING_SEARCH":
-            # Try DDG-based Bing first, fallback to Maps if fails
-            log_fn(f"🔎 Bing Search   → {budget} leads (will fallback to Maps if blocked)")
-            try:
-                leads = await _bing_scrape(
+        elif source in _UNIFORM_SOURCES:
+            icon, label, scrape_fn = _UNIFORM_SOURCES[source]
+            log_fn(f"{icon} {label:<18} → {budget} leads")
+            leads = await _run_with_maps_fallback(
+                source, label,
+                lambda scrape_fn=scrape_fn: scrape_fn(
                     niche=niche, city=city, country=country,
                     max_results=budget, cfg=cfg, log_callback=log_fn,
-                )
-                if not leads:
-                    log_fn("🔎 Bing Search blocked — falling back to Google Maps")
-                    leads = await _gm_scrape(
-                        niche=niche, city=city,
-                        max_results=budget, cfg=cfg, log_callback=log_fn,
-                    )
-            except Exception:
-                log_fn("🔎 Bing Search failed — falling back to Google Maps")
-                leads = await _gm_scrape(
-                    niche=niche, city=city,
-                    max_results=budget, cfg=cfg, log_callback=log_fn,
-                )
-
-        elif source == "HOTFROG":
-            log_fn(f"🔥 Hotfrog       → {budget} leads (using Maps fallback)")
-            leads = await _gm_scrape(
-                niche=niche, city=city,
-                max_results=budget, cfg=cfg, log_callback=log_fn,
-            )
-
-        elif source == "FOURSQUARE":
-            log_fn(f"📍 Foursquare    → {budget} leads")
-            leads = await _fsq_scrape(
-                niche=niche, city=city, country=country,
-                max_results=budget, cfg=cfg, log_callback=log_fn,
-            )
-
-        elif source == "TOP_LIST":
-            log_fn(f"📰 Top-List      → {budget} leads (using Maps fallback)")
-            leads = await _gm_scrape(
-                niche=niche, city=city,
-                max_results=budget, cfg=cfg, log_callback=log_fn,
-            )
-
-        elif source == "GENERIC_DIR":
-            log_fn(f"📂 Generic Dir   → {budget} leads (using Maps fallback)")
-            leads = await _gm_scrape(
-                niche=niche, city=city,
-                max_results=budget, cfg=cfg, log_callback=log_fn,
+                ),
+                niche, city, budget, cfg, log_fn, country=country,
             )
 
         else:
             log_fn(f"⚠️  Unknown source '{source}' — using Google Maps as fallback")
             leads = await _gm_scrape(
                 niche=niche, city=city,
-                max_results=budget, cfg=cfg, log_callback=log_fn,
+                max_results=budget, cfg=cfg, log_callback=log_fn, country=country,
             )
 
-        # Tag every lead with source + campaign fields
+        # Tag every lead with source + campaign fields. setdefault() is
+        # deliberate: fallback leads already carry source="GOOGLE_MAPS" set
+        # by google_maps.py itself, so this never mislabels a Maps-sourced
+        # lead as the originally-requested source.
         for lead in leads:
             lead.setdefault("source",  source)
             lead.setdefault("niche",   niche)
@@ -341,6 +340,7 @@ async def _dispatch_source(
     except Exception as exc:
         log_fn(f"   ❌ {source} scraper failed: {exc}")
         logger.error("Scraper error (%s): %s", source, exc, exc_info=True)
+        await _log_source_event(source, "DISPATCH_FAILED", str(exc))
         return []
 
 
@@ -421,9 +421,7 @@ async def _batch_save(
                     k: v for k, v in lead.items()
                     if k in _DB_FIELDS and v is not None
                 }
-                lead_id, is_new = await db.create_lead_deduped(data)
-                if is_new:
-                    await db.log_campaign_action(lead_id, "SCRAPE", "FOUND", True)
+                lead_id, is_new = await db.create_lead_deduped_with_log(data)
                 results[idx] = {**lead, "id": lead_id, "_is_new": is_new}
             except Exception as exc:
                 fails += 1
@@ -454,8 +452,10 @@ def _clean_lead(lead: dict) -> dict:
 # ── Public entry-point ────────────────────────────────────────────────────────
 
 async def run_bulk_scrape(
-    campaign:     Dict[str, Any],
-    log_callback: Optional[Callable[[str], None]] = None,
+    campaign:       Dict[str, Any],
+    log_callback:   Optional[Callable[[str], None]] = None,
+    stage_callback: Optional[Callable[[str], Any]]  = None,
+    pause_callback: Optional[Callable[[], Any]]     = None,
 ) -> List[Dict[str, Any]]:
     """
     Parallel bulk-scraping orchestrator.
@@ -473,12 +473,34 @@ async def run_bulk_scrape(
         Called from both the async context and from worker threads.
         Caller should bridge it to the DB via asyncio.run_coroutine_threadsafe
         so the SSE stream picks it up (see campaigns.py).
+    stage_callback : optional async callable(stage: str)
+        Awaited at real phase boundaries ("SCRAPING", "ENRICHING") so the
+        caller can persist the campaign's live pipeline stage. Never raises.
+    pause_callback : optional async callable()
+        Awaited at phase boundaries (before scraping, before enrichment,
+        before the DB save) — blocks until the campaign is unpaused. Without
+        this, clicking Pause during SCRAPING/ENRICHING was previously a
+        no-op until that whole phase finished.
 
     Returns
     -------
     List of NEW lead dicts saved to PostgreSQL; each has 'id' from the DB.
     Leads that were already in the DB (duplicate on email/phone) are excluded.
     """
+    async def _stage(name: str) -> None:
+        if stage_callback:
+            try:
+                await stage_callback(name)
+            except Exception:
+                pass
+
+    async def _pause() -> None:
+        if pause_callback:
+            try:
+                await pause_callback()
+            except Exception:
+                pass
+
     niche     = str(campaign.get("niche",     "")).strip()
     city      = str(campaign.get("city",      "")).strip()
     country   = str(campaign.get("country",   "")).strip()
@@ -514,6 +536,8 @@ async def run_bulk_scrape(
     cfg["headless"] = headless
 
     # ── 3. Parallel scrape ────────────────────────────────────────────────────
+    await _stage("SCRAPING")
+    await _pause()
     _log(f"⚡ Launching {len(sources)} scraper(s) in parallel …")
     raw_batches = await asyncio.gather(
         *[
@@ -550,6 +574,8 @@ async def run_bulk_scrape(
         return []
 
     # ── 6. Email enrichment (parallel, semaphore-limited) ─────────────────────
+    await _stage("ENRICHING")
+    await _pause()
     try:
         valid = await _enrich_parallel(valid, _log, max_concurrent=5)
     except Exception as exc:
@@ -560,6 +586,7 @@ async def run_bulk_scrape(
     rejected.extend(rejected2)
 
     # ── 7. Batch SQLite save ──────────────────────────────────────────────────
+    await _pause()
     _log(f"💾 Saving {len(valid)} lead(s) to database …")
     saved, n_failed = await _batch_save(valid, _log)
 

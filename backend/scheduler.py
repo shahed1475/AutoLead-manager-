@@ -1,4 +1,4 @@
-"""
+﻿"""
 scheduler.py — Full campaign runner + APScheduler wrappers.
 
 Public API (async):
@@ -38,6 +38,10 @@ from .reply_detector import check_replies as _check_replies
 from .scoring.lead_scorer import score_lead as _score_lead
 from .enrichment.website_analyzer import analyze_website as _analyze_website
 from .enrichment.ai_enricher import enrich_lead_with_ai as _enrich_lead
+# Deep multi-strategy finder (mailto/footer/JS-deobfuscation/WHOIS) — same one
+# the UI campaign path uses, replacing scraper.py's single-page regex finder
+# so both live pipelines discover emails with equal thoroughness.
+from .scrapers.email_finder import find_email_from_website as _find_email_from_website
 
 logger   = logging.getLogger(__name__)
 settings = get_settings()
@@ -341,7 +345,7 @@ async def run_campaign(
         if not raw_lead.get("email") and raw_lead.get("website"):
             await _qlog(log_queue, f"   📧 Probing website for email: {raw_lead['website']}")
             try:
-                found = await scraper.find_email_from_website(raw_lead["website"])
+                found = await _find_email_from_website(raw_lead["website"])
                 if found:
                     raw_lead["email"] = found
                     await _qlog(log_queue, f"   ✉️  Found: {found}")
@@ -394,6 +398,30 @@ async def run_campaign(
             await _qlog(log_queue, f"   ❌ Could not re-fetch lead {lead_id} from DB", "ERROR")
             continue
         lead = dict(lead)
+
+        # ── 3d.5 Business-intelligence enrichment (website analysis + AI) ──────
+        # Previously only wired into the manual single-lead endpoint — the
+        # daily automated campaign scored every lead on structural-only data.
+        if lead.get("website") and not lead.get("enriched_at"):
+            await _qlog(log_queue, f"   🔎 Enriching {biz}...")
+            try:
+                site_data = await _analyze_website(lead["website"], timeout=settings.enrichment_timeout)
+                await _enrich_lead(lead, site_data, company_dna)
+                refreshed_lead = await db.get_lead_by_id(lead_id)
+                if refreshed_lead:
+                    lead = dict(refreshed_lead)
+            except Exception as exc:
+                await _qlog(log_queue, f"   ⚠️  Enrichment failed for {biz}: {exc}", "WARNING")
+
+        # ── 3d.6 AI scoring (now sees enriched_data instead of an empty dict) ──
+        try:
+            enriched = await db.get_enriched_data(lead_id)
+            await _score_lead(lead, enriched=enriched)
+            refreshed_lead = await db.get_lead_by_id(lead_id)
+            if refreshed_lead:
+                lead = dict(refreshed_lead)
+        except Exception as exc:
+            await _qlog(log_queue, f"   ⚠️  Scoring failed for {biz}: {exc}", "WARNING")
 
         # ── 3e. AI message generation ──────────────────────────────────────────
         if not (lead.get("ai_email_subject") or lead.get("ai_whatsapp_msg")):
@@ -580,290 +608,6 @@ async def check_followups(
     return results
 
 
-async def run_full_pipeline(
-    niche:         str,
-    city:          str,
-    channel:       str,
-    daily_cap:     int,
-    log_queue:     asyncio.Queue,
-    db_mod:        Any,
-    config:        Dict[str, Any],
-    sources:       Optional[List[str]]     = None,
-    country:       Optional[str]           = None,
-    hot_warm_only: bool                    = True,
-    source_caps:   Optional[Dict[str, int]] = None,
-) -> Dict[str, Any]:
-    """
-    8-step full pipeline orchestrator for multi-source campaigns.
-
-    Step 1  Bulk scrape from all configured sources
-    Step 2  Validate + deduplicate → save new leads to DB
-    Step 3  Enrich in parallel (max 5 concurrent, asyncio.Semaphore)
-    Step 4  Score each enriched lead
-    Step 5  Filter HOT+WARM (if hot_warm_only) then apply daily_cap
-    Step 6  Generate personalised messages via generate_messages_v2
-    Step 7  Send outreach with inter-send delay (if auto_send)
-    Step 8  Schedule follow-up sequence for each sent lead
-    """
-    global _stop_flag
-    _stop_flag = False
-    channel = channel.upper()
-    if sources is None:
-        sources = ["GOOGLE_MAPS"]
-
-    stored = await db_mod.get_all_settings()
-    cfg    = _resolve_config(config, stored)
-
-    await _qlog(log_queue,
-        f"🚀 Full pipeline — {niche} in {city} | sources={sources} | "
-        f"channel={channel} | cap={daily_cap} | hot_warm_only={hot_warm_only}")
-
-    company_dna = _load_company_dna(cfg["company_dna_path"])
-    if not company_dna.strip():
-        await _qlog(log_queue,
-            "⚠️  company_dna.txt is empty — messages will be generic", "WARNING")
-
-    results: Dict[str, Any] = {
-        "leads_scraped":  0,
-        "leads_saved":    0,
-        "leads_enriched": 0,
-        "leads_scored":   0,
-        "leads_filtered": 0,
-        "leads_sent":     0,
-        "errors":         [],
-    }
-
-    # ── Step 1: Bulk scrape ────────────────────────────────────────────────────
-    await _qlog(log_queue, f"🕷️  Step 1/8: Scraping {', '.join(sources)} …")
-
-    loop = asyncio.get_running_loop()
-
-    def _scrape_log(msg: str) -> None:
-        entry = {
-            "message":   msg,
-            "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S"),
-            "level":     "INFO",
-        }
-        try:
-            loop.call_soon_threadsafe(log_queue.put_nowait, entry)
-        except Exception:
-            pass
-        _stream_emit("INFO", "SCRAPE", msg)
-
-    try:
-        raw_leads: List[Dict[str, Any]] = await scraper.scrape_multi_source(
-            sources     = sources,
-            niche       = niche,
-            city        = city,
-            max_results = daily_cap,
-            headless    = bool(config.get("headless", False)),
-            source_caps = source_caps,
-        )
-    except Exception as exc:
-        err = f"Scraper error: {exc}"
-        await _qlog(log_queue, f"❌ {err}", "ERROR")
-        results["errors"].append(err)
-        return results
-
-    results["leads_scraped"] = len(raw_leads)
-    await _qlog(log_queue, f"📋 Step 1 done — scraped {len(raw_leads)} raw results")
-
-    if not raw_leads:
-        await _qlog(log_queue, "⚠️  No results from scraper — stopping", "WARNING")
-        return results
-
-    # ── Step 2: Validate + deduplicate ────────────────────────────────────────
-    await _qlog(log_queue, "🔍 Step 2/8: Deduplication …")
-    new_lead_ids: List[int] = []
-
-    for raw in raw_leads:
-        if not raw.get("business_name"):
-            continue
-        try:
-            lead_id, is_new = await db_mod.create_lead_deduped({
-                "business_name": raw.get("business_name"),
-                "phone":         raw.get("phone"),
-                "email":         raw.get("email"),
-                "website":       raw.get("website"),
-                "niche":         raw.get("niche") or niche,
-                "city":          raw.get("city") or city,
-                "country":       raw.get("country") or country,
-                "channel":       channel,
-            })
-            if is_new:
-                new_lead_ids.append(lead_id)
-                await db_mod.log_campaign_action(lead_id, "SCRAPE", "FOUND", True)
-                results["leads_saved"] += 1
-        except Exception as exc:
-            biz = raw.get("business_name", "unknown")
-            results["errors"].append(f"Dedup error for '{biz}': {exc}")
-
-    await _qlog(log_queue, f"✅ Step 2 done — {results['leads_saved']} new leads saved")
-
-    if not new_lead_ids:
-        await _qlog(log_queue, "⚠️  All scraped leads are duplicates — nothing to process")
-        return results
-
-    # ── Step 3: Parallel enrichment ────────────────────────────────────────────
-    await _qlog(log_queue, f"🔬 Step 3/8: Enriching {len(new_lead_ids)} leads (≤5 parallel) …")
-    sem = asyncio.Semaphore(5)
-
-    async def _enrich_one(lid: int) -> None:
-        async with sem:
-            if _stop_flag:
-                return
-            lead = await db_mod.get_lead_by_id(lid)
-            if not lead or not lead.get("website"):
-                return
-            lead = dict(lead)
-            try:
-                site_data  = await _analyze_website(lead["website"],
-                                                    timeout=settings.enrichment_timeout)
-                await _enrich_lead(lead, site_data, company_dna)
-                await db_mod.log_campaign_action(lid, "AI", "ENRICH", True)
-                results["leads_enriched"] += 1
-            except Exception as exc:
-                await db_mod.log_campaign_action(lid, "AI", "ENRICH", False, str(exc))
-                results["errors"].append(f"Enrichment failed for lead {lid}: {exc}")
-
-    await asyncio.gather(*[_enrich_one(lid) for lid in new_lead_ids])
-    await _qlog(log_queue, f"✅ Step 3 done — enriched {results['leads_enriched']} leads")
-
-    # ── Step 4: Score all leads ────────────────────────────────────────────────
-    await _qlog(log_queue, f"📊 Step 4/8: Scoring {len(new_lead_ids)} leads …")
-
-    for lid in new_lead_ids:
-        if _stop_flag:
-            break
-        try:
-            lead = await db_mod.get_lead_by_id(lid)
-            if not lead:
-                continue
-            await _score_lead(dict(lead))
-            results["leads_scored"] += 1
-        except Exception as exc:
-            results["errors"].append(f"Scoring failed for lead {lid}: {exc}")
-
-    await _qlog(log_queue, f"✅ Step 4 done — scored {results['leads_scored']} leads")
-
-    # ── Step 5: Filter HOT+WARM + apply daily cap ──────────────────────────────
-    await _qlog(log_queue,
-        f"🎯 Step 5/8: Filtering "
-        f"({'HOT+WARM only' if hot_warm_only else 'all leads'}) …")
-
-    candidate_ids: List[int] = []
-    for lid in new_lead_ids:
-        if _stop_flag:
-            break
-        lead = await db_mod.get_lead_by_id(lid)
-        if not lead:
-            continue
-        lead = dict(lead)
-
-        if hot_warm_only:
-            label = (lead.get("score_label") or "COLD").upper()
-            score = lead.get("score") or 0
-            if score > 0 and label == "COLD":
-                continue
-
-        candidate_ids.append(lid)
-
-    # Cap by remaining daily budget
-    stats_now  = await db_mod.get_dashboard_stats()
-    sent_today = stats_now.get("sent_today", 0)
-    budget     = max(0, daily_cap - sent_today)
-    candidate_ids = candidate_ids[:budget]
-
-    results["leads_filtered"] = len(candidate_ids)
-    await _qlog(log_queue,
-        f"✅ Step 5 done — {len(candidate_ids)} leads pass filter (budget={budget})")
-
-    if not candidate_ids:
-        await _qlog(log_queue, "⚠️  No leads pass filter — pipeline complete")
-        return results
-
-    # ── Step 6: Generate personalised messages ─────────────────────────────────
-    await _qlog(log_queue, f"✍️  Step 6/8: Generating messages for {len(candidate_ids)} leads …")
-
-    for lid in candidate_ids:
-        if _stop_flag:
-            break
-        lead = await db_mod.get_lead_by_id(lid)
-        if not lead:
-            continue
-        lead = dict(lead)
-
-        # Skip if messages already exist (e.g. re-run scenario)
-        if lead.get("ai_email_subject") or lead.get("ai_whatsapp_msg"):
-            continue
-
-        try:
-            enriched = await db_mod.get_enriched_data(lid) or {}
-            scores   = await db_mod.get_score(lid) or {}
-            # generate_messages_v2 persists to DB internally — no manual update needed
-            await ai_brain.generate_messages_v2(lead, enriched, scores, company_dna)
-            await db_mod.log_campaign_action(lid, "AI", "GENERATE", True)
-        except Exception as exc:
-            err = f"Message gen failed for lead {lid}: {exc}"
-            await _qlog(log_queue, f"   ❌ {err}", "ERROR")
-            await db_mod.log_campaign_action(lid, "AI", "GENERATE", False, str(exc))
-            results["errors"].append(err)
-
-    await _qlog(log_queue, "✅ Step 6 done — messages generated")
-
-    # ── Step 7: Send outreach ──────────────────────────────────────────────────
-    if not cfg["auto_send"]:
-        await _qlog(log_queue,
-            f"💡 Step 7/8: auto_send=False — {len(candidate_ids)} leads saved with messages")
-        return results
-
-    await _qlog(log_queue,
-        f"📤 Step 7/8: Sending {len(candidate_ids)} leads via {channel} …")
-
-    for idx, lid in enumerate(candidate_ids, 1):
-        if _stop_flag:
-            await _qlog(log_queue, "🛑 Stop signal received — halting send phase", "WARNING")
-            break
-
-        lead = await db_mod.get_lead_by_id(lid)
-        if not lead:
-            continue
-        lead = dict(lead)
-        biz  = lead.get("business_name", f"Lead {lid}")
-
-        sent_ok, send_err = await _dispatch_send(lead, channel, db_mod, log_queue)
-
-        if sent_ok:
-            now_dt = datetime.now(timezone.utc)
-            await db_mod.update_lead(lid, {"status": "SENT", "sent_at": now_dt.isoformat()})
-            results["leads_sent"] += 1
-            await _qlog(log_queue, f"   ✅ [{idx}/{len(candidate_ids)}] Sent → {biz}")
-
-            # ── Step 8: Schedule follow-ups ────────────────────────────────────
-            try:
-                await _schedule_fu(lid, now_dt, lead)
-            except Exception as exc:
-                logger.warning("follow-up scheduling failed for lead %d: %s", lid, exc)
-
-            if idx < len(candidate_ids) and not _stop_flag:
-                delay = random.uniform(cfg["send_delay_min"], cfg["send_delay_max"])
-                await _qlog(log_queue, f"   ⏳ Pausing {delay:.0f}s …")
-                await asyncio.sleep(delay)
-        else:
-            await _qlog(log_queue, f"   ❌ [{idx}/{len(candidate_ids)}] {biz}: {send_err}", "ERROR")
-            results["errors"].append(f"{biz}: {send_err}")
-
-    await _qlog(log_queue,
-        f"🏁 Full pipeline complete — "
-        f"scraped={results['leads_scraped']} | "
-        f"saved={results['leads_saved']} | "
-        f"enriched={results['leads_enriched']} | "
-        f"sent={results['leads_sent']} | "
-        f"errors={len(results['errors'])}")
-
-    return results
-
-
 def request_stop() -> None:
     """
     Signal any active run_campaign() call to stop after its current lead.
@@ -1028,7 +772,8 @@ async def _daily_campaign_job() -> None:
         unscored = await db.get_leads_without_score(limit=200)
         if unscored:
             for lead in unscored:
-                await _score_lead(lead)
+                enriched = await db.get_enriched_data(lead["id"])
+                await _score_lead(dict(lead), enriched=enriched)
             logger.info("Auto-scored %d leads", len(unscored))
     except Exception as exc:
         logger.warning("Auto-scoring skipped: %s", exc)

@@ -1,13 +1,16 @@
 import { useState, useEffect, useRef, Fragment } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Rocket, Square, RefreshCw, Target, History,
+  Rocket, Square, RefreshCw, Target,
   Radio, Activity, Trash2, MapPin, Bot, Mail,
   MessageSquare, AlertTriangle, Filter,
   TrendingUp, Users, Clock, Globe, Monitor,
   Flame, Send, BarChart3, Zap, FlaskConical, Database,
+  Pause, Play, Gauge, Timer, MessageCircle,
 } from 'lucide-react'
-import { campaignApi, engineApi, statsApi, enrichApi } from '../api/client'
+import { campaignApi, engineApi, statsApi, enrichApi, withSessionToken } from '../api/client'
+import { useAnimatedNumber } from '../hooks/useAnimatedNumber'
+import CampaignHistoryTable from '../components/CampaignHistoryTable'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -58,18 +61,6 @@ const CHANNEL_ACTIVE = {
   BOTH:     'border-teal-500/60 bg-teal-500/15 text-teal-300',
 }
 
-const CHANNEL_BADGE = {
-  EMAIL:    'badge-email',
-  WHATSAPP: 'badge-whatsapp',
-  BOTH:     'badge bg-teal-500/20 text-teal-400 border border-teal-500/30',
-}
-
-const RUN_STATUS_CLS = {
-  RUNNING:   'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30',
-  COMPLETED: 'bg-blue-500/20 text-blue-400 border border-blue-500/30',
-  STOPPED:   'bg-amber-500/20 text-amber-400 border border-amber-500/30',
-  FAILED:    'bg-red-500/20 text-red-400 border border-red-500/30',
-}
 
 const LOG_FILTERS = [
   { id: 'all',   label: 'All',    Icon: Activity      },
@@ -81,7 +72,13 @@ const LOG_FILTERS = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function getLogMeta(msg) {
+function getLogMeta(msg, level) {
+  // Severity comes from the backend's `level` field (ERROR/WARNING/INFO) when
+  // present — previously this only sniffed emoji prefixes in the message
+  // text, the same log-text-guessing anti-pattern the stage tracker moved
+  // away from. Emoji-sniffing remains as a fallback for older/malformed frames.
+  if (level === 'ERROR' || level === 'WARNING') return { color: 'text-red-400', type: 'error' }
+
   if (msg.startsWith('✅'))                                                    return { color: 'text-emerald-400', type: 'found'  }
   if (msg.startsWith('🤖'))                                                    return { color: 'text-blue-400',    type: 'ai'     }
   if (msg.startsWith('📤') || msg.startsWith('💬') || msg.startsWith('📨') ||
@@ -91,37 +88,17 @@ function getLogMeta(msg) {
   return                                                                              { color: 'text-slate-300',   type: 'info'   }
 }
 
-function fmtRunDate(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso + 'Z')
-  return (
-    d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) +
-    ' · ' +
-    d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-  )
+// Maps the backend's real campaign_stage (from /api/engine/status) onto the
+// 5-step pipeline display — no log-text guessing.
+const STAGE_TO_STEP = {
+  QUEUED: 0, STARTING: 0,
+  SCRAPING: 1, ENRICHING: 2, SCORING: 3, WRITING: 4, SENDING: 5,
+  COMPLETED: 5, STOPPED: 5, FAILED: 5,
 }
 
-function fmtDuration(startIso, endIso) {
-  if (!startIso) return '—'
-  const s   = new Date(startIso + 'Z')
-  const e   = endIso ? new Date(endIso + 'Z') : new Date()
-  const sec = Math.max(0, Math.round((e - s) / 1000))
-  if (sec < 60)   return `${sec}s`
-  if (sec < 3600) return `${Math.floor(sec / 60)}m ${sec % 60}s`
-  return `${Math.floor(sec / 3600)}h ${Math.floor((sec % 3600) / 60)}m`
-}
-
-// Derive which pipeline step is currently active based on recent log messages
-function derivePipelineStep(logs, isRunning) {
+function pipelineStepFromStage(stage, isRunning) {
   if (!isRunning) return 0
-  const recent = logs.slice(-15)
-  for (let i = recent.length - 1; i >= 0; i--) {
-    const t = recent[i].type
-    if (t === 'sent')  return 5
-    if (t === 'ai')    return 4
-    if (t === 'found') return 1
-  }
-  return 1 // running but no logs = scraping phase
+  return STAGE_TO_STEP[stage] ?? 1
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -171,9 +148,24 @@ function SessionStat({ label, value, Icon, colorClass }) {
 
 // ── Pipeline Progress Card ────────────────────────────────────────────────────
 
-function PipelineCard({ isRunning, logs, leadsFound, leadsSent, scoreDist }) {
-  const currentStep = derivePipelineStep(logs, isRunning)
+function fmtEta(seconds) {
+  if (seconds == null || !isFinite(seconds) || seconds < 0) return null
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+}
+
+function PipelineCard({
+  isRunning, stage, paused, leadsFound, leadsSent, scoreDist,
+  currentLead, messagesGenerated, leadsPerMin, etaSeconds,
+}) {
+  const currentStep = pipelineStepFromStage(stage, isRunning)
   const campaignDone = !isRunning && leadsSent > 0
+
+  const animFound = useAnimatedNumber(leadsFound)
+  const animSent  = useAnimatedNumber(leadsSent)
+  const animMsgs  = useAnimatedNumber(messagesGenerated)
+  const completionPct = leadsFound > 0 ? Math.min(100, Math.round((leadsSent / leadsFound) * 100)) : 0
 
   function stepState(n) {
     if (campaignDone) return 'done'
@@ -186,9 +178,9 @@ function PipelineCard({ isRunning, logs, leadsFound, leadsSent, scoreDist }) {
   function stepCount(n) {
     const state = stepState(n)
     if (state === 'idle') return null
-    if (n === 5) return leadsSent
+    if (n === 5) return animSent
     if (state === 'pending') return null
-    return leadsFound
+    return animFound
   }
 
   const hot  = scoreDist?.HOT  ?? 0
@@ -199,6 +191,12 @@ function PipelineCard({ isRunning, logs, leadsFound, leadsSent, scoreDist }) {
 
   return (
     <div className="card p-4 space-y-4 shrink-0">
+
+      {isRunning && paused && (
+        <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-1.5 w-fit">
+          <Pause size={11} /> Paused — holding after current lead ({stage?.toLowerCase() || 'idle'})
+        </div>
+      )}
 
       {/* ── 5-step pipeline ─────────────────────────────────────────────── */}
       <div className="flex items-start">
@@ -257,6 +255,56 @@ function PipelineCard({ isRunning, logs, leadsFound, leadsSent, scoreDist }) {
           )
         })}
       </div>
+
+      {/* ── Live progress + metrics ────────────────────────────────────────── */}
+      {isRunning && (
+        <div className="pt-3 border-t border-slate-800/60 space-y-3">
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-[10px] text-slate-500 uppercase tracking-widest font-bold">
+              <span>Completion</span>
+              <span className="text-slate-300 font-mono">{completionPct}%</span>
+            </div>
+            <div className="h-1.5 bg-slate-800/80 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-brand-500 rounded-full transition-all duration-700"
+                style={{ width: `${completionPct}%` }}
+              />
+            </div>
+          </div>
+
+          {currentLead && (
+            <p className="text-xs text-slate-400 truncate">
+              <span className="text-slate-600">Processing:</span>{' '}
+              <span className="text-slate-200 font-medium">{currentLead}</span>
+            </p>
+          )}
+
+          <div className="grid grid-cols-3 gap-2">
+            <div className="bg-slate-900/60 rounded-lg px-2.5 py-2 border border-slate-800/60">
+              <p className="text-[9px] text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                <MessageCircle size={9} /> Messages
+              </p>
+              <p className="text-sm font-mono font-bold text-slate-200 mt-0.5">{animMsgs}</p>
+            </div>
+            <div className="bg-slate-900/60 rounded-lg px-2.5 py-2 border border-slate-800/60">
+              <p className="text-[9px] text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                <Gauge size={9} /> Leads/min
+              </p>
+              <p className="text-sm font-mono font-bold text-slate-200 mt-0.5">
+                {leadsPerMin != null ? leadsPerMin.toFixed(1) : '—'}
+              </p>
+            </div>
+            <div className="bg-slate-900/60 rounded-lg px-2.5 py-2 border border-slate-800/60">
+              <p className="text-[9px] text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                <Timer size={9} /> ETA
+              </p>
+              <p className="text-sm font-mono font-bold text-slate-200 mt-0.5">
+                {fmtEta(etaSeconds) ?? '—'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Score distribution bars ──────────────────────────────────────── */}
       {hasDistData && (
@@ -363,7 +411,7 @@ export default function Campaign() {
     refetchInterval: 5000,
   })
 
-  const { data: history, refetch: refetchHistory } = useQuery({
+  const { data: history, isFetching: historyLoading, refetch: refetchHistory } = useQuery({
     queryKey: ['campaignHistory'],
     queryFn:  () => campaignApi.history(),
     refetchInterval: 10000,
@@ -376,6 +424,20 @@ export default function Campaign() {
   })
 
   const isRunning = Boolean(engine?.campaign_running)
+  const isPaused  = Boolean(engine?.campaign_paused)
+
+  // ── Duplicate a past run — prefill the Start form, no backend call needed ──
+  function handleDuplicateRun(run) {
+    if (isRunning) { toast.error('Stop the running campaign before duplicating another'); return }
+    setNiche(run.niche || '')
+    setCity(run.city || '')
+    setCountry(run.country || '')
+    setChannel(run.channel || 'EMAIL')
+    if (run.sources) setSources(run.sources.split(',').filter(Boolean))
+    if (run.daily_cap) setDailyCap(run.daily_cap)
+    toast.success('Start form pre-filled — review and launch')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
 
   // ── Mirror running campaign params back into form ─────────────────────────
 
@@ -389,6 +451,25 @@ export default function Campaign() {
     if (engine.campaign_hot_warm_only !== undefined) setHotWarmOnly(Boolean(engine.campaign_hot_warm_only))
   }, [engine?.campaign_running]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Completion toast — fires once when a running campaign stops polling as running ──
+  const wasRunningRef = useRef(false)
+  useEffect(() => {
+    if (wasRunningRef.current && !isRunning) {
+      const stage = (engine?.campaign_stage || '').toUpperCase()
+      const found = engine?.campaign_leads_found ?? 0
+      const sent  = engine?.campaign_leads_sent ?? 0
+      if (stage === 'FAILED') {
+        toast.error('Campaign failed — check the live log for details')
+      } else if (stage === 'STOPPED') {
+        toast(`Campaign stopped — ${sent} sent of ${found} found`, { icon: '⏹️' })
+      } else {
+        toast.success(`Campaign completed — ${sent} sent of ${found} found`)
+      }
+      qc.invalidateQueries({ queryKey: ['campaignHistory'] })
+    }
+    wasRunningRef.current = isRunning
+  }, [isRunning, engine?.campaign_stage, engine?.campaign_leads_found, engine?.campaign_leads_sent, qc])
+
   // ── SSE with auto-reconnect ───────────────────────────────────────────────
 
   useEffect(() => {
@@ -396,7 +477,7 @@ export default function Campaign() {
 
     function connect() {
       if (es) es.close()
-      es = new EventSource('/api/logs/stream')
+      es = new EventSource(withSessionToken('/api/logs/stream'))
       esRef.current = es
 
       es.onopen = () => { setSseLive(true); clearTimeout(retryRef.current) }
@@ -408,7 +489,7 @@ export default function Campaign() {
       es.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
-          const { color, type } = getLogMeta(data.message)
+          const { color, type } = getLogMeta(data.message, data.level)
           setLogs((prev) => [
             ...prev.slice(-499),
             { message: data.message, ts: data.timestamp || '', color, type },
@@ -472,6 +553,18 @@ export default function Campaign() {
   const stopMut = useMutation({
     mutationFn: () => campaignApi.stop(),
     onSuccess: () => { refetchEngine(); toast.success('Stop signal sent') },
+    onError: (e) => toast.error(e.message),
+  })
+
+  const pauseMut = useMutation({
+    mutationFn: () => campaignApi.pause(),
+    onSuccess: () => { refetchEngine(); toast.success('Campaign paused') },
+    onError: (e) => toast.error(e.message),
+  })
+
+  const resumeMut = useMutation({
+    mutationFn: () => campaignApi.resume(),
+    onSuccess: () => { refetchEngine(); toast.success('Campaign resumed') },
     onError: (e) => toast.error(e.message),
   })
 
@@ -751,6 +844,25 @@ export default function Campaign() {
               </button>
 
               <button
+                onClick={() => (isPaused ? resumeMut.mutate() : pauseMut.mutate())}
+                disabled={!isRunning || pauseMut.isPending || resumeMut.isPending}
+                className={clsx(
+                  'w-full py-2.5 rounded-xl font-bold text-sm tracking-widest uppercase',
+                  'border transition-all duration-150 active:scale-[0.98]',
+                  'disabled:opacity-25 disabled:cursor-not-allowed',
+                  'flex items-center justify-center gap-2',
+                  isPaused
+                    ? 'bg-emerald-600/10 hover:bg-emerald-600/25 text-emerald-400 border-emerald-600/30'
+                    : 'bg-amber-600/10 hover:bg-amber-600/25 text-amber-400 border-amber-600/30',
+                )}
+              >
+                {(pauseMut.isPending || resumeMut.isPending)
+                  ? <RefreshCw size={13} className="animate-spin" />
+                  : isPaused ? <Play size={13} /> : <Pause size={13} />}
+                {isPaused ? 'RESUME ENGINE' : 'PAUSE ENGINE'}
+              </button>
+
+              <button
                 onClick={() => stopMut.mutate()}
                 disabled={!isRunning || stopMut.isPending}
                 className="w-full py-2.5 rounded-xl font-bold text-sm tracking-widest uppercase
@@ -813,10 +925,15 @@ export default function Campaign() {
           {/* ── Pipeline progress card ────────────────────────────────── */}
           <PipelineCard
             isRunning={isRunning}
-            logs={logs}
+            stage={engine?.campaign_stage}
+            paused={Boolean(engine?.campaign_paused)}
             leadsFound={leadsFound}
             leadsSent={leadsSent}
             scoreDist={scoreDist}
+            currentLead={engine?.campaign_current_lead}
+            messagesGenerated={engine?.campaign_messages_generated ?? 0}
+            leadsPerMin={engine?.campaign_leads_per_min}
+            etaSeconds={engine?.campaign_eta_seconds}
           />
 
           {/* ── Live terminal ─────────────────────────────────────────── */}
@@ -919,99 +1036,12 @@ export default function Campaign() {
           </div>
 
           {/* ── Campaign history ──────────────────────────────────────── */}
-          <div className="card overflow-hidden shrink-0">
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-slate-700/50">
-              <History size={13} className="text-slate-500" />
-              <h3 className="text-sm font-semibold text-slate-300">Recent Campaigns</h3>
-              {history?.length > 0 && (
-                <span className="text-[10px] text-slate-600 ml-0.5">({history.length})</span>
-              )}
-              <button
-                onClick={() => refetchHistory()}
-                title="Refresh history"
-                className="ml-auto p-1 rounded text-slate-600 hover:text-slate-400 transition-colors"
-              >
-                <RefreshCw size={12} />
-              </button>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-slate-800/60">
-                    {[
-                      { label: 'Date',     right: false },
-                      { label: 'Niche',    right: false },
-                      { label: 'City',     right: false },
-                      { label: 'Channel',  right: false },
-                      { label: 'Found',    right: true  },
-                      { label: 'Sent',     right: true  },
-                      { label: 'Duration', right: true  },
-                      { label: 'Status',   right: false },
-                    ].map(({ label, right }) => (
-                      <th
-                        key={label}
-                        className={clsx(
-                          'px-3 py-2 font-medium text-slate-500 text-[10px] uppercase tracking-wide',
-                          right ? 'text-right' : 'text-left',
-                        )}
-                      >
-                        {label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/40">
-                  {history?.map((run) => (
-                    <tr key={run.id} className="hover:bg-slate-800/20 transition-colors group">
-                      <td className="px-3 py-2.5 text-slate-500 font-mono whitespace-nowrap text-[11px]">
-                        {fmtRunDate(run.started_at)}
-                      </td>
-                      <td className="px-3 py-2.5 text-slate-300 max-w-[130px] truncate" title={run.niche}>
-                        {run.niche || '—'}
-                      </td>
-                      <td className="px-3 py-2.5 text-slate-400 whitespace-nowrap">
-                        {run.city || '—'}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        {run.channel
-                          ? <span className={`badge text-[10px] px-2 py-0.5 ${CHANNEL_BADGE[run.channel] || 'badge'}`}>{run.channel}</span>
-                          : <span className="text-slate-600">—</span>}
-                      </td>
-                      <td className="px-3 py-2.5 text-right font-mono text-slate-300 tabular-nums">
-                        {run.leads_found ?? 0}
-                      </td>
-                      <td className="px-3 py-2.5 text-right font-mono text-emerald-400 font-bold tabular-nums">
-                        {run.leads_sent ?? 0}
-                      </td>
-                      <td className="px-3 py-2.5 text-right font-mono text-slate-600 text-[10px] tabular-nums whitespace-nowrap">
-                        {fmtDuration(run.started_at, run.finished_at)}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${RUN_STATUS_CLS[run.status] || ''}`}>
-                          {run.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-
-                  {(!history || history.length === 0) && (
-                    <tr>
-                      <td colSpan={8} className="px-4 py-10 text-center">
-                        <div className="flex flex-col items-center gap-2">
-                          <Rocket size={24} className="text-slate-700" />
-                          <p className="text-slate-600 text-xs">No campaigns yet</p>
-                          <p className="text-slate-700 text-[10px]">
-                            Enter a niche &amp; city above, then hit START ENGINE
-                          </p>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <CampaignHistoryTable
+            history={history}
+            isLoading={historyLoading}
+            onRefresh={refetchHistory}
+            onDuplicate={handleDuplicateRun}
+          />
 
         </div>
       </div>

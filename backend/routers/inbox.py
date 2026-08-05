@@ -191,14 +191,20 @@ async def score_all_leads(payload: ScoreRequest, background_tasks: BackgroundTas
     """
     async def _run(lead_ids: Optional[List[int]]) -> None:
         if lead_ids:
-            leads = [await db.get_lead_by_id(lid) for lid in lead_ids]
-            leads = [dict(l) for l in leads if l]
+            leads_map = await db.get_leads_by_ids(lead_ids)
+            leads = [dict(leads_map[lid]) for lid in lead_ids if lid in leads_map]
         else:
             leads = await db.get_leads_without_score()
 
+        scored_count = 0
         for lead in leads:
-            await score_lead(lead)
-        logger.info("Scored %d leads", len(leads))
+            try:
+                enriched = await db.get_enriched_data(lead["id"])
+                await score_lead(lead, enriched=enriched)
+                scored_count += 1
+            except Exception as exc:
+                logger.warning("Scoring failed for lead %s: %s", lead.get("id"), exc)
+        logger.info("Scored %d/%d leads", scored_count, len(leads))
 
     background_tasks.add_task(_run, payload.lead_ids)
     return {"queued": True}

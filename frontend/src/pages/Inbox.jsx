@@ -7,6 +7,7 @@ import {
   Clock, ExternalLink, BarChart3,
 } from 'lucide-react'
 import { inboxApi } from '../api/client'
+import StatCard from '../components/StatCard'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -54,26 +55,6 @@ function IntentBadge({ intent }) {
       <span className={clsx('w-1.5 h-1.5 rounded-full shrink-0', cfg.dot)} />
       {cfg.label}
     </span>
-  )
-}
-
-// ── Stat card ─────────────────────────────────────────────────────────────────
-
-function StatCard({ icon: Icon, label, value, color = 'text-slate-200', sub, iconColor }) {
-  return (
-    <div className="card p-4 flex items-center gap-3">
-      <div className={clsx(
-        'w-9 h-9 rounded-lg flex items-center justify-center shrink-0',
-        iconColor || 'bg-slate-700/60',
-      )}>
-        {Icon && <Icon size={15} className={color} />}
-      </div>
-      <div className="min-w-0">
-        <p className="text-[10px] text-slate-500 uppercase tracking-wider font-medium truncate">{label}</p>
-        <p className={clsx('text-xl font-bold tabular-nums leading-tight', color)}>{value ?? '—'}</p>
-        {sub && <p className="text-[10px] text-slate-600 mt-0.5">{sub}</p>}
-      </div>
-    </div>
   )
 }
 
@@ -392,32 +373,36 @@ export default function Inbox() {
       {/* ── Stats bar ──────────────────────────────────────────────────── */}
       <div className="grid grid-cols-4 gap-3 shrink-0">
         <StatCard
+          variant="compact"
           icon={InboxIcon}
           label="Total Replies"
           value={totalReplies}
-          color="text-slate-200"
-          iconColor="bg-slate-700/60"
+          valueColor="text-slate-200"
+          iconBg="bg-slate-700/60"
         />
         <StatCard
+          variant="compact"
           icon={TrendingUp}
           label="Interested Leads"
           value={interestedCount}
-          color="text-emerald-400"
-          iconColor="bg-emerald-500/10"
+          valueColor="text-emerald-400"
+          iconBg="bg-emerald-500/10"
         />
         <StatCard
+          variant="compact"
           icon={Calendar}
           label="Meeting Requests"
           value={meetingCount}
-          color="text-blue-400"
-          iconColor="bg-blue-500/10"
+          valueColor="text-blue-400"
+          iconBg="bg-blue-500/10"
         />
         <StatCard
+          variant="compact"
           icon={BarChart3}
           label="Reply Rate"
           value={replyRate !== null ? `${typeof replyRate === 'number' ? replyRate.toFixed(1) : replyRate}%` : '—'}
-          color="text-brand-400"
-          iconColor="bg-brand-500/10"
+          valueColor="text-brand-400"
+          iconBg="bg-brand-500/10"
           sub={totalSent ? `${totalSent} emails sent` : undefined}
         />
       </div>

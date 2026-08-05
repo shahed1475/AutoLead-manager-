@@ -1,10 +1,14 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from '@tanstack/react-query'
 import { Toaster } from 'react-hot-toast'
 import App from './App'
 import './index.css'
 
+// Queries handle their own error UI (ErrorState + retry) per-page; mutations
+// mostly already toast their own onError. These caches are a safety net so
+// a query/mutation failure is never fully silent (logged) even if a page
+// forgets to wire isError, without double-toasting mutations that already do.
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -13,6 +17,18 @@ const queryClient = new QueryClient({
       refetchOnWindowFocus: false,
     },
   },
+  queryCache: new QueryCache({
+    onError: (error, query) => {
+      console.error(`AutoLead: query [${query.queryKey.join(', ')}] failed —`, error)
+    },
+  }),
+  mutationCache: new MutationCache({
+    onError: (error, _vars, _ctx, mutation) => {
+      if (!mutation.options.onError) {
+        console.error('AutoLead: mutation failed —', error)
+      }
+    },
+  }),
 })
 
 ReactDOM.createRoot(document.getElementById('root')).render(

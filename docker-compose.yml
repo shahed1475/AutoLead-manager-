@@ -1,58 +1,18 @@
 version: "3.9"
 
-# ─── AutoLead v3 Infrastructure ───────────────────────────────────────────────
+# ─── AutoLead Infrastructure ──────────────────────────────────────────────────
+# SQLite-only — no external DB/cache services to install or manage. This
+# mirrors what actually runs locally, so `docker compose up` and a native
+# `uvicorn main:app --reload` behave identically.
+#
 # Quick start:
 #   1. Copy .env.example → .env and fill in secrets
-#   2. docker compose up -d postgres redis
-#   3. cd backend && uvicorn main:app --reload        (local dev)
-#      OR: docker compose up -d backend              (containerized)
+#   2. docker compose --profile full up -d --build
 # ──────────────────────────────────────────────────────────────────────────────
 
 services:
 
-  # ── PostgreSQL 15 ────────────────────────────────────────────────────────────
-  postgres:
-    image: postgres:15-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB:       ${POSTGRES_DB:-autolead}
-      POSTGRES_USER:     ${POSTGRES_USER:-autolead}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-autolead_secret}
-      PGDATA:            /var/lib/postgresql/data/pgdata
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test:         ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-autolead} -d ${POSTGRES_DB:-autolead}"]
-      interval:     5s
-      timeout:      5s
-      retries:      10
-      start_period: 15s
-    shm_size: "256mb"
-
-  # ── Redis 7 ──────────────────────────────────────────────────────────────────
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: >
-      redis-server
-      --appendonly yes
-      --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
-      --save 60 1
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test:         ["CMD", "redis-cli", "ping"]
-      interval:     5s
-      timeout:      3s
-      retries:      10
-      start_period: 5s
-
-  # ── FastAPI Backend (optional — use for full containerised deploy) ────────────
+  # ── FastAPI Backend ────────────────────────────────────────────────────────
   backend:
     build:
       context:    ./backend
@@ -60,37 +20,23 @@ services:
     restart: unless-stopped
     ports:
       - "${BACKEND_PORT:-8000}:8000"
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-autolead}:${POSTGRES_PASSWORD:-autolead_secret}@postgres:5432/${POSTGRES_DB:-autolead}
-      REDIS_URL:    redis://redis:6379/0
     env_file:
       - .env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     volumes:
       - ./backend:/app
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     profiles:
       - full     # only starts with: docker compose --profile full up
 
-  # ── Vite frontend (optional) ─────────────────────────────────────────────────
+  # ── Vite frontend (built + served via nginx) ──────────────────────────────
   frontend:
     build:
       context:    ./frontend
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT:-5173}:5173"
+      - "${FRONTEND_PORT:-5173}:80"
     depends_on:
       - backend
     profiles:
       - full
-
-volumes:
-  postgres_data:
-    driver: local
-  redis_data:
-    driver: local

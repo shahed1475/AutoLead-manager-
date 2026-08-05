@@ -4,8 +4,9 @@ import {
   Save, RefreshCw, Eye, EyeOff, Mail, Bot, Globe,
   MessageCircle, FileText, AlertTriangle, Shield, Zap,
   CheckCircle2, XCircle, Trash2, RotateCcw, Inbox,
+  Lock, Unlock,
 } from 'lucide-react'
-import { settingsApi, aiApi, leadsApi } from '../api/client'
+import { settingsApi, aiApi, leadsApi, authApi, setSessionToken } from '../api/client'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -142,6 +143,102 @@ function ConfirmModal({ action, onConfirm, onCancel }) {
   )
 }
 
+function AppLockCard() {
+  const [current,  setCurrent]  = useState('')
+  const [next,     setNext]     = useState('')
+  const [confirm,  setConfirm]  = useState('')
+
+  const { data, refetch } = useQuery({
+    queryKey: ['authStatus'],
+    queryFn:  authApi.status,
+  })
+  const passwordSet = Boolean(data?.password_set)
+
+  function reset() { setCurrent(''); setNext(''); setConfirm('') }
+
+  const setMut = useMutation({
+    mutationFn: () => authApi.setPassword(next, passwordSet ? current : undefined),
+    onSuccess: ({ token }) => {
+      setSessionToken(token)
+      reset()
+      refetch()
+      toast.success(passwordSet ? 'Password changed' : 'App lock enabled')
+    },
+    onError: (e) => toast.error(e.message),
+  })
+
+  const clearMut = useMutation({
+    mutationFn: () => authApi.clearPassword(current),
+    onSuccess: () => {
+      setSessionToken('')
+      reset()
+      refetch()
+      toast.success('App lock disabled')
+    },
+    onError: (e) => toast.error(e.message),
+  })
+
+  function handleSave(e) {
+    e.preventDefault()
+    if (next.length < 4) return toast.error('Password must be at least 4 characters')
+    if (next !== confirm) return toast.error('Passwords do not match')
+    setMut.mutate()
+  }
+
+  return (
+    <SectionCard
+      title="App Lock"
+      description="Optional local password — protects this app's API from anything else running on your machine."
+      icon={Lock}
+      iconColor="text-brand-400"
+    >
+      <form onSubmit={handleSave} className="space-y-4">
+        {passwordSet && (
+          <Field
+            label="Current Password" name="current" type="password"
+            value={current} onChange={(_, v) => setCurrent(v)}
+            placeholder="Required to change or disable"
+          />
+        )}
+        <div className="grid grid-cols-2 gap-4">
+          <Field
+            label={passwordSet ? 'New Password' : 'Set a Password'} name="next" type="password"
+            value={next} onChange={(_, v) => setNext(v)} placeholder="At least 4 characters"
+          />
+          <Field
+            label="Confirm" name="confirm" type="password"
+            value={confirm} onChange={(_, v) => setConfirm(v)} placeholder="Repeat password"
+          />
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="submit"
+            disabled={setMut.isPending || !next}
+            className="btn text-xs bg-brand-600 hover:bg-brand-500 text-white border-brand-600 disabled:opacity-40"
+          >
+            {setMut.isPending
+              ? <><RefreshCw size={13} className="animate-spin" /> Saving…</>
+              : <><Save size={13} /> {passwordSet ? 'Change Password' : 'Enable App Lock'}</>}
+          </button>
+
+          {passwordSet && (
+            <button
+              type="button"
+              disabled={clearMut.isPending || !current}
+              onClick={() => clearMut.mutate()}
+              title="Requires current password"
+              className="btn text-xs border-red-800/60 text-red-400 hover:bg-red-900/30 hover:border-red-600 disabled:opacity-40"
+            >
+              <Unlock size={13} /> Disable Lock
+            </button>
+          )}
+        </div>
+      </form>
+    </SectionCard>
+  )
+}
+
 // ─── Defaults ────────────────────────────────────────────────────────────────
 
 const DEFAULTS = {
@@ -169,6 +266,11 @@ const DEFAULTS = {
   scraper_headless: 'true',
   scraper_delay_min: '2.0',
   scraper_delay_max: '5.0',
+  llm_provider: 'ollama',
+  openai_api_key: '',
+  openai_model: 'gpt-4o-mini',
+  anthropic_api_key: '',
+  anthropic_model: 'claude-3-5-haiku-20241022',
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -449,6 +551,71 @@ export default function Settings() {
         )}
       </SectionCard>
 
+      {/* ─── Cloud LLM (optional) ─── */}
+      <SectionCard
+        title="Cloud LLM (Optional)"
+        description="Ollama above stays the default and keeps AutoLead fully offline. Only switch this if you want higher-quality generation and don't mind API costs."
+        icon={Globe}
+        iconColor="text-sky-400"
+      >
+        <div>
+          <label className="label">Provider</label>
+          <div className="flex gap-2">
+            {[
+              { id: 'ollama',    label: 'Ollama (local)' },
+              { id: 'openai',    label: 'OpenAI' },
+              { id: 'anthropic', label: 'Anthropic' },
+            ].map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => set('llm_provider', p.id)}
+                className={clsx(
+                  'flex-1 py-2 rounded-lg text-xs font-semibold border transition-colors',
+                  values.llm_provider === p.id
+                    ? 'bg-brand-600/20 border-brand-500/60 text-brand-300'
+                    : 'bg-slate-800/50 border-slate-700/60 text-slate-400 hover:border-slate-600'
+                )}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {values.llm_provider === 'openai' && (
+          <>
+            <Field
+              label="OpenAI API Key" name="openai_api_key" type="password"
+              value={values.openai_api_key} onChange={set} placeholder="sk-…"
+            />
+            <Field
+              label="Model" name="openai_model"
+              value={values.openai_model} onChange={set} placeholder="gpt-4o-mini"
+            />
+          </>
+        )}
+
+        {values.llm_provider === 'anthropic' && (
+          <>
+            <Field
+              label="Anthropic API Key" name="anthropic_api_key" type="password"
+              value={values.anthropic_api_key} onChange={set} placeholder="sk-ant-…"
+            />
+            <Field
+              label="Model" name="anthropic_model"
+              value={values.anthropic_model} onChange={set} placeholder="claude-3-5-haiku-20241022"
+            />
+          </>
+        )}
+
+        {values.llm_provider !== 'ollama' && (
+          <p className="text-xs text-slate-500">
+            If no API key is set for the selected provider, generation automatically falls back to Ollama.
+          </p>
+        )}
+      </SectionCard>
+
       {/* ─── Engine & Limits ─── */}
       <SectionCard
         title="Engine & Limits"
@@ -591,6 +758,8 @@ export default function Settings() {
             : <><Save size={13} /> Save DNA</>}
         </button>
       </SectionCard>
+
+      <AppLockCard />
 
       {/* ─── Danger Zone ─── */}
       <SectionCard

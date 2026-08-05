@@ -11,6 +11,8 @@ import {
 } from 'recharts'
 import { statsApi, engineApi, logsApi, scraperApi } from '../api/client'
 import StatCard from '../components/StatCard'
+import { SkeletonStatCard, Skeleton } from '../components/ui/Skeleton'
+import ErrorState from '../components/ui/ErrorState'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -255,13 +257,17 @@ const PIE_COLORS = ['#f59e0b', '#3b82f6', '#10b981', '#64748b']
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
-  const { data: stats } = useQuery({
+  const {
+    data: stats, isLoading: statsLoading, isError: statsError, refetch: refetchStats, isFetching: statsRefetching,
+  } = useQuery({
     queryKey: ['dashboard-stats'],
     queryFn: statsApi.dashboard,
     refetchInterval: 15_000,
   })
 
-  const { data: weeklyData = [] } = useQuery({
+  const {
+    data: weeklyData = [], isError: weeklyError, refetch: refetchWeekly,
+  } = useQuery({
     queryKey: ['stats-weekly'],
     queryFn: statsApi.weekly,
     refetchInterval: 60_000,
@@ -307,42 +313,58 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs text-slate-500">
-          <CheckCircle2 size={12} className="text-emerald-500" />
-          {stats ? 'Live' : 'Loading...'}
+          {statsError ? (
+            <span className="flex items-center gap-1.5 text-red-400">
+              <XCircle size={12} /> Connection error
+            </span>
+          ) : (
+            <>
+              <CheckCircle2 size={12} className={clsx(statsRefetching ? 'text-slate-500 animate-pulse' : 'text-emerald-500')} />
+              {stats ? 'Live' : 'Loading...'}
+            </>
+          )}
         </div>
       </div>
 
       {/* ── Row 1: Stat cards ─────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-        <StatCard
-          label="Total Leads"
-          value={stats?.total_leads ?? '—'}
-          icon={Users}
-          color="brand"
-          sub={`${stats?.pending ?? 0} pending`}
-        />
-        <StatCard
-          label="Sent Today"
-          value={stats ? sentToday : '—'}
-          icon={Send}
-          color="blue"
-          sub={`${stats?.email_sent_today ?? 0} email · ${stats?.whatsapp_sent_today ?? 0} wa`}
-        />
-        <StatCard
-          label="Reply Rate"
-          value={stats ? `${stats.reply_rate}%` : '—'}
-          icon={TrendingUp}
-          color="purple"
-          sub={`${stats?.replied ?? 0} total replies`}
-        />
-        <StatCard
-          label="Est. Revenue"
-          value={stats ? fmtCurrency(estRevenue) : '—'}
-          icon={DollarSign}
-          color="amber"
-          sub={`${stats?.replied ?? 0} replies converted`}
-        />
-      </div>
+      {statsError ? (
+        <ErrorState message="Couldn't load dashboard stats." onRetry={refetchStats} retrying={statsRefetching} />
+      ) : statsLoading ? (
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => <SkeletonStatCard key={i} />)}
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+          <StatCard
+            label="Total Leads"
+            value={stats?.total_leads ?? '—'}
+            icon={Users}
+            color="brand"
+            sub={`${stats?.pending ?? 0} pending`}
+          />
+          <StatCard
+            label="Sent Today"
+            value={stats ? sentToday : '—'}
+            icon={Send}
+            color="blue"
+            sub={`${stats?.email_sent_today ?? 0} email · ${stats?.whatsapp_sent_today ?? 0} wa`}
+          />
+          <StatCard
+            label="Reply Rate"
+            value={stats ? `${stats.reply_rate}%` : '—'}
+            icon={TrendingUp}
+            color="purple"
+            sub={`${stats?.replied ?? 0} total replies`}
+          />
+          <StatCard
+            label="Est. Revenue"
+            value={stats ? fmtCurrency(estRevenue) : '—'}
+            icon={DollarSign}
+            color="amber"
+            sub={`${stats?.replied ?? 0} replies converted`}
+          />
+        </div>
+      )}
 
       {/* ── Row 2: Charts ─────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -364,7 +386,9 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {hasWeekly ? (
+          {weeklyError ? (
+            <ErrorState message="Couldn't load the weekly trend." onRetry={refetchWeekly} className="h-[210px] justify-center" />
+          ) : hasWeekly ? (
             <ResponsiveContainer width="100%" height={210}>
               <AreaChart data={weeklyData} margin={{ top: 5, right: 5, bottom: 0, left: -20 }}>
                 <defs>
@@ -473,28 +497,39 @@ export default function Dashboard() {
       </div>
 
       {/* ── Row 4: Secondary stats strip ──────────────────────────────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <div className="card p-4 border border-slate-700/30">
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Skipped</p>
-          <p className="text-xl font-bold text-slate-300 mt-1">{stats?.skipped ?? '—'}</p>
+      {statsLoading ? (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="card p-4 border border-slate-700/30 space-y-2">
+              <Skeleton className="h-2.5 w-20" />
+              <Skeleton className="h-6 w-12" />
+            </div>
+          ))}
         </div>
-        <div className="card p-4 border border-slate-700/30">
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Emails Today</p>
-          <p className="text-xl font-bold text-purple-400 mt-1">{stats?.email_sent_today ?? '—'}</p>
+      ) : (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="card p-4 border border-slate-700/30">
+            <p className="text-[10px] text-slate-500 uppercase tracking-wider">Skipped</p>
+            <p className="text-xl font-bold text-slate-300 mt-1">{stats?.skipped ?? '—'}</p>
+          </div>
+          <div className="card p-4 border border-slate-700/30">
+            <p className="text-[10px] text-slate-500 uppercase tracking-wider">Emails Today</p>
+            <p className="text-xl font-bold text-purple-400 mt-1">{stats?.email_sent_today ?? '—'}</p>
+          </div>
+          <div className="card p-4 border border-slate-700/30">
+            <p className="text-[10px] text-slate-500 uppercase tracking-wider">WhatsApp Today</p>
+            <p className="text-xl font-bold text-green-400 mt-1">{stats?.whatsapp_sent_today ?? '—'}</p>
+          </div>
+          <div className="card p-4 border border-slate-700/30">
+            <p className="text-[10px] text-slate-500 uppercase tracking-wider">Conversion %</p>
+            <p className="text-xl font-bold text-amber-400 mt-1">
+              {stats?.sent
+                ? `${((stats.replied / stats.sent) * 100).toFixed(1)}%`
+                : '—'}
+            </p>
+          </div>
         </div>
-        <div className="card p-4 border border-slate-700/30">
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider">WhatsApp Today</p>
-          <p className="text-xl font-bold text-green-400 mt-1">{stats?.whatsapp_sent_today ?? '—'}</p>
-        </div>
-        <div className="card p-4 border border-slate-700/30">
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider">Conversion %</p>
-          <p className="text-xl font-bold text-amber-400 mt-1">
-            {stats?.sent
-              ? `${((stats.replied / stats.sent) * 100).toFixed(1)}%`
-              : '—'}
-          </p>
-        </div>
-      </div>
+      )}
 
       {/* ── Row 5: Lead Quality Scoring ───────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">

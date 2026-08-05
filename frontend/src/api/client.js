@@ -1,13 +1,43 @@
 import axios from 'axios'
 
+const TOKEN_KEY = 'autolead_session_token'
+
+export function getSessionToken() {
+  return localStorage.getItem(TOKEN_KEY) || ''
+}
+
+export function setSessionToken(token) {
+  if (token) localStorage.setItem(TOKEN_KEY, token)
+  else localStorage.removeItem(TOKEN_KEY)
+}
+
+// Appends the session token as a query param — used for the SSE log stream,
+// since the native EventSource API can't set an Authorization header.
+export function withSessionToken(url) {
+  const token = getSessionToken()
+  if (!token) return url
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}token=${encodeURIComponent(token)}`
+}
+
 const api = axios.create({
   baseURL: '/api',
   timeout: 300000,  // 5 min — Ollama generation can take up to 300 s
 })
 
+api.interceptors.request.use((config) => {
+  const token = getSessionToken()
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
 api.interceptors.response.use(
   (res) => res,
   (err) => {
+    if (err.response?.status === 401) {
+      setSessionToken('')
+      window.dispatchEvent(new CustomEvent('autolead:unauthorized'))
+    }
     const msg = err.response?.data?.detail || err.response?.data?.message || err.message
     return Promise.reject(new Error(msg))
   }
@@ -61,7 +91,11 @@ export const campaignApi = {
   stats: () => api.get('/campaign/stats').then((r) => r.data),
   start: (payload) => api.post('/campaign/start', payload).then((r) => r.data),
   stop: () => api.post('/campaign/stop').then((r) => r.data),
-  history: () => api.get('/campaign/history').then((r) => r.data),
+  pause: () => api.post('/campaign/pause').then((r) => r.data),
+  resume: () => api.post('/campaign/resume').then((r) => r.data),
+  history: (limit = 50) => api.get('/campaign/history', { params: { limit } }).then((r) => r.data),
+  historyDetail: (runId) => api.get(`/campaign/history/${runId}`).then((r) => r.data),
+  deleteHistory: (runId) => api.delete(`/campaign/history/${runId}`).then((r) => r.data),
   testPipeline: () => api.post('/campaign/test-pipeline').then((r) => r.data),
   dbHealth: () => api.get('/campaign/db-health').then((r) => r.data),
 }
@@ -109,6 +143,14 @@ export const enrichApi = {
   getEnrichment: (leadId)         => api.get(`/leads/${leadId}/enrichment`).then((r) => r.data),
   scoreAll:      (leadIds = null) => api.post('/leads/score-all', { lead_ids: leadIds }).then((r) => r.data),
   scoreDist:     ()               => api.get('/leads/score-dist').then((r) => r.data),
+}
+
+export const authApi = {
+  status:        ()        => api.get('/auth/status').then((r) => r.data),
+  unlock:        (password) => api.post('/auth/unlock', { password }).then((r) => r.data),
+  setPassword:   (password, currentPassword) =>
+    api.post('/auth/set-password', { password, current_password: currentPassword }).then((r) => r.data),
+  clearPassword: (password) => api.post('/auth/clear-password', { password }).then((r) => r.data),
 }
 
 export const followupsApi = {

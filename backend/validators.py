@@ -60,3 +60,38 @@ def clean_phone(phone: Optional[str]) -> Optional[str]:
     if not (7 <= len(digits) <= 15):
         return None
     return "+" + digits if stripped.startswith("+") else digits
+
+
+def clean_business_name(name: Optional[str]) -> Optional[str]:
+    """Trim and collapse internal whitespace. Never rejects — callers decide emptiness."""
+    if not name:
+        return name
+    return re.sub(r"\s+", " ", name.strip())
+
+
+def normalize_website(url: Optional[str]) -> Optional[str]:
+    """
+    Normalize a scraped website URL: ensure a scheme, lowercase scheme+host,
+    strip a trailing slash. Returns None for empty/unusable input.
+    """
+    if not url:
+        return None
+    cleaned = url.strip()
+    if not cleaned:
+        return None
+    if not re.match(r"^https?://", cleaned, re.I):
+        cleaned = "https://" + cleaned
+    match = re.match(r"^(https?)://([^/]+)(/.*)?$", cleaned, re.I)
+    if not match:
+        return cleaned
+    scheme, host, path = match.group(1).lower(), match.group(2).lower(), match.group(3) or ""
+    path = path.rstrip("/")
+    return f"{scheme}://{host}{path}"
+
+
+def clean_country(country: Optional[str]) -> Optional[str]:
+    """Trim whitespace and strip stray leading/trailing punctuation from a country string."""
+    if not country:
+        return None
+    cleaned = country.strip().strip(",.;")
+    return cleaned or None

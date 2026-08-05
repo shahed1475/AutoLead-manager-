@@ -28,8 +28,8 @@ export default function Sidebar() {
     <aside className="w-56 shrink-0 flex flex-col bg-slate-900 border-r border-slate-800 h-screen">
       <div className="flex items-center justify-center px-4 py-4 border-b border-slate-800">
         <img
-          src="/logo.png"
-          alt="HOM — AI Sales Growth Engine"
+          src={`${import.meta.env.BASE_URL}logo.png`}
+          alt="AutoLead Marketing Engine"
           className="h-14 w-auto object-contain drop-shadow-lg"
         />
       </div>
@@ -60,7 +60,7 @@ export default function Sidebar() {
       </nav>
 
       <div className="px-4 py-4 border-t border-slate-800">
-        <p className="text-[10px] text-slate-600 text-center">HOM · AI Sales Growth Engine</p>
+        <p className="text-[10px] text-slate-600 text-center">AutoLead Marketing Engine</p>
       </div>
     </aside>
   )

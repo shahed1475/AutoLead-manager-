@@ -33,6 +33,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from ..validators import clean_phone, clean_email
+from ._shared import resolve_delay
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
@@ -294,8 +295,10 @@ def scrape_sync(
     country:   str,
     max_leads: int,
     log_fn:    Callable[[str], None],
+    cfg:       Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     log_fn(f"📍 Foursquare: '{niche}' in '{city}' (target {max_leads})")
+    delay_min, delay_max = resolve_delay(cfg, 3.0, 6.0)
 
     session    = requests.Session()
     ua         = _get_ua()
@@ -342,7 +345,7 @@ def scrape_sync(
 
         if not page_leads:
             log_fn(f"  ⚠️  No venues found at {base_url} — trying next variant")
-            time.sleep(random.uniform(2.0, 4.0))
+            time.sleep(random.uniform(delay_min, delay_max))
             continue
 
         for lead in page_leads:
@@ -352,15 +355,26 @@ def scrape_sync(
                 pool.append(lead)
 
         log_fn(f"  ✅ {len(pool)} unique venues collected")
-        time.sleep(random.uniform(3.0, 6.0))
+        time.sleep(random.uniform(delay_min, delay_max))
 
     if not pool:
         log_fn("⚠️  Foursquare returned no results for this niche/city")
         return []
 
+    # Foursquare has no explicit pagination param this scraper follows — it
+    # stops at the first URL variant that returns any venues at all, so it
+    # can under-deliver vs max_leads without that ever being visible.
+    if len(pool) < max_leads:
+        log_fn(
+            f"⚠️  Foursquare: requested {max_leads} but only {len(pool)} venue(s) "
+            f"available from the first successful search variant — Foursquare "
+            f"has no further pages for this query"
+        )
+
     log_fn(f"📋 Pool: {len(pool)} — enriching venue pages …")
 
     # ── Phase 2: venue page enrichment ───────────────────────────────────────
+    enrich_delay_min, enrich_delay_max = resolve_delay(cfg, 2.0, 5.0)
     target    = pool[:max_leads]
     v_session = requests.Session()
 
@@ -383,7 +397,7 @@ def scrape_sync(
             + ("✅" if lead.get("phone") or lead.get("website") else "📋")
             + f" {lead['business_name']}"
         )
-        time.sleep(random.uniform(2.0, 5.0))
+        time.sleep(random.uniform(enrich_delay_min, enrich_delay_max))
 
     # Cleanup
     for lead in target:
@@ -403,6 +417,7 @@ async def scrape_foursquare(
     country:      str = "",
     max_leads:    int = 30,
     log_callback: Optional[Callable[[str], None]] = None,
+    cfg:          Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     def _log(msg: str) -> None:
         if log_callback:
@@ -411,7 +426,7 @@ async def scrape_foursquare(
             except Exception:
                 pass
     _log(f"🚀 Foursquare scraper: {niche} in {city} (max {max_leads})")
-    return await asyncio.to_thread(scrape_sync, niche, city, country, max_leads, _log)
+    return await asyncio.to_thread(scrape_sync, niche, city, country, max_leads, _log, cfg)
 
 
 async def scrape(
@@ -425,5 +440,5 @@ async def scrape(
     """Orchestrator-compatible dispatch alias."""
     return await scrape_foursquare(
         niche=niche, city=city, country=country,
-        max_leads=max_results, log_callback=log_callback,
+        max_leads=max_results, log_callback=log_callback, cfg=cfg,
     )

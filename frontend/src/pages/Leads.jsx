@@ -1,11 +1,15 @@
-import { useState, useRef } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Upload, Download, Search, RefreshCw, Sparkles } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { Plus, Upload, Download, Search, RefreshCw, Sparkles, Trash2, X } from 'lucide-react'
 import { leadsApi, aiApi, campaignApi, enrichApi } from '../api/client'
 import LeadTable from '../components/LeadTable'
 import CampaignControls from '../components/CampaignControls'
 import ViewMessagesModal from '../components/ViewMessagesModal'
 import EnrichmentDrawer from '../components/EnrichmentDrawer'
+import ErrorState from '../components/ui/ErrorState'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
@@ -38,33 +42,97 @@ const STATUS_BTN = {
   },
 }
 
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// CSV-escape a single field for client-side export (selected rows already in memory).
+function csvField(v) {
+  const s = v == null ? '' : String(v)
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
 export default function Leads() {
   const qc = useQueryClient()
   const fileRef = useRef()
-  const [page, setPage] = useState(1)
+  const [searchParams, setSearchParams] = useSearchParams()
   const [selected, setSelected] = useState([])
-  const [filters, setFilters] = useState({
-    status: '', channel: '', search: '', niche: '', city: '',
-    date_from: '', date_to: '', score_label: '',
-  })
-  const [sortBy, setSortBy] = useState('score')
-  const [sortDir, setSortDir] = useState('desc')
   const [showAdd, setShowAdd] = useState(false)
   const [viewLead, setViewLead] = useState(null)
   const [drawerLead, setDrawerLead] = useState(null)
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false)
   const [form, setForm] = useState({
     business_name: '', email: '', phone: '', website: '', niche: '', city: '',
   })
 
+  // ── URL is the source of truth for filters/sort/pagination ────────────────
+  const page      = Number(searchParams.get('page') || 1)
+  const pageSize  = Number(searchParams.get('page_size') || 50)
+  const sortBy    = searchParams.get('sort_by') || 'score'
+  const sortDir   = searchParams.get('sort_dir') || 'desc'
+  const filters = {
+    status:      searchParams.get('status') || '',
+    channel:     searchParams.get('channel') || '',
+    search:      searchParams.get('search') || '',
+    niche:       searchParams.get('niche') || '',
+    city:        searchParams.get('city') || '',
+    date_from:   searchParams.get('date_from') || '',
+    date_to:     searchParams.get('date_to') || '',
+    score_label: searchParams.get('score_label') || '',
+  }
+
+  function updateParams(patch) {
+    const next = new URLSearchParams(searchParams)
+    for (const [k, v] of Object.entries(patch)) {
+      if (v) next.set(k, String(v))
+      else next.delete(k)
+    }
+    setSearchParams(next, { replace: true })
+  }
+
+  // Free-text inputs get their own local state + debounce before hitting the URL/API.
+  const [searchInput, setSearchInput] = useState(filters.search)
+  const [nicheInput, setNicheInput]   = useState(filters.niche)
+  const [cityInput, setCityInput]     = useState(filters.city)
+  const debouncedSearch = useDebouncedValue(searchInput)
+  const debouncedNiche  = useDebouncedValue(nicheInput)
+  const debouncedCity   = useDebouncedValue(cityInput)
+
+  useEffect(() => {
+    if (debouncedSearch !== filters.search) updateParams({ search: debouncedSearch, page: null })
+  }, [debouncedSearch]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (debouncedNiche !== filters.niche) updateParams({ niche: debouncedNiche, page: null })
+  }, [debouncedNiche]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (debouncedCity !== filters.city) updateParams({ city: debouncedCity, page: null })
+  }, [debouncedCity]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function setFilter(k, v) {
+    updateParams({ [k]: v, page: null })
+  }
+  function setPage(p) { updateParams({ page: p > 1 ? p : null }) }
+  function setPageSize(n) { updateParams({ page_size: n !== 50 ? n : null, page: null }) }
+  function handleSort(field) {
+    if (sortBy === field) updateParams({ sort_dir: sortDir === 'asc' ? 'desc' : 'asc' })
+    else updateParams({ sort_by: field, sort_dir: 'desc' })
+  }
+  const toggleStatusFilter = (s) => setFilter('status', filters.status === s ? '' : s)
+
   const params = {
     page,
-    page_size: 50,
+    page_size: pageSize,
     sort_by: sortBy,
     sort_dir: sortDir,
     ...Object.fromEntries(Object.entries(filters).filter(([, v]) => v)),
   }
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ['leads', params],
     queryFn: () => leadsApi.list(params),
   })
@@ -135,41 +203,65 @@ export default function Leads() {
     onError: (e) => toast.error(e.message),
   })
 
+  const [bulkDeleting, setBulkDeleting] = useState(false)
+  async function handleBulkDelete() {
+    setBulkDeleting(true)
+    setBulkDeleteConfirm(false)
+    const ids = [...selected]
+    let ok = 0, fail = 0
+    for (const id of ids) {
+      try { await leadsApi.delete(id); ok++ } catch { fail++ }
+    }
+    setBulkDeleting(false)
+    setSelected([])
+    invalidate()
+    if (fail) toast.error(`Deleted ${ok}, ${fail} failed`)
+    else toast.success(`Deleted ${ok} lead${ok === 1 ? '' : 's'}`)
+  }
+
+  const [bulkExporting, setBulkExporting] = useState(false)
+  async function handleExportSelected() {
+    setBulkExporting(true)
+    try {
+      const leads = await Promise.all(selected.map((id) => leadsApi.get(id)))
+      const cols = ['id', 'business_name', 'phone', 'email', 'website', 'niche', 'city', 'country', 'source', 'score', 'score_label', 'status', 'channel']
+      const rows = [cols.join(',')]
+      for (const l of leads) rows.push(cols.map((c) => csvField(l[c])).join(','))
+      downloadBlob(new Blob([rows.join('\n')], { type: 'text/csv' }), `leads-selected-${selected.length}.csv`)
+      toast.success(`Exported ${leads.length} lead${leads.length === 1 ? '' : 's'}`)
+    } catch (e) {
+      toast.error(e.message || 'Export failed')
+    } finally {
+      setBulkExporting(false)
+    }
+  }
+
   const handleExportCsv = async () => {
     try {
       const p = {}
-      if (filters.status)  p.status  = filters.status
-      if (filters.channel) p.channel = filters.channel
-      if (filters.niche)   p.niche   = filters.niche
-      if (filters.city)    p.city    = filters.city
+      if (filters.status)      p.status      = filters.status
+      if (filters.channel)     p.channel     = filters.channel
+      if (filters.niche)       p.niche       = filters.niche
+      if (filters.city)        p.city        = filters.city
+      if (filters.search)      p.search      = filters.search
+      if (filters.date_from)   p.date_from   = filters.date_from
+      if (filters.date_to)     p.date_to     = filters.date_to
+      if (filters.score_label) p.score_label = filters.score_label
       const blob = await leadsApi.exportCsv(p)
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'leads-export.csv'
-      a.click()
-      URL.revokeObjectURL(url)
+      downloadBlob(blob, 'leads-export.csv')
+      toast.success('Export started')
     } catch (e) {
       toast.error(e.message)
     }
   }
 
-  const handleSort = (field) => {
-    if (sortBy === field) {
-      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
-    } else {
-      setSortBy(field)
-      setSortDir('desc')
-    }
-    setPage(1)
-  }
-
-  const setFilter = (k, v) => {
-    setFilters((f) => ({ ...f, [k]: v }))
-    setPage(1)
-  }
-
-  const toggleStatusFilter = (s) => setFilter('status', filters.status === s ? '' : s)
+  const addModalRef = useFocusTrap(showAdd)
+  useEffect(() => {
+    if (!showAdd) return
+    function onKey(e) { if (e.key === 'Escape') setShowAdd(false) }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [showAdd])
 
   return (
     <div className="p-6 space-y-4 h-full flex flex-col">
@@ -181,7 +273,7 @@ export default function Leads() {
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => refetch()} className="btn-secondary text-xs">
-            <RefreshCw size={13} /> Refresh
+            <RefreshCw size={13} className={clsx(isFetching && 'animate-spin')} /> Refresh
           </button>
           <button onClick={handleExportCsv} className="btn-secondary text-xs">
             <Download size={13} /> Export CSV
@@ -267,8 +359,8 @@ export default function Leads() {
           <input
             className="input pl-8 text-xs h-9"
             placeholder="Search name, email, phone…"
-            value={filters.search}
-            onChange={(e) => setFilter('search', e.target.value)}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
           />
         </div>
         <select
@@ -288,14 +380,14 @@ export default function Leads() {
         <input
           className="input text-xs h-9 w-28"
           placeholder="Niche…"
-          value={filters.niche}
-          onChange={(e) => setFilter('niche', e.target.value)}
+          value={nicheInput}
+          onChange={(e) => setNicheInput(e.target.value)}
         />
         <input
           className="input text-xs h-9 w-28"
           placeholder="City…"
-          value={filters.city}
-          onChange={(e) => setFilter('city', e.target.value)}
+          value={cityInput}
+          onChange={(e) => setCityInput(e.target.value)}
         />
         <input
           type="date"
@@ -313,28 +405,61 @@ export default function Leads() {
         />
       </div>
 
+      {/* Bulk action bar — only when something is selected */}
+      {selected.length > 0 && (
+        <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-brand-600/10 border border-brand-600/30">
+          <span className="text-xs font-medium text-brand-300">{selected.length} selected</span>
+          <button
+            onClick={handleExportSelected}
+            disabled={bulkExporting}
+            className="btn-secondary text-[11px] !py-1"
+          >
+            {bulkExporting ? <RefreshCw size={11} className="animate-spin" /> : <Download size={11} />} Export selected
+          </button>
+          <button
+            onClick={() => setBulkDeleteConfirm(true)}
+            disabled={bulkDeleting}
+            className="btn-danger text-[11px] !py-1"
+          >
+            {bulkDeleting ? <RefreshCw size={11} className="animate-spin" /> : <Trash2 size={11} />} Delete selected
+          </button>
+          <button
+            onClick={() => setSelected([])}
+            className="ml-auto text-[11px] text-slate-500 hover:text-slate-300"
+          >
+            Clear selection
+          </button>
+        </div>
+      )}
+
       {/* Main content */}
       <div className="flex gap-4 flex-1 min-h-0">
         <div className="card flex-1 overflow-hidden flex flex-col">
-          <LeadTable
-            data={data}
-            isLoading={isLoading}
-            onDelete={(id) => deleteMut.mutate(id)}
-            onSkip={(id) => skipMut.mutate(id)}
-            onMarkReplied={(id) => markRepliedMut.mutate(id)}
-            onResend={(id, channel) => resendMut.mutate({ id, channel })}
-            onViewMessages={(lead) => setViewLead(lead)}
-            onEnrich={(id) => enrichMut.mutate(id)}
-            onRowClick={(lead) => setDrawerLead(lead)}
-            selected={selected}
-            onSelect={setSelected}
-            page={page}
-            totalPages={data?.total_pages}
-            onPageChange={setPage}
-            sortBy={sortBy}
-            sortDir={sortDir}
-            onSort={handleSort}
-          />
+          {isError ? (
+            <ErrorState message="Couldn't load leads." onRetry={refetch} retrying={isFetching} />
+          ) : (
+            <LeadTable
+              data={data}
+              isLoading={isLoading}
+              onDelete={(id) => deleteMut.mutate(id)}
+              onSkip={(id) => skipMut.mutate(id)}
+              onMarkReplied={(id) => markRepliedMut.mutate(id)}
+              onResend={(id, channel) => resendMut.mutate({ id, channel })}
+              onViewMessages={(lead) => setViewLead(lead)}
+              onEnrich={(id) => enrichMut.mutate(id)}
+              onRowClick={(lead) => setDrawerLead(lead)}
+              selected={selected}
+              onSelect={setSelected}
+              page={page}
+              totalPages={data?.total_pages}
+              onPageChange={setPage}
+              pageSize={pageSize}
+              onPageSizeChange={setPageSize}
+              sortBy={sortBy}
+              sortDir={sortDir}
+              onSort={handleSort}
+            />
+          )}
         </div>
 
         <div className="w-64 shrink-0">
@@ -348,7 +473,7 @@ export default function Leads() {
         </div>
       </div>
 
-      {/* Enrichment Drawer */}
+      {/* Enrichment Drawer — doubles as the Lead Details view */}
       <EnrichmentDrawer
         lead={drawerLead}
         onClose={() => setDrawerLead(null)}
@@ -363,9 +488,19 @@ export default function Leads() {
 
       {/* Add Lead Modal */}
       {showAdd && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="card w-full max-w-md p-6 space-y-4">
-            <h2 className="font-semibold text-slate-100">Add New Lead</h2>
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setShowAdd(false)}>
+          <div
+            ref={addModalRef}
+            role="dialog" aria-modal="true" aria-labelledby="add-lead-title"
+            className="card w-full max-w-md p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h2 id="add-lead-title" className="font-semibold text-slate-100">Add New Lead</h2>
+              <button onClick={() => setShowAdd(false)} aria-label="Close" className="p-1.5 rounded hover:bg-slate-700 text-slate-400">
+                <X size={16} />
+              </button>
+            </div>
             <div className="grid grid-cols-2 gap-3">
               {Object.keys(form).map((k) => (
                 <div key={k} className={k === 'business_name' || k === 'website' ? 'col-span-2' : ''}>
@@ -389,6 +524,21 @@ export default function Leads() {
               </button>
               <button onClick={() => setShowAdd(false)} className="btn-secondary text-xs px-4">
                 Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk delete confirm */}
+      {bulkDeleteConfirm && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={() => setBulkDeleteConfirm(false)}>
+          <div role="dialog" aria-modal="true" className="card w-full max-w-sm p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <p className="text-sm text-slate-200">Delete {selected.length} selected lead{selected.length === 1 ? '' : 's'}? This cannot be undone.</p>
+            <div className="flex gap-2">
+              <button onClick={() => setBulkDeleteConfirm(false)} className="btn-secondary flex-1 justify-center text-xs">Cancel</button>
+              <button onClick={handleBulkDelete} className="btn-danger flex-1 justify-center text-xs">
+                <Trash2 size={12} /> Delete {selected.length}
               </button>
             </div>
           </div>

@@ -16,12 +16,22 @@ Two public functions:
 """
 import logging
 import re
+import time
 from typing import Any, Dict, List, Set
 
 import httpx
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
+
+# ── In-process TTL cache ──────────────────────────────────────────────────────
+# The Redis cache module was removed from this app; without any replacement,
+# every enrichment call re-fetched and re-scored the same domain from scratch.
+# This lightweight cache avoids that for the common case of re-enriching or
+# re-scoring the same lead/domain within a run — it is not shared across
+# processes and is intentionally simple (no eviction policy beyond TTL).
+_CACHE_TTL_SECONDS = 6 * 3600
+_analyze_cache: Dict[str, tuple] = {}  # normalized_url -> (expires_at, result)
 
 # ── Limits ────────────────────────────────────────────────────────────────────
 
@@ -204,6 +214,10 @@ async def analyze_website(url: str, timeout: int = 10) -> Dict[str, Any]:
     norm    = _normalize_url(url)
     has_ssl = norm.startswith("https://")
 
+    cached = _analyze_cache.get(norm)
+    if cached and cached[0] > time.monotonic():
+        return cached[1]
+
     result: Dict[str, Any] = {
         # Network
         "url":               norm,
@@ -284,6 +298,7 @@ async def analyze_website(url: str, timeout: int = 10) -> Dict[str, Any]:
         norm, result["word_count"], len(result["all_headings"]),
         len(result["cta_buttons"]), social, has_ssl,
     )
+    _analyze_cache[norm] = (time.monotonic() + _CACHE_TTL_SECONDS, result)
     return result
 
 

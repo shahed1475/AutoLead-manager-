@@ -44,6 +44,9 @@ import re
 import time
 import urllib.parse
 import urllib3
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeoutError
+
+_WHOIS_TIMEOUT_SECONDS = 8
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import requests
@@ -539,7 +542,19 @@ def _whois_email(domain: str, log_fn: Callable[[str], None]) -> Optional[str]:
 
     try:
         log_fn(f"   🔍 WHOIS lookup for {domain} …")
-        w = _whois.whois(domain)
+        # whois.whois() has no built-in timeout and can hang on an
+        # unresponsive WHOIS server — enforce a hard wall-clock timeout via a
+        # worker thread. shutdown(wait=False): if it's still hanging past the
+        # timeout, we move on rather than blocking this thread on its exit too.
+        pool = ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(_whois.whois, domain)
+        try:
+            w = future.result(timeout=_WHOIS_TIMEOUT_SECONDS)
+        except _FutureTimeoutError:
+            log_fn(f"   ⏱️  WHOIS lookup for {domain} timed out after {_WHOIS_TIMEOUT_SECONDS}s")
+            return None
+        finally:
+            pool.shutdown(wait=False)
 
         emails = w.emails if isinstance(w.emails, list) else ([w.emails] if w.emails else [])
         for raw_email in emails:

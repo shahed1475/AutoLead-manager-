@@ -62,8 +62,8 @@ export default function Topbar() {
       {/* Brand */}
       <div className="flex items-center gap-2.5">
         <img
-          src="/logo.png"
-          alt="HOM"
+          src={`${import.meta.env.BASE_URL}logo.png`}
+          alt="AutoLead"
           className="h-8 w-auto object-contain"
         />
         <span className="hidden sm:block text-slate-700 select-none">/</span>

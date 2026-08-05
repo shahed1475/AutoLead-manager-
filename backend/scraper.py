@@ -13,8 +13,10 @@ sync callable that the caller can use to bridge back to async (e.g. via
 asyncio.run_coroutine_threadsafe) for real-time SSE streaming.
 """
 import asyncio
+import os
 import random
 import re
+import sys
 import time
 import urllib.parse
 import urllib3
@@ -102,6 +104,39 @@ async def _scraper_cfg() -> Dict[str, Any]:
 
 # ── Chrome driver factory ─────────────────────────────────────────────────────
 
+def _system_chrome_paths() -> Tuple[Optional[str], Optional[str]]:
+    """
+    Return (chrome_binary, chromedriver_path) from CHROME_BIN / CHROMEDRIVER_PATH
+    env vars when both point to real files on disk (set inside the Docker image,
+    where system Chromium + a version-matched chromedriver are pre-installed).
+
+    webdriver-manager always downloads the LATEST chromedriver, which can be a
+    version ahead of an apt-installed Chromium and fails with
+    SessionNotCreatedException — using the pre-matched system pair avoids that
+    entirely. Returns (None, None) when unset (e.g. native Windows/venv runs),
+    so callers fall back to webdriver-manager's auto-detection there.
+    """
+    chrome_bin = os.environ.get("CHROME_BIN")
+    driver_bin = os.environ.get("CHROMEDRIVER_PATH")
+    if chrome_bin and driver_bin and os.path.isfile(chrome_bin) and os.path.isfile(driver_bin):
+        return chrome_bin, driver_bin
+    return None, None
+
+
+def _resolve_headless(requested: bool) -> bool:
+    """
+    Force headless on a Linux host with no X display (e.g. inside Docker) —
+    a visible Chrome window can never render there, and Selenium fails
+    immediately with SessionNotCreatedException ("Chrome instance exited")
+    if a non-headless launch is attempted. The UI's "show browser window"
+    checkbox is unchecked (non-headless) by default, so without this the
+    scraper silently finds zero leads on every Docker deployment.
+    """
+    if not requested and sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+        return True
+    return requested
+
+
 def _build_driver(headless: bool, log_fn: Callable[[str], None] = None) -> Optional["webdriver.Chrome"]:
     """Build Chrome driver with proper error handling and logging."""
     def _log(msg: str) -> None:
@@ -114,6 +149,11 @@ def _build_driver(headless: bool, log_fn: Callable[[str], None] = None) -> Optio
     _log("🔧 Initializing Chrome driver...")
 
     try:
+        resolved = _resolve_headless(headless)
+        if resolved and not headless:
+            _log("🖥️  No display available on this host — forcing headless Chrome")
+        headless = resolved
+
         opts = ChromeOptions()
         if headless:
             opts.add_argument("--headless=new")          # modern headless API
@@ -130,8 +170,12 @@ def _build_driver(headless: bool, log_fn: Callable[[str], None] = None) -> Optio
         # Add logging for debugging
         opts.set_capability("goog:loggingPrefs", {"browser": "ALL"})
 
+        chrome_bin, driver_bin = _system_chrome_paths()
+        if chrome_bin:
+            opts.binary_location = chrome_bin
+
         _log("📦 Installing ChromeDriver...")
-        service = ChromeService(ChromeDriverManager().install())
+        service = ChromeService(driver_bin or ChromeDriverManager().install())
 
         _log("🚀 Launching Chrome browser...")
         driver  = webdriver.Chrome(service=service, options=opts)

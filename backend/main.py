@@ -2,19 +2,24 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Query, Request
+from fastapi import Depends, FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
+from . import auth
 from .config import get_settings
+from .rate_limit import limiter
 from .database import (
     init_db, close_db, get_db, get_all_settings,
     get_dashboard_stats, get_weekly_activity, get_recent_logs,
     get_avg_score,
 )
-from .cache import close_redis
 from .scheduler import start_scheduler, stop_scheduler, get_scheduler_status
 from .routers import leads, campaigns, ai, scraper_router, settings_router, status
+from .routers import auth_router
 from .routers import inbox as inbox_router
 from .routers import followups as followups_router
 from .routers import replies as replies_router
@@ -48,7 +53,6 @@ async def lifespan(app: FastAPI):
     await queue.stop()
     stop_scheduler()
     await close_db()
-    await close_redis()
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -68,15 +72,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(inbox_router.router)   # first — static /leads/score-* paths before /{lead_id}
-app.include_router(followups_router.router)
-app.include_router(replies_router.router)
-app.include_router(leads.router)
-app.include_router(campaigns.router)
-app.include_router(ai.router)
-app.include_router(scraper_router.router)
-app.include_router(settings_router.router)
-app.include_router(status.router)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+_authed = [Depends(auth.require_session)]
+
+app.include_router(auth_router.router)    # public — issues/checks the session token itself
+app.include_router(inbox_router.router,    dependencies=_authed)  # first — static /leads/score-* paths before /{lead_id}
+app.include_router(followups_router.router, dependencies=_authed)
+app.include_router(replies_router.router,  dependencies=_authed)
+app.include_router(leads.router,           dependencies=_authed)
+app.include_router(campaigns.router,       dependencies=_authed)
+app.include_router(ai.router,              dependencies=_authed)
+app.include_router(scraper_router.router,  dependencies=_authed)
+app.include_router(settings_router.router, dependencies=_authed)
+app.include_router(status.router,          dependencies=_authed)
 
 
 # ── Log line formatter (shared by SSE stream) ─────────────────────────────────
@@ -133,7 +144,7 @@ async def health():
     return {"status": "ok", "app": settings.app_name, "version": "3.0.0", "queue": queue}
 
 
-@app.get("/api/stats")
+@app.get("/api/stats", dependencies=_authed)
 async def dashboard_stats():
     """
     Returns full dashboard stats including:
@@ -166,24 +177,28 @@ async def dashboard_stats():
     return stats
 
 
-@app.get("/api/stats/weekly")
+@app.get("/api/stats/weekly", dependencies=_authed)
 async def weekly_stats():
     """7-day activity: leads found + email/WA sent per day."""
     return await get_weekly_activity()
 
 
-@app.get("/api/logs")
+@app.get("/api/logs", dependencies=_authed)
 async def recent_logs(limit: int = Query(20, ge=1, le=100)):
     return await get_recent_logs(limit)
 
 
-@app.get("/api/logs/stream")
+@app.get("/api/logs/stream", dependencies=_authed)
 async def stream_logs(request: Request):
     """
     SSE endpoint — merges two log sources every 2 s:
       1. campaign_log DB table  (persisted FOUND/SEND/AI actions)
       2. log_stream SimpleQueue (real-time scrape progress + send events)
     Client receives: { message: string, timestamp: string }
+
+    Auth note: native EventSource can't set custom headers, so the frontend
+    authenticates this endpoint via ?token=<session_token> instead of the
+    Authorization header — see auth.require_session().
     """
     from .log_stream import drain as _drain_queue
     from datetime import datetime, timezone as _tz
@@ -231,6 +246,8 @@ async def stream_logs(request: Request):
                         payload = json.dumps({
                             "message":   _fmt_log(d),
                             "timestamp": d["ts"] or "",
+                            "level":     "INFO" if d.get("success") else "ERROR",
+                            "channel":   d.get("channel") or "SYSTEM",
                         })
                         yield f"data: {payload}\n\n"
 
@@ -238,11 +255,17 @@ async def stream_logs(request: Request):
                     pass  # transient DB error — skip this tick
 
                 # ── Source 2: in-memory log_stream (scrape progress) ──────
+                # Forward the level/channel that log_stream.emit() already
+                # recorded instead of dropping them — previously only
+                # message+timestamp reached the client, so the frontend had
+                # to guess severity by sniffing emoji in the message text.
                 now_ts = datetime.now(_tz.utc).strftime("%H:%M:%S")
                 for entry in _drain_queue():
                     payload = json.dumps({
                         "message":   entry.get("message", ""),
                         "timestamp": entry.get("timestamp", now_ts),
+                        "level":     entry.get("level", "INFO"),
+                        "channel":   entry.get("channel", "SYSTEM"),
                     })
                     yield f"data: {payload}\n\n"
 

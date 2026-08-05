@@ -31,6 +31,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from ..validators import clean_phone, clean_email
+from ._shared import resolve_delay
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
@@ -276,8 +277,10 @@ def scrape_sync(
     country:   str,
     max_leads: int,
     log_fn:    Callable[[str], None],
+    cfg:       Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     log_fn(f"⭐ Yelp: '{niche}' in '{city}' (target {max_leads})")
+    delay_min, delay_max = resolve_delay(cfg, 4.0, 8.0)
 
     session = requests.Session()
     ua      = _get_ua()
@@ -334,7 +337,7 @@ def scrape_sync(
         if new_count == 0:
             break  # no new results → stop paginating
         if page_idx < 4:
-            time.sleep(random.uniform(4.0, 8.0))
+            time.sleep(random.uniform(delay_min, delay_max))
 
     if not pool:
         log_fn("⚠️  Yelp returned no results")
@@ -390,6 +393,7 @@ async def scrape_yelp(
     country:      str = "",
     max_leads:    int = 30,
     log_callback: Optional[Callable[[str], None]] = None,
+    cfg:          Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     def _log(msg: str) -> None:
         if log_callback:
@@ -398,7 +402,7 @@ async def scrape_yelp(
             except Exception:
                 pass
     _log(f"🚀 Yelp scraper: {niche} in {city} (max {max_leads})")
-    return await asyncio.to_thread(scrape_sync, niche, city, country, max_leads, _log)
+    return await asyncio.to_thread(scrape_sync, niche, city, country, max_leads, _log, cfg)
 
 
 async def scrape(
@@ -412,5 +416,5 @@ async def scrape(
     """Orchestrator-compatible dispatch alias."""
     return await scrape_yelp(
         niche=niche, city=city, country=country,
-        max_leads=max_results, log_callback=log_callback,
+        max_leads=max_results, log_callback=log_callback, cfg=cfg,
     )

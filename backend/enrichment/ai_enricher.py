@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .website_analyzer import score_website
-from ..ai_brain import _call_ollama_raw, _ollama_cfg
+from ..ai_brain import _call_llm_raw, _ollama_cfg
 from .. import database as db
 
 logger = logging.getLogger(__name__)
@@ -230,7 +230,7 @@ async def enrich_lead_with_ai(
 
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            raw    = await _call_ollama_raw(prompt, cfg, temperature=0.30, num_predict=700)
+            raw    = await _call_llm_raw(prompt, cfg, temperature=0.30, num_predict=700)
             parsed = _parse_ai_response(raw)
 
             if parsed is None:

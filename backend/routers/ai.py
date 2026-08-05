@@ -1,7 +1,11 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+import logging
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
 from .. import database as db
 from .. import ai_brain
-from ..models import AIGenerateRequest, BulkAIRequest
+from ..models import AIGenerateRequest, BulkAIRequest, BusinessTextRequest, TestPromptRequest
+from ..rate_limit import limiter
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
@@ -12,7 +16,8 @@ async def ollama_status():
 
 
 @router.post("/generate")
-async def generate_for_lead(payload: AIGenerateRequest):
+@limiter.limit("30/minute")
+async def generate_for_lead(request: Request, payload: AIGenerateRequest):
     lead = await db.get_lead_by_id(payload.lead_id)
     if not lead:
         raise HTTPException(404, "Lead not found")
@@ -73,12 +78,16 @@ async def generate_for_lead(payload: AIGenerateRequest):
         else:
             raise HTTPException(400, f"Unknown message_type: {msg_type}")
 
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        logger.error("AI generation failed for lead %s (%s): %s", lead_id, msg_type, exc, exc_info=True)
+        raise HTTPException(500, "AI generation failed — see server logs")
 
 
 @router.post("/generate-bulk")
-async def generate_bulk(payload: BulkAIRequest, background_tasks: BackgroundTasks):
+@limiter.limit("10/minute")
+async def generate_bulk(request: Request, payload: BulkAIRequest, background_tasks: BackgroundTasks):
     if payload.lead_ids:
         lead_ids = payload.lead_ids
     else:
@@ -112,19 +121,22 @@ async def generate_bulk(payload: BulkAIRequest, background_tasks: BackgroundTask
 
 
 @router.post("/test-prompt")
-async def test_prompt(payload: dict):
-    prompt = payload.get("prompt", "")
-    if not prompt:
+async def test_prompt(payload: TestPromptRequest):
+    if not payload.prompt:
         raise HTTPException(400, "prompt is required")
-    cfg = await ai_brain._ollama_cfg()
-    raw = await ai_brain._call_ollama_raw(prompt, cfg, num_predict=400)
-    return {"response": raw}
+    try:
+        cfg = await ai_brain._ollama_cfg()
+        raw = await ai_brain._call_llm_raw(payload.prompt, cfg, num_predict=400)
+        return {"response": raw}
+    except Exception as exc:
+        logger.error("test-prompt failed: %s", exc, exc_info=True)
+        raise HTTPException(500, "Prompt test failed — see server logs")
 
 
 @router.post("/test")
-async def test_ai(payload: dict):
+async def test_ai(payload: BusinessTextRequest):
     """Generate all message types from raw free-form business description text."""
-    business_text = (payload.get("business_text") or "").strip()
+    business_text = payload.business_text.strip()
     if not business_text:
         raise HTTPException(400, "business_text is required")
 
@@ -144,4 +156,5 @@ async def test_ai(payload: dict):
             "ai_follow_up_3":   msgs.get("follow_up_3", ""),
         }
     except Exception as exc:
-        raise HTTPException(500, str(exc))
+        logger.error("AI test generation failed: %s", exc, exc_info=True)
+        raise HTTPException(500, "AI generation failed — see server logs")

@@ -418,6 +418,23 @@ class SettingsUpdate(BaseModel):
     value: str
 
 
+class SettingsBulkUpdate(BaseModel):
+    """Arbitrary key/value settings map — values are coerced to str on save."""
+    model_config = ConfigDict(extra="allow")
+
+
+class CompanyDnaUpdate(BaseModel):
+    content: str = ""
+
+
+class TestPromptRequest(BaseModel):
+    prompt: str
+
+
+class BusinessTextRequest(BaseModel):
+    business_text: str
+
+
 class CampaignLogEntry(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

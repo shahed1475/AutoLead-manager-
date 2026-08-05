@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from .config import get_settings
+from .validators import clean_business_name, clean_email, clean_phone, normalize_website
 
 logger   = logging.getLogger(__name__)
 settings = get_settings()
@@ -139,6 +140,51 @@ async def get_db() -> AsyncGenerator[_SQLiteConn, None]:
         yield _SQLiteConn(raw)
 
 
+class _SQLiteTxConn(_SQLiteConn):
+    """
+    Same asyncpg-style API as _SQLiteConn, but execute()/fetchval() do NOT
+    auto-commit per call — the enclosing `transaction()` context manager
+    commits once at the end (or rolls back on exception), so multi-step
+    writes (e.g. insert lead + log campaign action) are atomic.
+    """
+
+    async def execute(self, sql: str, *args) -> str:
+        sql_c = _pg_to_sqlite(sql)
+        cur   = await self._conn.execute(sql_c, args)
+        return f"EXEC {cur.rowcount}"
+
+    async def fetchval(self, sql: str, *args) -> Any:
+        has_ret = bool(re.search(r'\bRETURNING\b', sql, re.I))
+        sql_c   = _pg_to_sqlite(sql)
+        if has_ret:
+            sql_exec = re.sub(r'\s+RETURNING\s+\w+', '', sql_c, flags=re.I)
+            cur = await self._conn.execute(sql_exec, args)
+            return cur.lastrowid
+        async with self._conn.execute(sql_c, args) as cur:
+            row = await cur.fetchone()
+        return row[0] if row else None
+
+
+@asynccontextmanager
+async def transaction() -> AsyncGenerator[_SQLiteTxConn, None]:
+    """
+    Multi-statement atomic transaction. Use for related writes that must all
+    succeed or all fail together (e.g. saving a scraped lead + its
+    campaign_log row). Commits once on clean exit, rolls back on exception.
+    """
+    async with aiosqlite.connect(DB_PATH) as raw:
+        raw.row_factory = aiosqlite.Row
+        await raw.execute("PRAGMA journal_mode=WAL")
+        await raw.execute("PRAGMA foreign_keys=ON")
+        await raw.execute("PRAGMA busy_timeout=30000")
+        try:
+            yield _SQLiteTxConn(raw)
+            await raw.commit()
+        except Exception:
+            await raw.rollback()
+            raise
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Schema
 # ─────────────────────────────────────────────────────────────────────────────
@@ -191,10 +237,11 @@ CREATE TABLE IF NOT EXISTS leads (
     created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email
-    ON leads (email) WHERE email IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_ci
+    ON leads (LOWER(email)) WHERE email IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_phone
     ON leads (phone) WHERE phone IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_leads_website ON leads (website);
 CREATE INDEX IF NOT EXISTS idx_leads_status  ON leads (status);
 CREATE INDEX IF NOT EXISTS idx_leads_niche   ON leads (niche);
 CREATE INDEX IF NOT EXISTS idx_leads_city    ON leads (city);
@@ -299,8 +346,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_status ON messages (status);
 
 CREATE TABLE IF NOT EXISTS replies (
     id              INTEGER   PRIMARY KEY AUTOINCREMENT,
-    lead_id         INTEGER   REFERENCES leads(id),
-    message_id      INTEGER   REFERENCES messages(id),
+    lead_id         INTEGER   REFERENCES leads(id) ON DELETE CASCADE,
+    message_id      INTEGER   REFERENCES messages(id) ON DELETE CASCADE,
     reply_text      TEXT,
     detected_intent TEXT,
     raw_email_data  TEXT,
@@ -338,11 +385,65 @@ async def _add_col_if_missing(raw: aiosqlite.Connection, table: str, col: str, t
             logger.warning("Schema: could not add %s.%s — %s", table, col, exc)
 
 
+async def _migrate_replies_cascade(raw: aiosqlite.Connection) -> None:
+    """
+    Rebuild `replies` with ON DELETE CASCADE on lead_id/message_id if an older
+    install created it without a cascade action. With PRAGMA foreign_keys=ON,
+    a bare (no-action) FK blocks deleting any lead that has a reply — this
+    fixes that by giving existing installs the same cascade fresh installs get.
+    """
+    try:
+        async with raw.execute("PRAGMA foreign_key_list(replies)") as cur:
+            fks = await cur.fetchall()
+    except Exception:
+        return
+    needs_rebuild = any((fk[3] == "lead_id" and (fk[6] or "NO ACTION") != "CASCADE") for fk in fks)
+    if not needs_rebuild:
+        return
+    try:
+        await raw.executescript("""
+            CREATE TABLE replies_new (
+                id              INTEGER   PRIMARY KEY AUTOINCREMENT,
+                lead_id         INTEGER   REFERENCES leads(id) ON DELETE CASCADE,
+                message_id      INTEGER   REFERENCES messages(id) ON DELETE CASCADE,
+                reply_text      TEXT,
+                detected_intent TEXT,
+                raw_email_data  TEXT,
+                received_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO replies_new SELECT id, lead_id, message_id, reply_text,
+                   detected_intent, raw_email_data, received_at FROM replies;
+            DROP TABLE replies;
+            ALTER TABLE replies_new RENAME TO replies;
+            CREATE INDEX IF NOT EXISTS idx_replies_lead ON replies (lead_id);
+        """)
+        await raw.commit()
+        logger.info("Schema: rebuilt replies table with ON DELETE CASCADE")
+    except Exception as exc:
+        logger.warning("Schema: could not migrate replies to CASCADE — %s", exc)
+
+
+async def _migrate_email_index_ci(raw: aiosqlite.Connection) -> None:
+    """
+    Older installs have a case-sensitive UNIQUE index on leads.email. Drop it
+    and rely on the case-insensitive idx_leads_email_ci created by the schema
+    script — if two rows already differ only by email case, log and skip
+    rather than crash startup.
+    """
+    try:
+        await raw.execute("DROP INDEX IF EXISTS idx_leads_email")
+        await raw.commit()
+    except Exception as exc:
+        logger.warning("Schema: could not drop legacy idx_leads_email — %s", exc)
+
+
 async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
     await raw.execute("PRAGMA journal_mode=WAL")
     await raw.execute("PRAGMA foreign_keys=ON")
     # executescript implicitly commits; run schema creation
     await raw.executescript(_SCHEMA_SQL)
+    await _migrate_replies_cascade(raw)
+    await _migrate_email_index_ci(raw)
 
     # Upgrade missing columns for leads table (idempotent — safe on re-runs)
     for col, typedef in [
@@ -363,6 +464,15 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
     ]:
         await _add_col_if_missing(raw, "enriched_data", col, typedef)
 
+    # Upgrade columns for campaign_runs (idempotent) — fine-grained pipeline
+    # stage (QUEUED/STARTING/SCRAPING/ENRICHING/SCORING/WRITING/SENDING/
+    # COMPLETED/STOPPED/FAILED/PAUSED), separate from the coarse `status`
+    # column so existing status-based logic (below) is unaffected.
+    for col, typedef in [
+        ("stage", "TEXT DEFAULT 'QUEUED'"),
+    ]:
+        await _add_col_if_missing(raw, "campaign_runs", col, typedef)
+
     # Data normalisation
     await raw.execute("""
         UPDATE leads SET status = 'PENDING'
@@ -370,7 +480,7 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
            OR status NOT IN ('PENDING','SENT','REPLIED','SKIPPED','MESSAGES_READY','ENRICHED','SCORED')
     """)
     await raw.execute("""
-        UPDATE campaign_runs SET status = 'FAILED', finished_at = CURRENT_TIMESTAMP
+        UPDATE campaign_runs SET status = 'FAILED', stage = 'FAILED', finished_at = CURRENT_TIMESTAMP
         WHERE status = 'RUNNING'
     """)
     await raw.commit()
@@ -423,27 +533,48 @@ def _coerce(col: str, val: Any) -> Any:
 # Settings
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Settings keys holding secrets (SMTP/IMAP passwords, cloud LLM API keys) are
+# encrypted at rest via secrets_crypto — transparent to every caller that
+# already goes through get_setting/get_all_settings/upsert_setting.
+_SECRET_SETTING_SUFFIXES = ("_password", "_api_key", "_secret", "_token")
+
+
+def _is_secret_setting(key: str) -> bool:
+    return key.lower().endswith(_SECRET_SETTING_SUFFIXES)
+
+
 async def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
     async with get_db() as conn:
         val = await conn.fetchval("SELECT value FROM app_settings WHERE key = $1", key)
+    if val is not None and _is_secret_setting(key):
+        from .secrets_crypto import decrypt
+        val = decrypt(val)
     return val if val is not None else default
 
 
 async def upsert_setting(key: str, value: str) -> None:
+    stored = value
+    if _is_secret_setting(key):
+        from .secrets_crypto import encrypt
+        stored = encrypt(value)
     async with get_db() as conn:
         await conn.execute(
             """INSERT INTO app_settings (key, value, updated_at)
                VALUES ($1, $2, CURRENT_TIMESTAMP)
                ON CONFLICT (key) DO UPDATE
                  SET value = excluded.value, updated_at = CURRENT_TIMESTAMP""",
-            key, value,
+            key, stored,
         )
 
 
 async def get_all_settings() -> Dict[str, str]:
     async with get_db() as conn:
         rows = await conn.fetch("SELECT key, value FROM app_settings")
-    return {r["key"]: r["value"] for r in rows}
+    from .secrets_crypto import decrypt
+    return {
+        r["key"]: (decrypt(r["value"]) if _is_secret_setting(r["key"]) else r["value"])
+        for r in rows
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -622,8 +753,18 @@ async def get_lead_by_id(lead_id: int) -> Optional[Dict[str, Any]]:
 
 
 async def find_duplicate_lead(
-    email: Optional[str], phone: Optional[str]
+    email: Optional[str],
+    phone: Optional[str],
+    website: Optional[str] = None,
+    business_name: Optional[str] = None,
+    city: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
+    """
+    Cross-run duplicate check. Exact email/phone match is authoritative.
+    When neither is available (a lead with only a name+website), fall back to
+    a normalized-website match, then a normalized name+city match — otherwise
+    such leads were never deduplicated against prior campaign runs at all.
+    """
     conditions, params = [], []
     if email:
         params.append(email.lower())
@@ -631,18 +772,61 @@ async def find_duplicate_lead(
     if phone:
         params.append(phone)
         conditions.append("phone = ?")
-    if not conditions:
-        return None
-    async with get_db() as conn:
-        row = await conn.fetchrow(
-            f"SELECT * FROM leads WHERE ({' OR '.join(conditions)}) LIMIT 1",
-            *params,
-        )
-    return dict(row) if row else None
+    if conditions:
+        async with get_db() as conn:
+            row = await conn.fetchrow(
+                f"SELECT * FROM leads WHERE ({' OR '.join(conditions)}) LIMIT 1",
+                *params,
+            )
+        if row:
+            return dict(row)
+
+    norm_website = normalize_website(website) if website else None
+    if norm_website:
+        async with get_db() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM leads WHERE website IS NOT NULL AND LOWER(website) = LOWER($1) LIMIT 1",
+                norm_website,
+            )
+        if row:
+            return dict(row)
+
+    norm_name = clean_business_name(business_name)
+    if norm_name and city:
+        async with get_db() as conn:
+            row = await conn.fetchrow(
+                """SELECT * FROM leads
+                   WHERE LOWER(business_name) = LOWER($1) AND LOWER(city) = LOWER($2)
+                   LIMIT 1""",
+                norm_name, city,
+            )
+        if row:
+            return dict(row)
+
+    return None
+
+
+def _normalize_lead_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Single choke point for lead data cleanliness — applied on every write path
+    (manual API create, CSV import, scraper batch save, scheduled campaigns)
+    regardless of whether the caller already normalized upstream.
+    """
+    data = dict(data)
+    if data.get("business_name"):
+        data["business_name"] = clean_business_name(data["business_name"])
+    if data.get("email"):
+        data["email"] = clean_email(data["email"])
+    if data.get("phone"):
+        data["phone"] = clean_phone(data["phone"])
+    if data.get("website"):
+        data["website"] = normalize_website(data["website"])
+    return data
 
 
 async def create_lead(data: Dict[str, Any]) -> int:
     """Insert a new lead; returns its id. Raises sqlite3.IntegrityError on duplicate."""
+    data = _normalize_lead_fields(data)
     clean = {
         k: _coerce(k, v)
         for k, v in data.items()
@@ -664,21 +848,82 @@ async def create_lead(data: Dict[str, Any]) -> int:
 
 
 async def create_lead_deduped(data: Dict[str, Any]) -> Tuple[int, bool]:
-    """Create a lead only if email/phone not already in DB. Returns (id, is_new)."""
-    existing = await find_duplicate_lead(data.get("email"), data.get("phone"))
+    """Create a lead only if not already in DB (email/phone, else website, else name+city). Returns (id, is_new)."""
+    dup_kwargs = dict(
+        email=data.get("email"), phone=data.get("phone"),
+        website=data.get("website"), business_name=data.get("business_name"),
+        city=data.get("city"),
+    )
+    existing = await find_duplicate_lead(**dup_kwargs)
     if existing:
         return existing["id"], False
     try:
         lead_id = await create_lead(data)
         return lead_id, True
     except sqlite3.IntegrityError:
-        existing = await find_duplicate_lead(data.get("email"), data.get("phone"))
+        existing = await find_duplicate_lead(**dup_kwargs)
         if existing:
             return existing["id"], False
         raise
 
 
+async def create_lead_deduped_with_log(data: Dict[str, Any]) -> Tuple[int, bool]:
+    """
+    Like create_lead_deduped, but the lead insert and its campaign_log FOUND
+    row commit atomically in one transaction — a crash between the two can no
+    longer leave a saved lead with no corresponding log row.
+    """
+    data = _normalize_lead_fields(data)
+    dup_kwargs = dict(
+        email=data.get("email"), phone=data.get("phone"),
+        website=data.get("website"), business_name=data.get("business_name"),
+        city=data.get("city"),
+    )
+    existing = await find_duplicate_lead(**dup_kwargs)
+    if existing:
+        return existing["id"], False
+
+    clean = {
+        k: _coerce(k, v)
+        for k, v in data.items()
+        if k in _LEAD_WRITABLE and v is not None
+    }
+    if not clean:
+        raise ValueError("No writable fields provided")
+    cols         = ", ".join(clean.keys())
+    placeholders = ", ".join("?" for _ in clean)
+    values       = list(clean.values())
+
+    try:
+        async with transaction() as tx:
+            lead_id = await tx.fetchval(
+                f"INSERT INTO leads ({cols}) VALUES ({placeholders}) RETURNING id", *values
+            )
+            await tx.execute(
+                """INSERT INTO campaign_log (lead_id, channel, action, success)
+                   VALUES ($1, $2, $3, $4)""",
+                lead_id, "SCRAPE", "FOUND", 1,
+            )
+        return lead_id, True
+    except sqlite3.IntegrityError:
+        existing = await find_duplicate_lead(**dup_kwargs)
+        if existing:
+            return existing["id"], False
+        raise
+
+
+async def get_leads_by_ids(lead_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    """Batch-fetch leads by id in one query — avoids opening a fresh connection per lead in loops."""
+    if not lead_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in lead_ids)
+    async with get_db() as conn:
+        rows = await conn.fetch(f"SELECT * FROM leads WHERE id IN ({placeholders})", *lead_ids)
+    return {r["id"]: r for r in rows}
+
+
 async def update_lead(lead_id: int, data: Dict[str, Any]) -> bool:
+    data = _normalize_lead_fields(data)
     clean = {
         k: _coerce(k, v)
         for k, v in data.items()
@@ -879,13 +1124,13 @@ async def get_recent_logs(limit: int = 20) -> List[Dict[str, Any]]:
 
 async def create_campaign_run(
     niche: str, city: str, channel: str, daily_cap: int,
-    sources: str = "GOOGLE_MAPS",
+    sources: str = "GOOGLE_MAPS", country: Optional[str] = None,
 ) -> int:
     async with get_db() as conn:
         run_id = await conn.fetchval(
-            """INSERT INTO campaign_runs (niche, city, channel, daily_cap, sources)
-               VALUES ($1, $2, $3, $4, $5) RETURNING id""",
-            niche, city, channel, daily_cap, sources,
+            """INSERT INTO campaign_runs (niche, city, country, channel, daily_cap, sources)
+               VALUES ($1, $2, $3, $4, $5, $6) RETURNING id""",
+            niche, city, country, channel, daily_cap, sources,
         )
     return run_id
 
@@ -930,15 +1175,34 @@ async def update_campaign_run_progress(run_id: int, leads_found: int, leads_sent
 async def get_campaign_history(limit: int = 10) -> List[Dict[str, Any]]:
     async with get_db() as conn:
         rows = await conn.fetch("""
-            SELECT id, niche, city, channel, daily_cap, leads_found, leads_sent,
+            SELECT id, niche, city, country, channel, daily_cap, leads_found, leads_sent,
                    strftime('%Y-%m-%dT%H:%M:%S', started_at)  AS started_at,
                    strftime('%Y-%m-%dT%H:%M:%S', finished_at) AS finished_at,
-                   status
+                   status, stage, sources
             FROM campaign_runs
             ORDER BY started_at DESC
             LIMIT $1
         """, limit)
     return [dict(r) for r in rows]
+
+
+async def get_campaign_run_by_id(run_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow("""
+            SELECT id, niche, city, country, channel, daily_cap, leads_found, leads_sent,
+                   strftime('%Y-%m-%dT%H:%M:%S', started_at)  AS started_at,
+                   strftime('%Y-%m-%dT%H:%M:%S', finished_at) AS finished_at,
+                   status, stage, sources
+            FROM campaign_runs
+            WHERE id = $1
+        """, run_id)
+    return dict(row) if row else None
+
+
+async def delete_campaign_run(run_id: int) -> bool:
+    async with get_db() as conn:
+        result = await conn.execute("DELETE FROM campaign_runs WHERE id = $1", run_id)
+    return _rows_affected(result) > 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────

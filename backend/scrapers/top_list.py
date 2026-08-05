@@ -43,6 +43,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from ..validators import clean_phone, clean_email
+from ._shared import resolve_delay
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
@@ -369,8 +370,10 @@ def scrape_sync(
     country:   str,
     max_leads: int,
     log_fn:    Callable[[str], None],
+    cfg:       Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     log_fn(f"📰 Top-List: 'best {niche}' in '{city}' (target {max_leads})")
+    delay_min, delay_max = resolve_delay(cfg, 2.0, 4.5)
 
     session = requests.Session()
     ua      = _get_ua()
@@ -389,7 +392,7 @@ def scrape_sync(
         log_fn(f"  📄 Parsing: {art_url[:80]}")
         resp = _safe_get(art_url, session, ua, log_fn, referer=_BING_BASE)
         if not resp:
-            time.sleep(random.uniform(2.0, 4.0))
+            time.sleep(random.uniform(delay_min, delay_max))
             continue
 
         names = _extract_names_from_article(resp.text)
@@ -402,7 +405,7 @@ def scrape_sync(
         log_fn(f"    Extracted {len(names)} name(s) ({len(all_names)} total)")
         if len(all_names) >= max_leads * 2:
             break
-        time.sleep(random.uniform(2.0, 4.5))
+        time.sleep(random.uniform(delay_min, delay_max))
 
     if not all_names:
         log_fn("⚠️  Could not extract business names from articles")
@@ -441,7 +444,7 @@ def scrape_sync(
             "city":          city,
             "source":        "TOP_LIST",
         })
-        time.sleep(random.uniform(2.0, 4.5))
+        time.sleep(random.uniform(delay_min, delay_max))
 
     phone_cnt = sum(1 for l in leads if l.get("phone"))
     web_cnt   = sum(1 for l in leads if l.get("website"))
@@ -461,6 +464,7 @@ async def scrape_top_list(
     country:      str = "",
     max_leads:    int = 20,
     log_callback: Optional[Callable[[str], None]] = None,
+    cfg:          Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     def _log(msg: str) -> None:
         if log_callback:
@@ -469,7 +473,7 @@ async def scrape_top_list(
             except Exception:
                 pass
     _log(f"🚀 Top-List scraper: {niche} in {city} (max {max_leads})")
-    return await asyncio.to_thread(scrape_sync, niche, city, country, max_leads, _log)
+    return await asyncio.to_thread(scrape_sync, niche, city, country, max_leads, _log, cfg)
 
 
 async def scrape(
@@ -483,5 +487,5 @@ async def scrape(
     """Orchestrator-compatible dispatch alias."""
     return await scrape_top_list(
         niche=niche, city=city, country=country,
-        max_leads=max_results, log_callback=log_callback,
+        max_leads=max_results, log_callback=log_callback, cfg=cfg,
     )

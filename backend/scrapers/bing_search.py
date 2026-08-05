@@ -22,8 +22,10 @@ log_callback is a plain sync callable.
 import asyncio
 import json
 import logging
+import os
 import random
 import re
+import sys
 import time
 import urllib.parse
 import urllib3
@@ -36,6 +38,19 @@ from bs4 import BeautifulSoup
 
 from ..validators import clean_email, clean_phone
 from ._shared import ddg_collect_urls, expand_niche
+
+def _resolve_headless(requested: bool) -> bool:
+    """
+    Force headless on a Linux host with no X display (e.g. inside Docker) —
+    a visible browser window can never render there and Playwright's launch
+    fails immediately. Without this, Bing silently never succeeded in the
+    Docker deployment (no Xvfb/DISPLAY) and every run quietly degraded to
+    the much thinner DuckDuckGo fallback. Same pattern as google_maps.py.
+    """
+    if not requested and sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+        return True
+    return requested
+
 
 # ── Bing redirect URL decoder ─────────────────────────────────────────────────
 
@@ -113,10 +128,12 @@ async def _search_with_browser(
         log_fn("[BROWSER_START] Starting Playwright Chromium...")
         playwright = await async_playwright().start()
 
-        # Launch browser - headless=False to avoid anti-bot detection
-        # Note: headless mode is blocked by Bing's bot detection
+        # Launch browser - headless=False to avoid anti-bot detection, EXCEPT
+        # on a headless Linux host (e.g. Docker with no Xvfb) where a visible
+        # launch can never succeed — force headless there instead of crashing.
+        # Note: headless mode is otherwise blocked by Bing's bot detection
         browser = await playwright.chromium.launch(
-            headless=False,
+            headless=_resolve_headless(False),
             args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
