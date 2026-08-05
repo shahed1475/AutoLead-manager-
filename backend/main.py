@@ -18,7 +18,7 @@ from .database import (
     get_avg_score,
 )
 from .scheduler import start_scheduler, stop_scheduler, get_scheduler_status
-from .routers import leads, campaigns, ai, scraper_router, settings_router, status
+from .routers import leads, campaigns, ai, scraper_router, settings_router, status, intelligence
 from .routers import auth_router
 from .routers import inbox as inbox_router
 from .routers import followups as followups_router
@@ -88,6 +88,7 @@ app.include_router(ai.router,              dependencies=_authed)
 app.include_router(scraper_router.router,  dependencies=_authed)
 app.include_router(settings_router.router, dependencies=_authed)
 app.include_router(status.router,          dependencies=_authed)
+app.include_router(intelligence.router,    dependencies=_authed)
 
 
 # ── Log line formatter (shared by SSE stream) ─────────────────────────────────
