@@ -205,11 +205,21 @@ async def _run_campaign_task(
             if intelligence_enabled(stored_settings):
                 _log_sync(f"🔎 Running sales-intelligence research on {len(all_leads)} lead(s)...")
                 campaign_ctx = {"niche": niche, "city": city, "country": country}
-                await run_pending_research(
-                    lead_ids=[l["id"] for l in all_leads],
-                    max_concurrent=3,
-                    campaign=campaign_ctx,
-                )
+                try:
+                    await run_pending_research(
+                        lead_ids=[l["id"] for l in all_leads],
+                        max_concurrent=3,
+                        campaign=campaign_ctx,
+                    )
+                except Exception as exc:
+                    # Setup-phase failures here (e.g. a transient DB lock) must not
+                    # abort the whole campaign — per-lead failures are already
+                    # contained inside run_research_pipeline; this is the equivalent
+                    # safety net for the on-path's setup phase, restoring parity with
+                    # the toggle-off path's _enrich_one per-lead try/except below.
+                    logger.warning(
+                        "Sales-intelligence research failed for campaign run %s: %s", run_id, exc
+                    )
                 fresh_map = await db.get_leads_by_ids([l["id"] for l in all_leads])
                 all_leads = [fresh_map.get(l["id"], l) for l in all_leads]
             else:

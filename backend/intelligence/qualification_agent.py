@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from ..enrichment.website_analyzer import _HEADERS
 from ..validators import clean_business_name, is_valid_email, is_valid_phone
 from .base import AgentResult, EvidenceItem
 
@@ -31,7 +32,9 @@ async def _check_website_reachable(url: Optional[str]) -> Optional[bool]:
     if not url:
         return None
     target = url if url.startswith(("http://", "https://")) else f"https://{url}"
-    async with httpx.AsyncClient(timeout=_REACHABILITY_TIMEOUT, follow_redirects=True, verify=False) as client:
+    async with httpx.AsyncClient(
+        timeout=_REACHABILITY_TIMEOUT, follow_redirects=True, verify=False, headers=_HEADERS,
+    ) as client:
         try:
             resp = await client.head(target)
             if resp.status_code < 400:

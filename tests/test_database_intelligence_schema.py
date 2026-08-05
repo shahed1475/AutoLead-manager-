@@ -92,3 +92,20 @@ async def test_restart_sweep_resets_stuck_statuses(clean_db):
 
     profile = await db.get_company_profile(lead_id)
     assert profile["status"] == "PENDING"
+
+
+async def test_restart_sweep_resets_failed_profiles_for_retry(clean_db):
+    """FAILED must not be a terminal state — a transient failure (LLM down,
+    network blip) should become eligible for retry on the next restart, just
+    like QUALIFYING/RESEARCHING."""
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Zeta Retry Co"})
+    await db.upsert_company_profile(lead_id, {"status": "FAILED"})
+
+    await db.init_db()  # simulates a process restart re-running migrations
+
+    profile = await db.get_company_profile(lead_id)
+    assert profile["status"] == "PENDING"
+
+    pending = await db.get_pending_company_profiles(limit=10)
+    assert any(p["lead_id"] == lead_id for p in pending)

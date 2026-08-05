@@ -17,6 +17,8 @@ from .database import (
     get_dashboard_stats, get_weekly_activity, get_recent_logs,
     get_avg_score,
 )
+from . import intelligence as intelligence_module
+from .intelligence import intelligence_enabled
 from .scheduler import start_scheduler, stop_scheduler, get_scheduler_status
 from .routers import leads, campaigns, ai, scraper_router, settings_router, status, intelligence
 from .routers import auth_router
@@ -31,6 +33,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
 settings = get_settings()
+logger   = logging.getLogger(__name__)
 
 
 # ── App lifespan ──────────────────────────────────────────────────────────────
@@ -42,6 +45,17 @@ async def lifespan(app: FastAPI):
     stored = await get_all_settings()
     hour   = int(stored.get("schedule_hour") or settings.schedule_hour)
     start_scheduler(hour)
+
+    # Resume the sales-intelligence research backlog (profiles reset to PENDING
+    # by the restart sweep in _run_migrations) — fire-and-forget so startup is
+    # never blocked or failed by it. Complete no-op when the toggle is off.
+    if intelligence_enabled(stored):
+        async def _drain_intelligence_backlog() -> None:
+            try:
+                await intelligence_module.run_pending_research()
+            except Exception as exc:
+                logger.warning("Sales-intelligence backlog drain failed at startup: %s", exc)
+        asyncio.create_task(_drain_intelligence_backlog())
 
     # Start parallel job queue
     n_workers = int(stored.get("queue_workers") or settings.queue_workers)

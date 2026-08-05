@@ -68,6 +68,41 @@ def _parse_json_object(raw: str) -> Optional[Dict[str, Any]]:
 _AI_FIELDS = ("industry", "services", "products", "company_description",
               "company_size_estimate", "maturity_estimate")
 
+_AI_STRING_FIELDS = frozenset({
+    "industry", "company_description", "company_size_estimate", "maturity_estimate",
+})
+_AI_LIST_FIELDS = frozenset({"services", "products"})
+
+
+def _coerce_ai_field(field_name: str, value: Any) -> Any:
+    """
+    Lightweight type coercion for LLM-parsed fields before they reach
+    upsert_company_profile(). Guards against the LLM returning an unexpected
+    shape (e.g. a dict where a list was expected) — never let a type that
+    can't bind cleanly (or that would be mis-stored) reach the DB layer.
+    """
+    if field_name in _AI_STRING_FIELDS:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, list):
+            return ", ".join(str(v) for v in value) if value else ""
+        if isinstance(value, dict):
+            return json.dumps(value)
+        return str(value) if value is not None else ""
+
+    if field_name in _AI_LIST_FIELDS:
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        if isinstance(value, dict):
+            return []
+        return [value] if value is not None else []
+
+    return value
+
 
 class CompanyResearchAgent:
     name = "company_research"
@@ -112,7 +147,7 @@ class CompanyResearchAgent:
         if parsed:
             for field_name in _AI_FIELDS:
                 if field_name in parsed:
-                    data[field_name] = parsed[field_name]
+                    data[field_name] = _coerce_ai_field(field_name, parsed[field_name])
                     evidence.append(EvidenceItem(field_name, "ai_inference", website, None))
             confidence = 1.0
 

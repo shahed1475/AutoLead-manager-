@@ -572,7 +572,7 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
     """)
     await raw.execute("""
         UPDATE company_profiles SET status = 'PENDING'
-        WHERE status IN ('QUALIFYING', 'RESEARCHING')
+        WHERE status IN ('QUALIFYING', 'RESEARCHING', 'FAILED')
     """)
     await raw.commit()
     logger.info("Schema migrations applied")

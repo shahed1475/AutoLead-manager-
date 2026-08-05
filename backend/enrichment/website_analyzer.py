@@ -264,7 +264,11 @@ async def analyze_website(url: str, timeout: int = 10) -> Dict[str, Any]:
         return result
 
     soup = BeautifulSoup(html, "lxml")
-    result["raw_html"] = html[:200_000]  # capped — used only for in-request tech-stack detection, never persisted
+    # Capped small on purpose: tech-stack signatures (WordPress, Shopify, etc.)
+    # all match in <head>/early <script>/<link> tags, so 40,000 chars is ample —
+    # keeps the in-process _analyze_cache footprint bounded even though this
+    # runs on every enrichment call regardless of the sales-intelligence toggle.
+    result["raw_html"] = html[:40_000]  # used only for in-request tech-stack detection, never persisted
 
     # ── Title ──────────────────────────────────────────────────────────────────
     tag = soup.find("title")

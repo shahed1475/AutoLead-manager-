@@ -109,3 +109,40 @@ async def test_research_handles_website_fetch_error(monkeypatch):
 
     assert result.status == "ok"
     assert result.confidence == 0.2
+
+
+async def test_research_coerces_malformed_llm_field_shapes(monkeypatch):
+    """LLM returns 'services' as a bare string (not a list) and 'industry' as a
+    dict (not a string) — the agent must coerce both into the expected shape
+    rather than letting them reach the DB as-is (which would raise a bind
+    error or get silently mis-stored) or discarding the whole research result."""
+    async def fake_analyze_website(url, timeout=10):
+        return _fake_website_data()
+
+    async def fake_call_llm_raw(prompt, cfg, temperature=None, num_predict=800):
+        return '''{"industry": {"name": "Dental Care"}, "services": "general dentistry",
+                   "products": [], "company_description": "A dental clinic.",
+                   "company_size_estimate": "small", "maturity_estimate": "established"}'''
+
+    async def fake_ollama_cfg():
+        return {"provider": "ollama", "base_url": "http://x", "model": "y", "timeout": 30}
+
+    async def fake_enrich_lead_with_ai(lead, website_data, company_dna):
+        return {}
+
+    monkeypatch.setattr(cra_module, "analyze_website", fake_analyze_website)
+    monkeypatch.setattr(cra_module, "_call_llm_raw", fake_call_llm_raw)
+    monkeypatch.setattr(cra_module, "_ollama_cfg", fake_ollama_cfg)
+    monkeypatch.setattr(cra_module, "enrich_lead_with_ai", fake_enrich_lead_with_ai)
+    monkeypatch.setattr(cra_module, "_load_company_dna", lambda: "We build CRMs.")
+
+    agent = CompanyResearchAgent()
+    lead = {"id": 4, "business_name": "Acme Dental", "website": "https://acmedental.co", "niche": "dentist"}
+    result = await agent.run(lead, None)
+
+    assert result.status == "ok"
+    # services: string -> list
+    assert isinstance(result.data["services"], list)
+    assert result.data["services"] == ["general dentistry"]
+    # industry: dict -> string (never a dict reaching the DB)
+    assert isinstance(result.data["industry"], str)
