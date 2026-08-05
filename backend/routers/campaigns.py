@@ -8,6 +8,7 @@ from .. import email_sender, whatsapp_sender, ai_brain
 from .. import scrapers
 from ..enrichment.ai_enricher import enrich_lead_with_ai
 from ..enrichment.website_analyzer import analyze_website
+from ..intelligence import intelligence_enabled, run_pending_research
 from ..followup_engine import schedule_followups_for_lead as _schedule_fu
 from ..log_stream import emit as _ls_emit
 from ..models import CampaignSendRequest, CampaignStartRequest
@@ -200,26 +201,38 @@ async def _run_campaign_task(
         # does one HTTP fetch + one LLM call.
         await _set_stage("ENRICHING")
         if not await _wait_while_paused():
-            leads_with_site = [l for l in all_leads if l.get("website")]
-            if leads_with_site:
-                _log_sync(f"🔎 Enriching {len(leads_with_site)} lead(s) with business intelligence...")
-                company_dna = ai_brain._load_company_dna()
-                sem = asyncio.Semaphore(3)
-
-                async def _enrich_one(lead: dict) -> None:
-                    async with sem:
-                        try:
-                            website_data = await analyze_website(lead["website"])
-                            await enrich_lead_with_ai(dict(lead), website_data, company_dna)
-                        except Exception as exc:
-                            logger.warning("Enrichment failed for lead %s: %s", lead.get("id"), exc)
-
-                await asyncio.gather(*[_enrich_one(l) for l in leads_with_site])
-
-                # Re-fetch (batched — one query, not one per lead) so scoring
-                # below sees the enriched_at/status fields
+            stored_settings = await db.get_all_settings()
+            if intelligence_enabled(stored_settings):
+                _log_sync(f"🔎 Running sales-intelligence research on {len(all_leads)} lead(s)...")
+                campaign_ctx = {"niche": niche, "city": city, "country": country}
+                await run_pending_research(
+                    lead_ids=[l["id"] for l in all_leads],
+                    max_concurrent=3,
+                    campaign=campaign_ctx,
+                )
                 fresh_map = await db.get_leads_by_ids([l["id"] for l in all_leads])
                 all_leads = [fresh_map.get(l["id"], l) for l in all_leads]
+            else:
+                leads_with_site = [l for l in all_leads if l.get("website")]
+                if leads_with_site:
+                    _log_sync(f"🔎 Enriching {len(leads_with_site)} lead(s) with business intelligence...")
+                    company_dna = ai_brain._load_company_dna()
+                    sem = asyncio.Semaphore(3)
+
+                    async def _enrich_one(lead: dict) -> None:
+                        async with sem:
+                            try:
+                                website_data = await analyze_website(lead["website"])
+                                await enrich_lead_with_ai(dict(lead), website_data, company_dna)
+                            except Exception as exc:
+                                logger.warning("Enrichment failed for lead %s: %s", lead.get("id"), exc)
+
+                    await asyncio.gather(*[_enrich_one(l) for l in leads_with_site])
+
+                    # Re-fetch (batched — one query, not one per lead) so scoring
+                    # below sees the enriched_at/status fields
+                    fresh_map = await db.get_leads_by_ids([l["id"] for l in all_leads])
+                    all_leads = [fresh_map.get(l["id"], l) for l in all_leads]
 
         # ── Score every lead that hasn't been scored yet ────────────────────────
         await _set_stage("SCORING")

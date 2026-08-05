@@ -38,6 +38,7 @@ from .reply_detector import check_replies as _check_replies
 from .scoring.lead_scorer import score_lead as _score_lead
 from .enrichment.website_analyzer import analyze_website as _analyze_website
 from .enrichment.ai_enricher import enrich_lead_with_ai as _enrich_lead
+from .intelligence import intelligence_enabled, run_research_pipeline
 # Deep multi-strategy finder (mailto/footer/JS-deobfuscation/WHOIS) — same one
 # the UI campaign path uses, replacing scraper.py's single-page regex finder
 # so both live pipelines discover emails with equal thoroughness.
@@ -405,8 +406,11 @@ async def run_campaign(
         if lead.get("website") and not lead.get("enriched_at"):
             await _qlog(log_queue, f"   🔎 Enriching {biz}...")
             try:
-                site_data = await _analyze_website(lead["website"], timeout=settings.enrichment_timeout)
-                await _enrich_lead(lead, site_data, company_dna)
+                if intelligence_enabled(stored):
+                    await run_research_pipeline(lead, campaign={"niche": niche, "city": city})
+                else:
+                    site_data = await _analyze_website(lead["website"], timeout=settings.enrichment_timeout)
+                    await _enrich_lead(lead, site_data, company_dna)
                 refreshed_lead = await db.get_lead_by_id(lead_id)
                 if refreshed_lead:
                     lead = dict(refreshed_lead)
