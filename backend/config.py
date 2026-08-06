@@ -14,8 +14,14 @@ class Settings(BaseSettings):
     database_path: str = str(BASE_DIR / "data" / "leads.db")
 
     # ── Ollama (local AI) ─────────────────────────────────────────────────────
+    # llama3.1:8b — an 8B-parameter model, in the weight class the README's
+    # documented setup instruction ("ollama pull llama3") intends. The prior
+    # default, qwen2.5:1.5b, is too small to reliably follow multi-rule outreach-
+    # copy instructions (produced bracket placeholders, raw HTML, and hallucinated
+    # details in production — see ai_brain.py's content quality gate, which is a
+    # second line of defense regardless of model size).
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model:    str = "qwen2.5:1.5b"
+    ollama_model:    str = "llama3.1:8b"
     ollama_timeout:  int = 120
 
     # ── SMTP ─────────────────────────────────────────────────────────────────

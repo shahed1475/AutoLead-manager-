@@ -137,6 +137,13 @@ export const inboxApi = {
   check:   ()                     => api.post('/inbox/check').then((r) => r.data),
 }
 
+export const repliesApi = {
+  drafts:  ()                     => api.get('/replies/drafts').then((r) => r.data),
+  edit:    (id, fields)           => api.put(`/replies/${id}/draft`, fields).then((r) => r.data),
+  approve: (id)                   => api.post(`/replies/${id}/approve`).then((r) => r.data),
+  discard: (id)                   => api.post(`/replies/${id}/discard`).then((r) => r.data),
+}
+
 export const enrichApi = {
   enrichLead:    (leadId)         => api.post(`/leads/${leadId}/enrich-sync`).then((r) => r.data),
   enrichQueue:   (leadId)         => api.post(`/leads/${leadId}/enrich`).then((r) => r.data),

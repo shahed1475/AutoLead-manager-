@@ -397,3 +397,29 @@ async def send_followup_email(lead: Dict[str, Any]) -> None:
     ok = await asyncio.to_thread(send_email, to_email, subject, body, cfg_dict)
     if not ok:
         raise RuntimeError(f"Follow-up email failed for {to_email}")
+
+
+async def send_reply_email(to_email: str, subject: str, body: str) -> None:
+    """Send an approved auto-reply draft (see reply_detector.py's draft-and-approve flow)."""
+    if not to_email:
+        raise ValueError("Reply draft has no destination email address")
+
+    cfg_dict = await _smtp_cfg()
+
+    if cfg_dict.get("username", "") in _PLACEHOLDER_USERS:
+        raise ValueError(
+            "SMTP email not configured — open Settings → Email and enter your Gmail address."
+        )
+    if cfg_dict.get("password", "") in _PLACEHOLDER_PWDS:
+        raise ValueError(
+            "SMTP password not configured — open Settings → Email and enter your Gmail App Password."
+        )
+
+    clean_subject = _clean_subject(subject)
+    clean_body    = _clean_body(body)
+
+    _emit("INFO", "EMAIL", f"Sending approved reply → {to_email}")
+
+    ok = await asyncio.to_thread(send_email, to_email, clean_subject, clean_body, cfg_dict)
+    if not ok:
+        raise RuntimeError(f"Reply email failed for {to_email}")

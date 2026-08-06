@@ -34,6 +34,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
+from . import ai_brain
 from . import database as db
 from .config import get_settings
 
@@ -383,6 +384,18 @@ async def check_for_replies(
                 elif intent in _NEGATIVE_INTENTS:
                     await db.update_lead(lead_id, {"status": "SKIPPED"})
                     await _log(f"Reply detector: {biz} → marked SKIPPED (not interested)")
+
+        # ── Draft an auto-reply for positive-intent replies (held for approval) ─
+        # Draft-first, not auto-send: a reply to someone who already engaged is a
+        # higher-trust moment than cold outreach, so a human confirms before send.
+        if reply_id and lead and intent in _POSITIVE_INTENTS:
+            try:
+                draft_body = await ai_brain.generate_reply_draft(lead, body_text)
+                draft_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}" if subject else "Re: your message"
+                await db.set_reply_draft(reply_id, draft_subject, draft_body)
+                await _log(f"Reply detector: {biz} → auto-reply draft queued for approval")
+            except Exception as exc:
+                logger.error("Reply detector: draft generation failed for reply %d: %s", reply_id, exc)
 
         new_replies.append({
             "lead_id":         lead_id,

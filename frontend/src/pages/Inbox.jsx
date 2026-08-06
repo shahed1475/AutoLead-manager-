@@ -4,9 +4,9 @@ import { useNavigate } from 'react-router-dom'
 import {
   Mail, RefreshCw, MessageSquare, TrendingUp, Users,
   Calendar, Send, Archive, ChevronRight, Inbox as InboxIcon,
-  Clock, ExternalLink, BarChart3,
+  Clock, ExternalLink, BarChart3, Sparkles, Check, X,
 } from 'lucide-react'
-import { inboxApi } from '../api/client'
+import { inboxApi, repliesApi } from '../api/client'
 import StatCard from '../components/StatCard'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -277,6 +277,128 @@ function ThreadPanel({ item, onProcess }) {
   )
 }
 
+// ── Pending auto-reply drafts ────────────────────────────────────────────────
+// Positive-intent replies get an AI-drafted response held here for approval
+// before anything is sent — see reply_detector.py's draft-and-approve flow.
+
+function DraftCard({ draft, onApprove, onDiscard, isBusy }) {
+  const [subject, setSubject] = useState(draft.draft_subject || '')
+  const [body, setBody]       = useState(draft.draft_body || '')
+  const dirty = subject !== (draft.draft_subject || '') || body !== (draft.draft_body || '')
+
+  return (
+    <div className="rounded-xl bg-slate-800/40 border border-amber-500/20 p-4 space-y-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-slate-100 truncate">
+            {draft.business_name || draft.email || 'Unknown lead'}
+          </p>
+          <p className="text-[10px] text-slate-500 mt-0.5">
+            {timeAgo(draft.received_at)} · replying to their {draft.detected_intent === 'meeting_request' ? 'meeting request' : 'interest'}
+          </p>
+        </div>
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold border bg-amber-500/15 text-amber-400 border-amber-500/30 shrink-0">
+          <Sparkles size={10} /> Draft
+        </span>
+      </div>
+
+      {draft.reply_text && (
+        <div className="rounded-lg bg-slate-900/50 border border-slate-700/30 p-2.5">
+          <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wide mb-1">Their reply</p>
+          <p className="text-xs text-slate-400 leading-relaxed line-clamp-3">{draft.reply_text}</p>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        <input
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          placeholder="Subject"
+          className="w-full text-xs px-3 py-2 rounded-lg bg-slate-900/60 border border-slate-700/40
+                     text-slate-200 focus:border-brand-500/50 focus:outline-none"
+        />
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          rows={4}
+          className="w-full text-xs px-3 py-2 rounded-lg bg-slate-900/60 border border-slate-700/40
+                     text-slate-200 leading-relaxed resize-y focus:border-brand-500/50 focus:outline-none"
+        />
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => onApprove(draft.id, dirty ? { draft_subject: subject, draft_body: body } : null)}
+          disabled={isBusy}
+          className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg
+                     bg-emerald-600/15 border border-emerald-500/30 text-emerald-400
+                     hover:bg-emerald-600/25 hover:border-emerald-500/50 transition-all text-xs font-semibold disabled:opacity-50"
+        >
+          <Check size={12} /> {dirty ? 'Save & Send' : 'Send'}
+        </button>
+        <button
+          onClick={() => onDiscard(draft.id)}
+          disabled={isBusy}
+          className="flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-lg
+                     bg-slate-700/40 border border-slate-600/30 text-slate-400
+                     hover:bg-slate-700/70 hover:text-slate-300 transition-all text-xs font-semibold disabled:opacity-50"
+        >
+          <X size={12} /> Discard
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function PendingDraftsPanel() {
+  const qc = useQueryClient()
+
+  const { data: drafts } = useQuery({
+    queryKey: ['reply-drafts'],
+    queryFn:  repliesApi.drafts,
+    refetchInterval: 30_000,
+  })
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['reply-drafts'] })
+
+  const approveMut = useMutation({
+    mutationFn: async ({ id, edits }) => {
+      if (edits) await repliesApi.edit(id, edits)
+      return repliesApi.approve(id)
+    },
+    onSuccess: () => { toast.success('Reply sent'); invalidate() },
+    onError:   (e) => toast.error(e.response?.data?.detail || e.message),
+  })
+
+  const discardMut = useMutation({
+    mutationFn: (id) => repliesApi.discard(id),
+    onSuccess: () => { toast.success('Draft discarded'); invalidate() },
+    onError:   (e) => toast.error(e.response?.data?.detail || e.message),
+  })
+
+  if (!drafts || drafts.length === 0) return null
+
+  return (
+    <div className="shrink-0 space-y-2.5">
+      <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 flex items-center gap-1.5">
+        <Sparkles size={11} />
+        {drafts.length} auto-reply draft{drafts.length === 1 ? '' : 's'} awaiting approval
+      </p>
+      <div className="grid grid-cols-2 gap-3 max-h-80 overflow-y-auto pr-0.5">
+        {drafts.map((d) => (
+          <DraftCard
+            key={d.id}
+            draft={d}
+            isBusy={approveMut.isPending || discardMut.isPending}
+            onApprove={(id, edits) => approveMut.mutate({ id, edits })}
+            onDiscard={(id) => discardMut.mutate(id)}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ── Main Inbox page ───────────────────────────────────────────────────────────
 
 export default function Inbox() {
@@ -369,6 +491,8 @@ export default function Inbox() {
           </button>
         </div>
       </div>
+
+      <PendingDraftsPanel />
 
       {/* ── Stats bar ──────────────────────────────────────────────────── */}
       <div className="grid grid-cols-4 gap-3 shrink-0">

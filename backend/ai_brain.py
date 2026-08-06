@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from . import database as db
+from . import outreach_domain
 from .config import get_settings
 
 try:
@@ -130,6 +131,13 @@ _V2_ALIASES: Dict[str, List[str]] = {
                               "follow_up_day7_subject", "day_7_subject"],
     "followup_day7_body":    ["day7_body", "followup_7", "fu_day7", "follow_up_day7",
                               "followup_7_body", "day_7_body"],
+}
+
+# ── JSON schema — reply drafts ─────────────────────────────────────────────────
+
+_REPLY_KEYS = frozenset({"reply_body"})
+_REPLY_ALIASES: Dict[str, List[str]] = {
+    "reply_body": ["body", "reply", "message", "reply_message", "response", "response_body"],
 }
 
 
@@ -271,6 +279,91 @@ def _extract_json(
     return None
 
 
+# ── Content quality gate ────────────────────────────────────────────────────────
+#
+# Root cause this defends against: a weak/small model can produce syntactically
+# valid JSON that is still bad *content* — unfilled bracket placeholders, raw
+# HTML/markup, hashtag spam, or near-identical "follow-up" messages that violate
+# the prompt's own instructions. _extract_json only checks structure. This checks
+# substance, and treats a violation the same way as a JSON-parse failure: retry
+# with a repair prompt that names the specific problem.
+
+_BRACKET_PLACEHOLDER_RE = re.compile(r"\[[A-Za-z][^\[\]\n]{1,60}\]")
+_HTML_TAG_RE            = re.compile(r"<[a-zA-Z/][^<>]{0,120}>")
+_HASHTAG_RE             = re.compile(r"#\w+")
+_EMOJI_RE               = re.compile(
+    "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF✀-➿]"
+)
+_MAX_EMOJI_PER_MESSAGE  = 1
+_SIMILARITY_THRESHOLD   = 0.75
+
+
+def _validate_message_content(text: str) -> List[str]:
+    """Return a list of content-quality violation descriptions for one message field."""
+    if not isinstance(text, str) or not text.strip():
+        return []
+    violations: List[str] = []
+    if _BRACKET_PLACEHOLDER_RE.search(text):
+        violations.append("contains an unfilled bracket placeholder like [Name] or [Link] — never use these, omit the detail instead")
+    if _HTML_TAG_RE.search(text):
+        violations.append("contains raw HTML/markup tags — plain text only")
+    if _HASHTAG_RE.search(text):
+        violations.append("contains hashtags — never use hashtags in direct outreach")
+    emoji_count = len(_EMOJI_RE.findall(text))
+    if emoji_count > _MAX_EMOJI_PER_MESSAGE:
+        violations.append(f"contains {emoji_count} emoji (max {_MAX_EMOJI_PER_MESSAGE}) — keep it professional, not spammy")
+    return violations
+
+
+def _messages_too_similar(a: str, b: str) -> bool:
+    """Cheap token-overlap similarity — catches near-duplicate follow-ups without a new dependency."""
+    a_tokens = set(re.findall(r"\w+", a.lower()))
+    b_tokens = set(re.findall(r"\w+", b.lower()))
+    if not a_tokens or not b_tokens:
+        return False
+    overlap = len(a_tokens & b_tokens) / max(len(a_tokens), len(b_tokens))
+    return overlap >= _SIMILARITY_THRESHOLD
+
+
+def _validate_message_dict(
+    parsed:           Dict[str, str],
+    similarity_groups: Optional[List[List[str]]] = None,
+) -> List[str]:
+    """Validate every field in a generated message dict, plus cross-field near-duplicate checks."""
+    violations: List[str] = []
+    for key, value in parsed.items():
+        for v in _validate_message_content(value):
+            violations.append(f"{key}: {v}")
+
+    for group in (similarity_groups or []):
+        present = [(k, parsed[k]) for k in group if parsed.get(k)]
+        for i in range(len(present)):
+            for j in range(i + 1, len(present)):
+                key_i, text_i = present[i]
+                key_j, text_j = present[j]
+                if _messages_too_similar(text_i, text_j):
+                    violations.append(f"{key_i} and {key_j} are near-duplicate messages — each must use a different angle")
+
+    return violations
+
+
+def _build_content_repair_prompt(bad_output: str, violations: List[str], attempt: int) -> str:
+    violations_text = "\n".join(f"- {v}" for v in violations)
+    return f"""Your previous output (attempt {attempt}) was valid JSON but violated these content rules:
+{violations_text}
+
+Your previous output was:
+---
+{bad_output[:1500]}
+---
+
+Rewrite it completely, fixing every violation above. Same JSON keys as before.
+Do not use bracket placeholders, HTML tags, or hashtags. Keep emoji to at most one per message.
+Every message must be genuinely different in angle from the others — not a reworded repeat.
+
+Return ONLY the corrected JSON. No text before or after. Start with {{."""
+
+
 # ── Fallback messages ──────────────────────────────────────────────────────────
 
 def _fallback_wa(reason: str = "") -> Dict[str, str]:
@@ -364,12 +457,16 @@ def _build_master_prompt(lead: Dict[str, Any], company_dna: str) -> str:
     if lead.get("rating"):
         enrichment_ctx += f"\nRating: {lead['rating']}/5 ({lead.get('review_count', 0)} reviews)"
 
+    domain_ctx = outreach_domain.build_domain_context(niche)
+
     return f"""You are an AI sales agent working for PopupGenix.
 Generate 4 personalized WhatsApp outreach messages for this lead.
 ALWAYS return a real message. NEVER leave any field empty or use placeholder text.
 
 COMPANY CONTEXT:
 {company_dna.strip()[:400]}
+
+{domain_ctx}
 
 LEAD DATA:
 Business: {biz}
@@ -383,12 +480,28 @@ STRICT RULES:
 - 50-120 words per message, plain text, NO asterisks, NO markdown
 - Sound human — NOT like a bot or a template
 - Mention the business name or industry specifically
-- Identify exactly 1 realistic pain point they likely face
-- Offer 1 clear solution we provide
+- Pick exactly 1 pain point from the domain expertise above (or from the lead's own
+  website analysis/gaps if provided) — pick ONE, do not list several
+- Offer 1 clear solution we provide, matched to that pain point
 - End with a soft CTA (question or invitation, not a hard sell)
-- Each follow-up MUST use a different angle or value point
-- Do NOT repeat the same line across messages
+- Each follow-up MUST use a different angle or value point from the others
+- Do NOT repeat the same line, sentence, or angle across messages — each of the 4
+  messages must be substantively different, not a reworded copy of another
 - Do NOT say "I hope this finds you well" or "I wanted to reach out"
+
+ABSOLUTE BANS (any violation makes the message unusable — do not do these):
+- NEVER use a bracket placeholder like [Name], [Link], [Website], [Insert X] — if you
+  don't have a real specific detail, write around it in plain language instead
+- NEVER invent a specific fact, platform reference, case study, testimonial, or
+  statistic that was not given to you above — if you don't have enough real detail
+  to be specific, write a shorter, more genuinely curious message instead of making
+  something up. A vague-but-honest message beats a specific-but-fabricated one.
+- NEVER use HTML tags, markdown links, or raw URLs formatted as a link
+- NEVER use hashtags
+- NEVER use more than 1 emoji per message, and only if it fits a warm, professional tone
+- NEVER use informal @handles (e.g. @businessname) unless one was explicitly given above
+- NEVER use hype words like "revolutionize," "unlock," "game-changing," or excessive
+  exclamation points — write like a credible person, not an ad
 
 MESSAGE TIMING:
 - first_message: initial cold outreach (Day 0)
@@ -412,9 +525,12 @@ def _build_email_prompt(lead: Dict[str, Any], company_dna: str) -> str:
     biz   = lead.get("business_name") or "the business"
     niche = lead.get("niche")         or "general"
     city  = lead.get("city")          or ""
+    domain_ctx = outreach_domain.build_domain_context(niche)
 
     return f"""You are a cold email copywriter for PopupGenix.
 {company_dna.strip()[:300]}
+
+{domain_ctx}
 
 Write a cold email for this lead:
 Business: {biz}
@@ -422,7 +538,12 @@ Industry: {niche}
 Location: {city}
 
 RULES: professional tone, references niche and city, plain text, 120-180 word body, soft CTA.
-Subject: 40-55 characters, personalized, curiosity-driven.
+Pick exactly 1 pain point and 1 value angle from the domain expertise above — do not list
+several, and do not invent a specific fact, case study, or statistic not given to you.
+Subject: 40-55 characters, personalized, curiosity-driven, no clickbait/hype words.
+
+ABSOLUTE BANS: no bracket placeholders like [Name] or [Link], no HTML tags, no markdown
+links, no hashtags, at most 1 emoji, no hype words ("revolutionize," "unlock," "game-changing").
 
 OUTPUT — ONLY this JSON, start with {{ end with }}:
 {{
@@ -469,11 +590,15 @@ def _build_v2_prompt(
     if not biz_summary:
         biz_summary = f"a {niche.lower()} business{loc}"
 
+    domain_ctx = outreach_domain.build_domain_context(niche)
+
     return f"""You are a sales expert writing outreach messages. Use the research below to write \
 HIGHLY PERSONALIZED messages. Do not be generic. Reference specific things about their business.
 
 ABOUT US (the sender):
 {company_dna.strip()[:400]}
+
+{domain_ctx}
 
 LEAD RESEARCH:
 Business: {biz} — {niche}{loc}
@@ -490,11 +615,20 @@ RULES:
 - Cold Email: 4 sentences max. Structure: [Specific Observation about THEM] → \
 [Problem they have] → [Value we offer] → [Soft CTA]
 - WhatsApp: 2 sentences only. Casual tone. Mention 1 specific thing about their business.
-- Follow-up Day 3: Different angle, reference the first email, 3 sentences max.
-- Follow-up Day 7: Final touch, create mild urgency, 2 sentences only.
+- Follow-up Day 3: Different angle from the cold email, reference it briefly, 3 sentences max.
+- Follow-up Day 7: Final touch, different angle again from Day 3, create mild urgency, 2 sentences only.
+- The two follow-ups MUST differ from each other and from the cold email — not a reworded repeat.
+- Use the LEAD RESEARCH above first; if a field says "not specified"/"not analyzed", fall back
+  to ONE pain point/value angle from the domain expertise above — never invent a specific fact,
+  platform reference, case study, or statistic that isn't given to you anywhere in this prompt.
 - NEVER start with "I hope this email finds you well"
-- NEVER be generic — if you cannot be specific, write "I NEED MORE INFO" instead
+- NEVER be generic — if you cannot be specific, write shorter and more genuinely curious instead
+  of inventing detail to sound personalized
 - Plain text only — no asterisks, no markdown, no bullet points in message bodies
+
+ABSOLUTE BANS: no bracket placeholders like [Name] or [Link], no HTML tags, no markdown
+links, no hashtags, at most 1 emoji per message, no hype words ("revolutionize," "unlock,"
+"game-changing," excessive exclamation points).
 
 Return ONLY valid JSON with exactly these 7 keys, no other text, no markdown:
 {{
@@ -524,18 +658,77 @@ Return ONLY valid JSON with ALL required keys filled in. No other text. Start wi
 {json.dumps(keys_example, indent=2)}"""
 
 
+def _build_reply_prompt(lead: Dict[str, Any], reply_text: str, company_dna: str) -> str:
+    """
+    Auto-reply draft: a warm, direct response to a lead who already replied
+    positively — different register from cold outreach (§_build_master_prompt).
+    They've engaged; the job now is to answer naturally and move to a concrete
+    next step, not to re-pitch from scratch.
+    """
+    biz   = lead.get("business_name") or "the business"
+    niche = lead.get("niche")         or "their industry"
+    domain_ctx = outreach_domain.build_domain_context(niche)
+
+    return f"""You are replying, as a real person from PopupGenix, to a lead who already
+responded positively to an earlier outreach message. This is NOT cold outreach — they
+engaged. Write a warm, direct, human reply that responds to what they actually said and
+proposes one concrete next step (e.g. a quick call, or a specific clarifying question).
+
+COMPANY CONTEXT:
+{company_dna.strip()[:400]}
+
+{domain_ctx}
+
+LEAD: {biz} ({niche})
+
+WHAT THEY REPLIED:
+{reply_text.strip()[:1200]}
+
+RULES:
+- 2-5 sentences. Plain text. Sound like a real person replying to an email, not a script.
+- Directly acknowledge or respond to something specific they said — do not ignore their
+  message and repeat the original pitch.
+- End with ONE clear, concrete next step (propose a call/time, or ask one specific question
+  that moves the conversation forward) — not a vague "let me know if interested."
+- Never fabricate a fact, case study, statistic, or platform reference not given to you above.
+
+ABSOLUTE BANS: no bracket placeholders like [Name] or [Link], no HTML tags, no markdown
+links, no hashtags, at most 1 emoji, no hype words ("revolutionize," "unlock," "game-changing").
+
+OUTPUT — ONLY this JSON, start with {{ end with }}:
+{{
+  "reply_body": "the reply message here"
+}}"""
+
+
+def _fallback_reply(reason: str = "") -> Dict[str, str]:
+    logger.warning("ai_brain: reply-draft fallback used — %s", reason or "no model response")
+    return {
+        "reply_body": (
+            "Thanks so much for getting back to me! I'd love to learn a bit more about "
+            "what you're looking for — would you have 10-15 minutes this week for a quick call?"
+        ),
+    }
+
+
 def _build_individual_prompt(lead: Dict[str, Any], message_type: str, dna: str) -> str:
     biz   = lead.get("business_name", "the business")
     niche = lead.get("niche", "general")
     city  = lead.get("city", "")
     web   = lead.get("website", "")
+    domain_ctx = outreach_domain.build_domain_context(niche)
 
     context = (
         f"You are an outreach copywriter for PopupGenix.\n"
         f"Company: {dna[:300]}\n"
+        f"{domain_ctx}\n"
         f"Target: {biz}, {niche} business{' in ' + city if city else ''}. "
         f"Website: {web or 'none'}.\n"
-        f"Write ONLY the message — no preamble, no commentary, plain text, no asterisks."
+        f"Write ONLY the message — no preamble, no commentary, plain text, no asterisks.\n"
+        f"Pick exactly 1 pain point/value angle from the domain expertise above — never invent "
+        f"a specific fact, case study, or statistic not given to you.\n"
+        f"Bans: no bracket placeholders like [Name], no HTML tags, no hashtags, at most 1 emoji, "
+        f"no hype words (\"revolutionize,\" \"unlock,\" \"game-changing\")."
     )
 
     instructions = {
@@ -676,28 +869,49 @@ async def _generate_phase(
     cfg:         Dict[str, Any],
     num_predict: int,
     label:       str,
+    similarity_groups: Optional[List[List[str]]] = None,
 ) -> Dict[str, str]:
     """
     Retry-with-repair loop for one JSON generation phase.
     Auto-heals Ollama 404 (wrong model name) on first attempt.
+    Also gates on content quality (see "Content quality gate" above) — a
+    structurally-valid JSON response with a bracket placeholder, raw HTML, a
+    hashtag, emoji spam, or near-duplicate follow-ups is treated as a failure
+    and retried with a targeted repair prompt, same as a JSON parse failure.
     """
-    prompt      = prompt_fn()
-    last_output = ""
+    prompt          = prompt_fn()
+    last_output      = ""
+    last_violations: List[str] = []
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            active_prompt = prompt if attempt == 1 else _build_repair_prompt(last_output, required, attempt)
-            temp          = round(random.uniform(*_TEMPERATURE_RANGE), 2) if attempt == 1 else 0.25
+            if attempt == 1:
+                active_prompt = prompt
+            elif last_violations:
+                active_prompt = _build_content_repair_prompt(last_output, last_violations, attempt)
+            else:
+                active_prompt = _build_repair_prompt(last_output, required, attempt)
+            temp = round(random.uniform(*_TEMPERATURE_RANGE), 2) if attempt == 1 else 0.25
 
             raw         = await _call_llm_raw(active_prompt, cfg, temperature=temp, num_predict=num_predict)
             last_output = raw
             parsed      = _extract_json(raw, required, aliases)
 
             if parsed:
-                if attempt > 1:
-                    logger.info("ai_brain [%s]: JSON recovered on attempt %d", label, attempt)
-                return parsed
+                violations = _validate_message_dict(parsed, similarity_groups)
+                if not violations:
+                    if attempt > 1:
+                        logger.info("ai_brain [%s]: clean output recovered on attempt %d", label, attempt)
+                    return parsed
 
+                last_violations = violations
+                logger.warning(
+                    "ai_brain [%s]: attempt %d content violations: %s",
+                    label, attempt, "; ".join(violations),
+                )
+                continue
+
+            last_violations = []
             logger.warning(
                 "ai_brain [%s]: attempt %d unparseable (%d chars): %s…",
                 label, attempt, len(raw), raw[:120].replace("\n", " "),
@@ -728,6 +942,8 @@ async def _generate_phase(
                 return fallback_fn(f"{type(exc).__name__}: {exc}")
 
     logger.error("ai_brain [%s]: all %d attempts failed. Snippet:\n%s", label, MAX_RETRIES, last_output[:400])
+    if last_violations:
+        return fallback_fn("content quality failed after all retries: " + "; ".join(last_violations))
     return fallback_fn("JSON parse failed after all retries")
 
 
@@ -856,6 +1072,7 @@ async def generate_messages_v2(
         cfg         = cfg,
         num_predict = 1000,
         label       = "messages_v2",
+        similarity_groups = [["followup_day3_body", "followup_day7_body"]],
     )
 
     if lead_id:
@@ -905,6 +1122,7 @@ async def generate_messages(lead: Dict[str, Any], company_dna: str) -> Dict[str,
         cfg         = cfg,
         num_predict = 900,
         label       = "wa_sequence",
+        similarity_groups = [["first_message", "follow_up_1", "follow_up_2", "follow_up_3"]],
     )
     email_task = _generate_phase(
         prompt_fn   = lambda: _build_email_prompt(lead, company_dna),
@@ -938,6 +1156,7 @@ async def generate_followup_sequence(lead: Dict[str, Any]) -> Dict[str, str]:
         cfg         = cfg,
         num_predict = 900,
         label       = "followup_sequence",
+        similarity_groups = [["first_message", "follow_up_1", "follow_up_2", "follow_up_3"]],
     )
 
 
@@ -949,6 +1168,31 @@ async def test_generate(business_info: str) -> Dict[str, str]:
     fake_lead = {"business_name": business_info, "niche": "", "city": "", "website": ""}
     dna       = _load_company_dna()
     return await generate_messages(fake_lead, dna)
+
+
+async def generate_reply_draft(lead: Dict[str, Any], reply_text: str) -> str:
+    """
+    Draft a reply to a lead who already responded positively. Goes through the
+    same content-quality gate as cold outreach (bracket placeholders, HTML,
+    hashtags, emoji spam, fabricated specifics) — a reply to someone who
+    already engaged is a higher-trust moment than cold outreach, not a lower one.
+
+    Returns the reply body text. Never raises — falls back to a safe generic
+    reply on any failure, matching the never-raises contract the rest of this
+    module's generation functions follow.
+    """
+    dna = _load_company_dna()
+    cfg = await _ollama_cfg()
+    result = await _generate_phase(
+        prompt_fn   = lambda: _build_reply_prompt(lead, reply_text, dna),
+        required    = _REPLY_KEYS,
+        aliases     = _REPLY_ALIASES,
+        fallback_fn = _fallback_reply,
+        cfg         = cfg,
+        num_predict = 300,
+        label       = "reply_draft",
+    )
+    return result["reply_body"]
 
 
 # ── Legacy API — backward-compatible with routers/leads.py + scheduler.py ─────
@@ -974,6 +1218,7 @@ async def generate_all_messages(lead: Dict[str, Any]) -> Dict[str, str]:
             cfg         = cfg,
             num_predict = 1000,
             label       = "messages_v2_auto",
+            similarity_groups = [["followup_day3_body", "followup_day7_body"]],
         )
         return {
             **msgs,
@@ -1025,7 +1270,16 @@ async def generate_message(lead: Dict[str, Any], message_type: str) -> str:
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            return await _call_llm_raw(prompt, cfg, temperature=0.72, num_predict=400)
+            text       = await _call_llm_raw(prompt, cfg, temperature=0.72, num_predict=400)
+            violations = _validate_message_content(text)
+            if not violations:
+                return text
+            logger.warning(
+                "generate_message: attempt %d content violations for %s: %s",
+                attempt, message_type, "; ".join(violations),
+            )
+            if attempt == MAX_RETRIES:
+                return text  # best available — caller sees imperfect but not-empty output
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404 and cfg.get("provider", "ollama") == "ollama":
                 healed = await _detect_available_model(cfg["base_url"], cfg["model"])

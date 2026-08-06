@@ -560,6 +560,18 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
     ]:
         await _add_col_if_missing(raw, "campaign_runs", col, typedef)
 
+    # Upgrade columns for replies (idempotent) — auto-reply draft-and-approve
+    # flow: a positive-intent reply gets an AI-drafted response held for human
+    # approval (draft_status NONE/PENDING_APPROVAL/SENT/DISCARDED) before it
+    # ever reaches a client.
+    for col, typedef in [
+        ("draft_subject", "TEXT"),
+        ("draft_body",    "TEXT"),
+        ("draft_status",  "TEXT DEFAULT 'NONE'"),
+        ("draft_sent_at", "TIMESTAMP"),
+    ]:
+        await _add_col_if_missing(raw, "replies", col, typedef)
+
     # Data normalisation
     await raw.execute("""
         UPDATE leads SET status = 'PENDING'
@@ -1633,6 +1645,53 @@ async def get_replies(lead_id: int) -> List[Dict[str, Any]]:
             lead_id,
         )
     return [dict(r) for r in rows]
+
+
+async def get_reply_by_id(reply_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow("SELECT * FROM replies WHERE id = $1", reply_id)
+    return dict(row) if row else None
+
+
+_REPLY_DRAFT_WRITABLE = frozenset({"draft_subject", "draft_body", "draft_status", "draft_sent_at"})
+
+
+async def set_reply_draft(reply_id: int, draft_subject: Optional[str], draft_body: str) -> None:
+    """Attach a generated auto-reply draft to a reply, awaiting human approval."""
+    async with get_db() as conn:
+        await conn.execute(
+            """UPDATE replies SET draft_subject = $1, draft_body = $2, draft_status = 'PENDING_APPROVAL'
+               WHERE id = $3""",
+            draft_subject, draft_body, reply_id,
+        )
+
+
+async def update_reply_draft(reply_id: int, data: Dict[str, Any]) -> None:
+    """Edit draft_subject/draft_body before approval, or transition draft_status (approve/discard)."""
+    clean = {k: v for k, v in data.items() if k in _REPLY_DRAFT_WRITABLE and v is not None}
+    if not clean:
+        return
+    set_clause = ", ".join(f"{c} = ${i + 1}" for i, c in enumerate(clean.keys()))
+    async with get_db() as conn:
+        await conn.execute(
+            f"UPDATE replies SET {set_clause} WHERE id = ${len(clean) + 1}",
+            *clean.values(), reply_id,
+        )
+
+
+async def get_pending_reply_drafts() -> List[Dict[str, Any]]:
+    """Drafts awaiting human approval, with lead context for display."""
+    async with get_db() as conn:
+        rows = await conn.fetch("""
+            SELECT r.id, r.lead_id, r.reply_text, r.detected_intent, r.received_at,
+                   r.draft_subject, r.draft_body, r.draft_status,
+                   l.business_name, l.email, l.channel
+            FROM replies r
+            JOIN leads l ON l.id = r.lead_id
+            WHERE r.draft_status = 'PENDING_APPROVAL'
+            ORDER BY r.received_at DESC
+        """)
+    return [dict(row) for row in rows]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
