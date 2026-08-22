@@ -13,12 +13,14 @@ from typing import Any, Dict, List, Optional
 from .. import database as db
 from .base import AgentResult
 from .company_research_agent import CompanyResearchAgent
+from .pain_point_agent import PainPointAgent
 from .qualification_agent import QualificationAgent
 
 logger = logging.getLogger(__name__)
 
 _qualification_agent = QualificationAgent()
 _company_research_agent = CompanyResearchAgent()
+_pain_point_agent = PainPointAgent()
 
 
 async def _persist(lead_id: int, result: AgentResult, agent_name: str, extra: Dict[str, Any]) -> int:
@@ -113,3 +115,61 @@ async def run_pending_research(
 
     await asyncio.gather(*[_bounded(leads_map[lid]) for lid in pending_lead_ids if lid in leads_map])
     return {"processed": len(results), "results": results}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pain point analysis — deliberately a separate entry point from
+# run_research_pipeline/run_pending_research above (not a third pipeline
+# stage). It requires a completed ("DONE") company_profiles row, so it can
+# only ever run after qualification + company research have finished for a
+# lead, and is invoked on demand (its own API endpoint) rather than being
+# auto-chained — keeps the existing, already-tested research pipeline
+# untouched while still making pain-point analysis fully reachable.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def run_pain_point_analysis(lead: Dict[str, Any]) -> Dict[str, Any]:
+    """Run the Pain Point Agent for a lead with completed research. Never raises."""
+    lead_id = None
+    try:
+        lead_id = lead["id"]
+        profile = await db.get_company_profile(lead_id)
+        if not profile or profile.get("status") != "DONE":
+            return {"lead_id": lead_id, "status": "SKIPPED", "reason": "no completed research"}
+
+        evidence = await db.get_research_evidence(profile["id"])
+        result: AgentResult = await _pain_point_agent.run(lead, profile, evidence)
+
+        if result.status != "ok":
+            logger.warning("Pain point analysis failed for lead %s: %s", lead_id, result.reason)
+            return {"lead_id": lead_id, "status": "FAILED", "error": result.reason}
+
+        pain_points = result.data.get("pain_points", [])
+        opportunities = result.data.get("business_opportunities", [])
+
+        pain_point_ids = await db.replace_pain_points(profile["id"], pain_points)
+
+        # Resolve each opportunity's placeholder pain-point index into its real,
+        # now-persisted pain_point_id before storing.
+        for opp in opportunities:
+            idx = opp.pop("_pain_point_index", None)
+            if idx is not None and 0 <= idx < len(pain_point_ids):
+                opp["pain_point_id"] = pain_point_ids[idx]
+        await db.replace_business_opportunities(profile["id"], opportunities)
+
+        if result.evidence:
+            await db.add_research_evidence(profile["id"], [
+                {"agent_name": "pain_point", "field_name": e.field_name, "source_type": e.source_type,
+                 "source_url": e.source_url, "snippet": e.snippet}
+                for e in result.evidence
+            ])
+
+        return {
+            "lead_id": lead_id,
+            "status": "DONE",
+            "pain_points_found": len(pain_points),
+            "opportunities_found": len(opportunities),
+        }
+
+    except Exception as exc:
+        logger.error("Pain point analysis crashed for lead %s: %s", lead_id, exc, exc_info=True)
+        return {"lead_id": lead_id, "status": "FAILED", "error": str(exc)}

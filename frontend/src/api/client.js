@@ -152,6 +152,17 @@ export const enrichApi = {
   scoreDist:     ()               => api.get('/leads/score-dist').then((r) => r.data),
 }
 
+// Business Intelligence — pain points & business-ease opportunities, built on
+// top of the existing research/company_profile pipeline. 404s are expected
+// (and handled by the caller) whenever research hasn't completed for a lead yet.
+export const intelligenceApi = {
+  getIntelligence:  (leadId) => api.get(`/leads/${leadId}/intelligence`).then((r) => r.data),
+  getPainPoints:    (leadId) => api.get(`/leads/${leadId}/pain-points`).then((r) => r.data),
+  getOpportunities: (leadId) => api.get(`/leads/${leadId}/opportunities`).then((r) => r.data),
+  getEvidence:      (leadId) => api.get(`/leads/${leadId}/evidence`).then((r) => r.data),
+  analyzePainPoints: (leadId) => api.post(`/leads/${leadId}/pain-points/analyze`).then((r) => r.data),
+}
+
 export const authApi = {
   status:        ()        => api.get('/auth/status').then((r) => r.data),
   unlock:        (password) => api.post('/auth/unlock', { password }).then((r) => r.data),

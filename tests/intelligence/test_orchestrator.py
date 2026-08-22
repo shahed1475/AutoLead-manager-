@@ -19,6 +19,20 @@ class _CrashingAgent:
         raise RuntimeError("simulated crash")
 
 
+class _StubAgentPainPoint:
+    """Matches PainPointAgent.run's 3-positional-arg signature (lead, company_profile, evidence)."""
+    def __init__(self, result: AgentResult):
+        self._result = result
+
+    async def run(self, lead, company_profile, evidence, campaign=None):
+        return self._result
+
+
+class _CrashingPainPointAgent:
+    async def run(self, lead, company_profile, evidence, campaign=None):
+        raise RuntimeError("simulated pain point agent crash")
+
+
 async def test_qualified_lead_runs_full_pipeline(clean_db, monkeypatch):
     db = clean_db
     lead_id = await db.create_lead({"business_name": "Acme Dental", "email": "hi@acmedental.co"})
@@ -140,6 +154,112 @@ async def test_resume_after_interruption(clean_db, monkeypatch):
 async def test_run_pending_research_returns_zero_when_nothing_pending(clean_db):
     outcome = await orch_module.run_pending_research()
     assert outcome == {"processed": 0, "results": []}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# run_pain_point_analysis — separate entry point, does not touch the
+# run_research_pipeline/run_pending_research tests or behavior above.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_pain_point_analysis_skipped_when_no_profile(clean_db):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "No Profile Co"})
+    lead = await db.get_lead_by_id(lead_id)
+
+    result = await orch_module.run_pain_point_analysis(lead)
+    assert result["status"] == "SKIPPED"
+
+
+async def test_pain_point_analysis_skipped_when_research_not_done(clean_db):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Still Researching Co"})
+    await db.upsert_company_profile(lead_id, {"status": "RESEARCHING"})
+    lead = await db.get_lead_by_id(lead_id)
+
+    result = await orch_module.run_pain_point_analysis(lead)
+    assert result["status"] == "SKIPPED"
+
+
+async def test_pain_point_analysis_persists_pain_points_and_opportunities(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Researched Co", "website": "https://researchedco.io"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE", "industry": "Dental Care"})
+    lead = await db.get_lead_by_id(lead_id)
+
+    stub_result = AgentResult(
+        status="ok",
+        data={
+            "pain_points": [{
+                "title": "No visible booking", "confidence": 0.9,
+                "severity": "high", "classification": "observed",
+            }],
+            "business_opportunities": [{
+                "_pain_point_index": 0, "area": "Appointment Scheduling",
+                "title": "Make appointment scheduling easier", "confidence": 0.9,
+                "classification": "observed",
+            }],
+        },
+        evidence=[EvidenceItem("pain_point:No visible booking", "heuristic", "https://researchedco.io", "cta=[]")],
+        confidence=0.9,
+    )
+    monkeypatch.setattr(orch_module, "_pain_point_agent", _StubAgentPainPoint(stub_result))
+
+    result = await orch_module.run_pain_point_analysis(lead)
+    assert result["status"] == "DONE"
+    assert result["pain_points_found"] == 1
+    assert result["opportunities_found"] == 1
+
+    pain_points = await db.get_pain_points(profile_id)
+    assert len(pain_points) == 1
+    assert pain_points[0]["title"] == "No visible booking"
+
+    opportunities = await db.get_business_opportunities(profile_id)
+    assert len(opportunities) == 1
+    assert opportunities[0]["pain_point_id"] == pain_points[0]["id"]
+
+    evidence = await db.get_research_evidence(profile_id)
+    assert any(e["agent_name"] == "pain_point" for e in evidence)
+
+
+async def test_pain_point_analysis_rerun_does_not_duplicate(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Rerun Co", "website": "https://rerunco.io"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    lead = await db.get_lead_by_id(lead_id)
+
+    stub_result = AgentResult(
+        status="ok",
+        data={
+            "pain_points": [{"title": "No SSL", "confidence": 0.8, "classification": "observed"}],
+            "business_opportunities": [],
+        },
+        evidence=[], confidence=0.8,
+    )
+    monkeypatch.setattr(orch_module, "_pain_point_agent", _StubAgentPainPoint(stub_result))
+
+    await orch_module.run_pain_point_analysis(lead)
+    await orch_module.run_pain_point_analysis(lead)
+
+    pain_points = await db.get_pain_points(profile_id)
+    assert len(pain_points) == 1
+
+
+async def test_pain_point_analysis_returns_failed_on_agent_failure(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Failing Co", "website": "https://failingco.io"})
+    await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    lead = await db.get_lead_by_id(lead_id)
+
+    monkeypatch.setattr(orch_module, "_pain_point_agent", _CrashingPainPointAgent())
+
+    result = await orch_module.run_pain_point_analysis(lead)
+    assert result["status"] == "FAILED"
+
+
+async def test_pain_point_analysis_handles_none_lead(clean_db):
+    result = await orch_module.run_pain_point_analysis(None)
+    assert result["status"] == "FAILED"
+    assert result["lead_id"] is None
 
 
 async def test_lead_missing_id_returns_failed_instead_of_raising():

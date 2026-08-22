@@ -457,6 +457,35 @@ CREATE TABLE IF NOT EXISTS personalization_context (
     recommended_cta       TEXT,
     created_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS pain_points (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_profile_id   INTEGER NOT NULL REFERENCES company_profiles(id) ON DELETE CASCADE,
+    title                TEXT NOT NULL,
+    description          TEXT,
+    evidence_snippet     TEXT,
+    source_url           TEXT,
+    confidence           REAL DEFAULT 0,
+    severity             TEXT DEFAULT 'medium',
+    classification       TEXT DEFAULT 'inferred',
+    operational_impact   TEXT,
+    customer_impact      TEXT,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_pain_points_profile ON pain_points (company_profile_id);
+
+CREATE TABLE IF NOT EXISTS business_opportunities (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_profile_id   INTEGER NOT NULL REFERENCES company_profiles(id) ON DELETE CASCADE,
+    pain_point_id        INTEGER REFERENCES pain_points(id) ON DELETE SET NULL,
+    area                 TEXT NOT NULL,
+    title                TEXT NOT NULL,
+    description          TEXT,
+    confidence           REAL DEFAULT 0,
+    classification       TEXT DEFAULT 'inferred',
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_biz_opp_profile ON business_opportunities (company_profile_id);
 """
 
 
@@ -1562,6 +1591,80 @@ async def get_pending_company_profiles(limit: int = 50) -> List[Dict[str, Any]]:
         rows = await conn.fetch(
             "SELECT * FROM company_profiles WHERE status = 'PENDING' ORDER BY created_at LIMIT $1",
             limit,
+        )
+    return [dict(r) for r in rows]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sales Intelligence — pain points & business opportunities
+#
+# "Replace" semantics (delete-then-insert in one transaction) rather than
+# append-only: re-running pain-point analysis for a profile represents the
+# *current* understanding of that business, same as scores/enriched_data —
+# not a history log. This is also what makes duplicate prevention trivial:
+# running analysis twice on the same profile always leaves exactly one row
+# per pain point/opportunity, never two.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PAIN_POINT_WRITABLE = frozenset({
+    "title", "description", "evidence_snippet", "source_url",
+    "confidence", "severity", "classification",
+    "operational_impact", "customer_impact",
+})
+
+_BUSINESS_OPPORTUNITY_WRITABLE = frozenset({
+    "pain_point_id", "area", "title", "description", "confidence", "classification",
+})
+
+
+async def replace_pain_points(company_profile_id: int, items: List[Dict[str, Any]]) -> List[int]:
+    """Delete all existing pain points for this profile and insert the given set. Returns new ids."""
+    async with transaction() as tx:
+        await tx.execute("DELETE FROM pain_points WHERE company_profile_id = $1", company_profile_id)
+        new_ids: List[int] = []
+        for item in items:
+            clean = {k: v for k, v in item.items() if k in _PAIN_POINT_WRITABLE and v is not None}
+            cols         = ", ".join(["company_profile_id"] + list(clean.keys()))
+            placeholders = ", ".join("?" for _ in range(len(clean) + 1))
+            new_id = await tx.fetchval(
+                f"INSERT INTO pain_points ({cols}) VALUES ({placeholders}) RETURNING id",
+                company_profile_id, *clean.values(),
+            )
+            new_ids.append(new_id)
+    return new_ids
+
+
+async def get_pain_points(company_profile_id: int) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM pain_points WHERE company_profile_id = $1 ORDER BY created_at",
+            company_profile_id,
+        )
+    return [dict(r) for r in rows]
+
+
+async def replace_business_opportunities(company_profile_id: int, items: List[Dict[str, Any]]) -> List[int]:
+    """Delete all existing opportunities for this profile and insert the given set. Returns new ids."""
+    async with transaction() as tx:
+        await tx.execute("DELETE FROM business_opportunities WHERE company_profile_id = $1", company_profile_id)
+        new_ids: List[int] = []
+        for item in items:
+            clean = {k: v for k, v in item.items() if k in _BUSINESS_OPPORTUNITY_WRITABLE and v is not None}
+            cols         = ", ".join(["company_profile_id"] + list(clean.keys()))
+            placeholders = ", ".join("?" for _ in range(len(clean) + 1))
+            new_id = await tx.fetchval(
+                f"INSERT INTO business_opportunities ({cols}) VALUES ({placeholders}) RETURNING id",
+                company_profile_id, *clean.values(),
+            )
+            new_ids.append(new_id)
+    return new_ids
+
+
+async def get_business_opportunities(company_profile_id: int) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM business_opportunities WHERE company_profile_id = $1 ORDER BY created_at",
+            company_profile_id,
         )
     return [dict(r) for r in rows]
 
