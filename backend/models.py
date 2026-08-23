@@ -16,6 +16,7 @@ class LeadStatus(str, Enum):
     SENT           = "SENT"
     REPLIED        = "REPLIED"
     SKIPPED        = "SKIPPED"
+    DO_NOT_CONTACT = "DO_NOT_CONTACT"
 
 
 class LeadChannel(str, Enum):

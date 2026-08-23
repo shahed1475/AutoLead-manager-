@@ -34,9 +34,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
-from . import ai_brain
 from . import database as db
 from .config import get_settings
+from .intelligence.reply_intelligence_agent import ReplyIntelligenceAgent
+
+_reply_intelligence_agent = ReplyIntelligenceAgent()
 
 logger   = logging.getLogger(__name__)
 settings = get_settings()
@@ -324,6 +326,25 @@ async def check_for_replies(
         lead_id = lead["id"] if lead else None
         biz     = (lead or {}).get("business_name", from_email)
 
+        # ── Conversation context for the Reply Intelligence Agent (fetched before
+        # this reply is inserted, so it's genuinely "previous") ────────────────
+        previous_replies: List[Dict[str, Any]] = []
+        original_message: Optional[Dict[str, Any]] = None
+        if lead_id:
+            try:
+                previous_replies = await db.get_replies(lead_id)
+            except Exception as exc:
+                logger.debug("Reply detector: could not load reply history for lead %d: %s", lead_id, exc)
+            try:
+                approved_email_msgs = [
+                    m for m in await db.get_generated_messages(lead_id)
+                    if m.get("channel") == "EMAIL" and m.get("approval_status") == "APPROVED"
+                ]
+                if approved_email_msgs:
+                    original_message = approved_email_msgs[-1]
+            except Exception as exc:
+                logger.debug("Reply detector: could not load generated messages for lead %d: %s", lead_id, exc)
+
         # ── AI intent classification ───────────────────────────────────────────
         intent = await _classify_intent(body_text, ollama_url, model)
         await _log(
@@ -374,7 +395,7 @@ async def check_for_replies(
             logger.error("Reply detector: replies insert failed: %s", exc)
             reply_id = None
 
-        # ── Update lead status based on intent ─────────────────────────────────
+        # ── Update lead status based on intent (existing 5-category classifier) ─
         if lead_id:
             current_status = (lead.get("status") or "").upper()
             if current_status not in _LOCKED_STATUSES:
@@ -385,17 +406,33 @@ async def check_for_replies(
                     await db.update_lead(lead_id, {"status": "SKIPPED"})
                     await _log(f"Reply detector: {biz} → marked SKIPPED (not interested)")
 
-        # ── Draft an auto-reply for positive-intent replies (held for approval) ─
-        # Draft-first, not auto-send: a reply to someone who already engaged is a
-        # higher-trust moment than cold outreach, so a human confirms before send.
-        if reply_id and lead and intent in _POSITIVE_INTENTS:
+        # ── Reply Intelligence Agent (Phase 4) — richer 12-category intent +
+        # recommended action + grounded draft, layered on top of the classification
+        # above (which still drives REPLIED/SKIPPED and get_reply_summary()). ────
+        if reply_id and lead:
             try:
-                draft_body = await ai_brain.generate_reply_draft(lead, body_text)
-                draft_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}" if subject else "Re: your message"
-                await db.set_reply_draft(reply_id, draft_subject, draft_body)
-                await _log(f"Reply detector: {biz} → auto-reply draft queued for approval")
+                ria_result = await _reply_intelligence_agent.run(
+                    body_text, lead, original_message, previous_replies,
+                )
+                rich = ria_result.data
+                await db.update_reply_intelligence(reply_id, {
+                    "rich_intent":        rich["intent"],
+                    "intent_confidence":  rich["confidence"],
+                    "recommended_action": rich["recommended_action"],
+                })
+                await _log(f"Reply detector: {biz} → rich_intent={rich['intent']} action={rich['recommended_action']}")
+
+                # OPT_OUT is a hard safety override — always honored, even over a
+                # locked REPLIED/SKIPPED status, and suppresses all future outreach.
+                if rich["intent"] == "OPT_OUT":
+                    await db.update_lead(lead_id, {"status": "DO_NOT_CONTACT"})
+                    await _log(f"Reply detector: {biz} → marked DO_NOT_CONTACT (opt-out detected)")
+                elif rich["draft_response"]:
+                    draft_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}" if subject else "Re: your message"
+                    await db.set_reply_draft(reply_id, draft_subject, rich["draft_response"])
+                    await _log(f"Reply detector: {biz} → reply draft queued for approval")
             except Exception as exc:
-                logger.error("Reply detector: draft generation failed for reply %d: %s", reply_id, exc)
+                logger.error("Reply detector: reply intelligence failed for reply %s: %s", reply_id, exc, exc_info=True)
 
         new_replies.append({
             "lead_id":         lead_id,

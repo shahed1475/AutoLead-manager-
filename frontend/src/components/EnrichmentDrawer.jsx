@@ -8,6 +8,7 @@ import { enrichApi } from '../api/client'
 import ScoreBadge from './ScoreBadge'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import BusinessIntelligencePanel from './BusinessIntelligencePanel'
+import MarketingMessagesPanel from './MarketingMessagesPanel'
 import { SLabel, TagCloud, BulletList } from './ui/DrawerPrimitives'
 
 // ── SVG score ring ────────────────────────────────────────────────────────────
@@ -313,6 +314,11 @@ export default function EnrichmentDrawer({ lead, onClose, onEnrich, onViewMessag
               above, so it renders regardless of whether `data` (enrichment)
               exists for this lead. */}
           <BusinessIntelligencePanel leadId={lead?.id} />
+
+          {/* Marketing Agent — drafts generated from the intelligence above,
+              gated behind human approval before anything reaches the
+              existing Send controls. */}
+          <MarketingMessagesPanel leadId={lead?.id} />
         </div>
 
         {/* ── Footer actions ──────────────────────────────────────────────── */}

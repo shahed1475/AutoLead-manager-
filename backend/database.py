@@ -499,6 +499,36 @@ CREATE TABLE IF NOT EXISTS solution_recommendations (
     created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_solution_recs_profile ON solution_recommendations (company_profile_id);
+
+-- Phase 3 — Marketing Agent drafts. Deliberately NOT the pre-existing `messages`
+-- table above: that table already has a live autonomous consumer
+-- (followup_engine.py), whose schedule_followups_for_lead() idempotency check
+-- is `count_messages_for_lead(lead_id) > 0` with no message_type filter — any
+-- row inserted here into `messages` would silently block that lead's follow-up
+-- sequence forever. Kept fully isolated instead.
+CREATE TABLE IF NOT EXISTS generated_messages (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id              INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    company_profile_id   INTEGER REFERENCES company_profiles(id) ON DELETE SET NULL,
+    channel              TEXT NOT NULL,                       -- EMAIL | WHATSAPP
+    variant              TEXT NOT NULL DEFAULT 'PRIMARY',      -- PRIMARY | ALTERNATIVE_1 | ALTERNATIVE_2
+    strategy             TEXT,
+    pain_point           TEXT,
+    evidence             TEXT,
+    business_impact      TEXT,
+    solution             TEXT,
+    business_benefit     TEXT,
+    service_name         TEXT,
+    subject              TEXT,
+    message              TEXT NOT NULL,
+    cta                  TEXT,
+    confidence           REAL DEFAULT 0,
+    approval_status      TEXT DEFAULT 'READY_FOR_REVIEW',      -- READY_FOR_REVIEW | APPROVED | REJECTED
+    rejection_reason     TEXT,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    reviewed_at          TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_generated_messages_lead ON generated_messages (lead_id);
 """
 
 
@@ -634,11 +664,25 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
     ]:
         await _add_col_if_missing(raw, "scores", col, typedef)
 
+    # Upgrade columns for replies (idempotent) — Phase 4's Reply Intelligence
+    # Agent output. Additive alongside the existing detected_intent (5-value)
+    # classification, which keeps driving REPLIED/SKIPPED transitions and
+    # get_reply_summary() unchanged.
+    for col, typedef in [
+        ("rich_intent",        "TEXT"),
+        ("intent_confidence",  "REAL DEFAULT 0"),
+        ("recommended_action", "TEXT"),
+    ]:
+        await _add_col_if_missing(raw, "replies", col, typedef)
+
     # Data normalisation
+    # DO_NOT_CONTACT (Phase 4 opt-out) is a terminal, sticky status — must be in
+    # this allow-list or a lead marked DO_NOT_CONTACT would silently revert to
+    # PENDING on the next restart, undoing the opt-out.
     await raw.execute("""
         UPDATE leads SET status = 'PENDING'
         WHERE status IS NULL
-           OR status NOT IN ('PENDING','SENT','REPLIED','SKIPPED','MESSAGES_READY','ENRICHED','SCORED')
+           OR status NOT IN ('PENDING','SENT','REPLIED','SKIPPED','MESSAGES_READY','ENRICHED','SCORED','DO_NOT_CONTACT')
     """)
     await raw.execute("""
         UPDATE campaign_runs SET status = 'FAILED', stage = 'FAILED', finished_at = CURRENT_TIMESTAMP
@@ -1739,6 +1783,68 @@ async def get_solution_recommendations(company_profile_id: int) -> List[Dict[str
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Phase 3 — Marketing Agent generated messages (isolated from `messages` —
+# see the schema comment above generated_messages for why)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_GENERATED_MESSAGE_WRITABLE = frozenset({
+    "company_profile_id", "channel", "variant", "strategy", "pain_point",
+    "evidence", "business_impact", "solution", "business_benefit",
+    "service_name", "subject", "message", "cta", "confidence",
+})
+
+_GENERATED_MESSAGE_UPDATABLE = frozenset({
+    "subject", "message", "approval_status", "rejection_reason", "reviewed_at",
+})
+
+
+async def replace_generated_messages(lead_id: int, items: List[Dict[str, Any]]) -> List[int]:
+    """Delete all existing generated messages for this lead and insert the given set."""
+    async with transaction() as tx:
+        await tx.execute("DELETE FROM generated_messages WHERE lead_id = $1", lead_id)
+        new_ids: List[int] = []
+        for item in items:
+            clean = {k: v for k, v in item.items() if k in _GENERATED_MESSAGE_WRITABLE and v is not None}
+            cols         = ", ".join(["lead_id"] + list(clean.keys()))
+            placeholders = ", ".join("?" for _ in range(len(clean) + 1))
+            new_id = await tx.fetchval(
+                f"INSERT INTO generated_messages ({cols}) VALUES ({placeholders}) RETURNING id",
+                lead_id, *clean.values(),
+            )
+            new_ids.append(new_id)
+    return new_ids
+
+
+async def get_generated_messages(lead_id: int) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM generated_messages WHERE lead_id = $1 ORDER BY created_at",
+            lead_id,
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_generated_message(message_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow("SELECT * FROM generated_messages WHERE id = $1", message_id)
+    return dict(row) if row else None
+
+
+async def update_generated_message(message_id: int, data: Dict[str, Any]) -> bool:
+    clean = {k: v for k, v in data.items() if k in _GENERATED_MESSAGE_UPDATABLE and v is not None}
+    if not clean:
+        return False
+    params     = list(clean.values())
+    set_clause = ", ".join(f"{col} = ?" for col in clean.keys())
+    params.append(message_id)
+    async with get_db() as conn:
+        result = await conn.execute(
+            f"UPDATE generated_messages SET {set_clause} WHERE id = ?", *params
+        )
+    return _rows_affected(result) > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Messages
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1794,7 +1900,10 @@ async def delete_lead_messages(lead_id: int) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def create_reply(data: Dict[str, Any]) -> int:
-    _writable    = frozenset({"lead_id", "message_id", "reply_text", "detected_intent", "raw_email_data"})
+    _writable    = frozenset({
+        "lead_id", "message_id", "reply_text", "detected_intent", "raw_email_data",
+        "rich_intent", "intent_confidence", "recommended_action",
+    })
     clean        = {
         k: (json.dumps(v) if isinstance(v, dict) else v)
         for k, v in data.items()
@@ -1851,12 +1960,28 @@ async def update_reply_draft(reply_id: int, data: Dict[str, Any]) -> None:
         )
 
 
+async def update_reply_intelligence(reply_id: int, data: Dict[str, Any]) -> None:
+    """Persist ReplyIntelligenceAgent output (rich_intent/intent_confidence/
+    recommended_action) onto an already-inserted reply row."""
+    _writable = frozenset({"rich_intent", "intent_confidence", "recommended_action"})
+    clean = {k: v for k, v in data.items() if k in _writable and v is not None}
+    if not clean:
+        return
+    set_clause = ", ".join(f"{c} = ${i + 1}" for i, c in enumerate(clean.keys()))
+    async with get_db() as conn:
+        await conn.execute(
+            f"UPDATE replies SET {set_clause} WHERE id = ${len(clean) + 1}",
+            *clean.values(), reply_id,
+        )
+
+
 async def get_pending_reply_drafts() -> List[Dict[str, Any]]:
     """Drafts awaiting human approval, with lead context for display."""
     async with get_db() as conn:
         rows = await conn.fetch("""
             SELECT r.id, r.lead_id, r.reply_text, r.detected_intent, r.received_at,
                    r.draft_subject, r.draft_body, r.draft_status,
+                   r.rich_intent, r.intent_confidence, r.recommended_action,
                    l.business_name, l.email, l.channel
             FROM replies r
             JOIN leads l ON l.id = r.lead_id

@@ -14,6 +14,7 @@ from .. import database as db
 from ..scoring.lead_scorer import score_opportunity_fit
 from .base import AgentResult
 from .company_research_agent import CompanyResearchAgent
+from .marketing_agent import MarketingAgent
 from .opportunity_agent import OpportunityAgent
 from .pain_point_agent import PainPointAgent
 from .qualification_agent import QualificationAgent
@@ -25,6 +26,7 @@ _qualification_agent = QualificationAgent()
 _company_research_agent = CompanyResearchAgent()
 _pain_point_agent = PainPointAgent()
 _opportunity_agent = OpportunityAgent()
+_marketing_agent = MarketingAgent()
 
 
 async def _persist(lead_id: int, result: AgentResult, agent_name: str, extra: Dict[str, Any]) -> int:
@@ -266,4 +268,62 @@ async def run_opportunity_analysis(lead: Dict[str, Any]) -> Dict[str, Any]:
 
     except Exception as exc:
         logger.error("Opportunity analysis crashed for lead %s: %s", lead_id, exc, exc_info=True)
+        return {"lead_id": lead_id, "status": "FAILED", "error": str(exc)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Marketing message generation (Phase 3) — another separate, on-demand entry
+# point. Requires pain points to already exist (same "requires the prior
+# stage" pattern as run_pain_point_analysis/run_opportunity_analysis above),
+# and refuses to run for an opted-out (SKIPPED) lead. Opportunities/solutions
+# are used if present but not required — MarketingAgent degrades gracefully
+# (never names a service) when no confident solution match exists yet.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def run_marketing_agent(lead: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate marketing message drafts for a lead with pain points already
+    identified. Never raises. Never auto-sends — see routers/marketing.py for
+    the human-approval gate that stages content into the existing send path."""
+    lead_id = None
+    try:
+        lead_id = lead["id"]
+        if (lead.get("status") or "").upper() == "SKIPPED":
+            return {"lead_id": lead_id, "status": "SKIPPED", "reason": "lead has opted out"}
+
+        profile = await db.get_company_profile(lead_id)
+        if not profile:
+            return {"lead_id": lead_id, "status": "SKIPPED", "reason": "no completed research"}
+
+        pain_points = await db.get_pain_points(profile["id"])
+        if not pain_points:
+            return {"lead_id": lead_id, "status": "SKIPPED", "reason": "no pain points identified yet"}
+
+        opportunities = await db.get_business_opportunities(profile["id"])
+        solutions = await db.get_solution_recommendations(profile["id"])
+        evidence = await db.get_research_evidence(profile["id"])
+
+        result: AgentResult = await _marketing_agent.run(
+            lead, profile, pain_points, opportunities, solutions, evidence,
+        )
+
+        if result.status != "ok":
+            logger.warning("Marketing agent failed for lead %s: %s", lead_id, result.reason)
+            return {"lead_id": lead_id, "status": "FAILED", "error": result.reason}
+
+        messages = result.data.get("messages", [])
+        for m in messages:
+            m["company_profile_id"] = profile["id"]
+        await db.replace_generated_messages(lead_id, messages)
+
+        if result.evidence:
+            await db.add_research_evidence(profile["id"], [
+                {"agent_name": "marketing", "field_name": e.field_name, "source_type": e.source_type,
+                 "source_url": e.source_url, "snippet": e.snippet}
+                for e in result.evidence
+            ])
+
+        return {"lead_id": lead_id, "status": "DONE", "messages_generated": len(messages)}
+
+    except Exception as exc:
+        logger.error("Marketing agent crashed for lead %s: %s", lead_id, exc, exc_info=True)
         return {"lead_id": lead_id, "status": "FAILED", "error": str(exc)}

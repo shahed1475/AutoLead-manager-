@@ -165,6 +165,18 @@ export const intelligenceApi = {
   analyzeOpportunities: (leadId) => api.post(`/leads/${leadId}/opportunities/analyze`).then((r) => r.data),
 }
 
+// Marketing Agent — draft outreach generated from the real evidence chain
+// above, gated behind human approval. Approving only stages content into the
+// existing leads.ai_email_*/ai_whatsapp_msg fields; the existing Send button
+// (LeadTable/campaigns) is still what actually delivers anything.
+export const marketingApi = {
+  generate: (leadId)              => api.post(`/leads/${leadId}/messages/generate`).then((r) => r.data),
+  list:     (leadId)              => api.get(`/leads/${leadId}/messages`).then((r) => r.data),
+  edit:     (leadId, msgId, fields) => api.put(`/leads/${leadId}/messages/${msgId}`, fields).then((r) => r.data),
+  approve:  (leadId, msgId)       => api.post(`/leads/${leadId}/messages/${msgId}/approve`).then((r) => r.data),
+  reject:   (leadId, msgId, reason) => api.post(`/leads/${leadId}/messages/${msgId}/reject`, { reason }).then((r) => r.data),
+}
+
 export const authApi = {
   status:        ()        => api.get('/auth/status').then((r) => r.data),
   unlock:        (password) => api.post('/auth/unlock', { password }).then((r) => r.data),

@@ -47,6 +47,21 @@ class _CrashingOpportunityAgent:
         raise RuntimeError("simulated opportunity agent crash")
 
 
+class _StubAgentMarketing:
+    """Matches MarketingAgent.run's 6-positional-arg signature
+    (lead, company_profile, pain_points, opportunities, solutions, evidence)."""
+    def __init__(self, result: AgentResult):
+        self._result = result
+
+    async def run(self, lead, company_profile, pain_points, opportunities, solutions, evidence, campaign=None):
+        return self._result
+
+
+class _CrashingMarketingAgent:
+    async def run(self, lead, company_profile, pain_points, opportunities, solutions, evidence, campaign=None):
+        raise RuntimeError("simulated marketing agent crash")
+
+
 async def test_qualified_lead_runs_full_pipeline(clean_db, monkeypatch):
     db = clean_db
     lead_id = await db.create_lead({"business_name": "Acme Dental", "email": "hi@acmedental.co"})
@@ -437,5 +452,114 @@ async def test_opportunity_analysis_returns_failed_on_agent_failure(clean_db, mo
 
 async def test_opportunity_analysis_handles_none_lead(clean_db):
     result = await orch_module.run_opportunity_analysis(None)
+    assert result["status"] == "FAILED"
+    assert result["lead_id"] is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# run_marketing_agent (Phase 3) — separate entry point, requires pain points
+# to already exist and refuses to run for opted-out (SKIPPED) leads. Does not
+# touch any test/behavior above.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_marketing_agent_skipped_when_no_profile(clean_db):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "No Profile Co"})
+    lead = await db.get_lead_by_id(lead_id)
+
+    result = await orch_module.run_marketing_agent(lead)
+    assert result["status"] == "SKIPPED"
+
+
+async def test_marketing_agent_skipped_when_no_pain_points(clean_db):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "No Pain Points Co"})
+    await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    lead = await db.get_lead_by_id(lead_id)
+
+    result = await orch_module.run_marketing_agent(lead)
+    assert result["status"] == "SKIPPED"
+    assert "pain points" in result["reason"]
+
+
+async def test_marketing_agent_skipped_for_opted_out_lead(clean_db):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Opted Out Co", "status": "SKIPPED"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    await db.replace_pain_points(profile_id, [{"title": "X", "confidence": 0.5}])
+    lead = await db.get_lead_by_id(lead_id)
+
+    result = await orch_module.run_marketing_agent(lead)
+    assert result["status"] == "SKIPPED"
+    assert "opted out" in result["reason"]
+
+
+async def test_marketing_agent_persists_generated_messages(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Researched Co"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    await db.replace_pain_points(profile_id, [{"title": "No booking", "confidence": 0.8}])
+    lead = await db.get_lead_by_id(lead_id)
+
+    stub_result = AgentResult(
+        status="ok",
+        data={"messages": [
+            {"channel": "EMAIL", "variant": "PRIMARY", "message": "email body",
+             "subject": "Quick thought", "pain_point": "No booking", "confidence": 0.8},
+            {"channel": "WHATSAPP", "variant": "PRIMARY", "message": "wa body",
+             "pain_point": "No booking", "confidence": 0.8},
+        ]},
+        evidence=[EvidenceItem("marketing:PRIMARY", "heuristic", None, "snippet")],
+        confidence=0.8,
+    )
+    monkeypatch.setattr(orch_module, "_marketing_agent", _StubAgentMarketing(stub_result))
+
+    result = await orch_module.run_marketing_agent(lead)
+    assert result["status"] == "DONE"
+    assert result["messages_generated"] == 2
+
+    messages = await db.get_generated_messages(lead_id)
+    assert len(messages) == 2
+    assert all(m["company_profile_id"] == profile_id for m in messages)
+
+    evidence = await db.get_research_evidence(profile_id)
+    assert any(e["agent_name"] == "marketing" for e in evidence)
+
+
+async def test_marketing_agent_rerun_does_not_duplicate(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Rerun Co"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    await db.replace_pain_points(profile_id, [{"title": "X", "confidence": 0.7}])
+    lead = await db.get_lead_by_id(lead_id)
+
+    stub_result = AgentResult(
+        status="ok",
+        data={"messages": [{"channel": "EMAIL", "variant": "PRIMARY", "message": "body", "confidence": 0.7}]},
+        evidence=[], confidence=0.7,
+    )
+    monkeypatch.setattr(orch_module, "_marketing_agent", _StubAgentMarketing(stub_result))
+
+    await orch_module.run_marketing_agent(lead)
+    await orch_module.run_marketing_agent(lead)
+
+    assert len(await db.get_generated_messages(lead_id)) == 1
+
+
+async def test_marketing_agent_returns_failed_on_agent_crash(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Failing Co"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    await db.replace_pain_points(profile_id, [{"title": "X", "confidence": 0.5}])
+    lead = await db.get_lead_by_id(lead_id)
+
+    monkeypatch.setattr(orch_module, "_marketing_agent", _CrashingMarketingAgent())
+
+    result = await orch_module.run_marketing_agent(lead)
+    assert result["status"] == "FAILED"
+
+
+async def test_marketing_agent_handles_none_lead(clean_db):
+    result = await orch_module.run_marketing_agent(None)
     assert result["status"] == "FAILED"
     assert result["lead_id"] is None
