@@ -328,6 +328,104 @@ async def score_lead(
     return result
 
 
+_SEVERITY_WEIGHT = {"high": 20, "medium": 12, "low": 5}
+_PRIORITY_WEIGHT = {"HIGH": 22, "MEDIUM": 14, "LOW": 6}
+
+
+async def score_opportunity_fit(lead_id: int) -> Dict[str, Any]:
+    """
+    Phase 2 — additive "intelligence fit" score (0–100), parallel to
+    score_lead()'s HOT/WARM/COLD final_score. Reflects how strong the
+    identified pain points / opportunities / matched solution are for this
+    lead. Persisted to scores.intelligence_score / intelligence_category via
+    the same upsert_score() call score_lead() already uses.
+
+    This function never reads or writes final_score/category/score_label —
+    score_lead()'s existing logic and every HOT/WARM/COLD read path
+    (dashboard, LeadTable badges, filter_leads_for_outreach) is unaffected
+    whether or not this ever runs for a given lead.
+    """
+    profile = await db.get_company_profile(lead_id)
+    if not profile:
+        return {"intelligence_score": 0.0, "intelligence_category": "COLD"}
+
+    pain_points   = await db.get_pain_points(profile["id"])
+    opportunities = await db.get_business_opportunities(profile["id"])
+    solutions     = await db.get_solution_recommendations(profile["id"])
+
+    # D1 — pain severity: worst identified problem, + breadth bonus for
+    # having more than one distinct pain point.
+    pain_severity_score = 0.0
+    if pain_points:
+        pain_severity_score = max(
+            _SEVERITY_WEIGHT.get((pp.get("severity") or "medium").lower(), 12) for pp in pain_points
+        )
+        if len(pain_points) >= 2:
+            pain_severity_score += 5
+    pain_severity_score = min(25.0, pain_severity_score)
+
+    # D2 — opportunity value: best-priority opportunity, scaled by its own confidence.
+    opportunity_value_score = 0.0
+    if opportunities:
+        best = max(
+            opportunities,
+            key=lambda o: _PRIORITY_WEIGHT.get((o.get("priority") or "MEDIUM").upper(), 14),
+        )
+        weight = _PRIORITY_WEIGHT.get((best.get("priority") or "MEDIUM").upper(), 14)
+        opportunity_value_score = weight * _clamp01(_float(best.get("confidence")))
+    opportunity_value_score = min(25.0, opportunity_value_score)
+
+    # D3 — solution fit: strongest matched service's confidence.
+    solution_fit_score = 0.0
+    if solutions:
+        best_conf = max(_float(s.get("confidence")) for s in solutions)
+        solution_fit_score = min(25.0, 25.0 * _clamp01(best_conf))
+
+    # D4 — overall pipeline confidence: how much of this is observed fact vs. inference.
+    all_confidences = (
+        [_float(pp.get("confidence")) for pp in pain_points]
+        + [_float(o.get("confidence")) for o in opportunities]
+        + [_float(s.get("confidence")) for s in solutions]
+    )
+    confidence_score = 0.0
+    if all_confidences:
+        avg_confidence = sum(all_confidences) / len(all_confidences)
+        confidence_score = min(25.0, 25.0 * _clamp01(avg_confidence))
+
+    intelligence_score = min(
+        100.0,
+        max(0.0, pain_severity_score + opportunity_value_score + solution_fit_score + confidence_score),
+    )
+    intelligence_category = (
+        "HOT"  if intelligence_score >= _HOT_THRESHOLD  else
+        "WARM" if intelligence_score >= _WARM_THRESHOLD else
+        "COLD"
+    )
+
+    result = {
+        "pain_severity_score":     pain_severity_score,
+        "opportunity_value_score": opportunity_value_score,
+        "solution_fit_score":      solution_fit_score,
+        "confidence_score":        confidence_score,
+        "intelligence_score":      intelligence_score,
+        "intelligence_category":   intelligence_category,
+    }
+
+    try:
+        await db.upsert_score(lead_id, {
+            "intelligence_score":    intelligence_score,
+            "intelligence_category": intelligence_category,
+        })
+    except Exception as exc:
+        logger.error("score_opportunity_fit: upsert_score failed for lead %d: %s", lead_id, exc)
+
+    return result
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
 async def filter_leads_for_outreach() -> List[Dict[str, Any]]:
     """
     Return HOT and WARM leads that are ready for outreach (status=SCORED).

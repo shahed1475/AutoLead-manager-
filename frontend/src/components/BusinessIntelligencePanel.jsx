@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Brain, AlertTriangle, Lightbulb, ShieldCheck, HelpCircle,
+  Brain, AlertTriangle, Lightbulb, ShieldCheck, HelpCircle, Rocket,
   ChevronDown, ChevronUp, Loader2, Sparkles,
 } from 'lucide-react'
 import { intelligenceApi } from '../api/client'
@@ -12,12 +12,27 @@ const CLASS_BADGE = {
   observed: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20',
   inferred: 'bg-amber-500/15 text-amber-400 border-amber-500/20',
 }
+const PRIORITY_BADGE = {
+  HIGH:   'bg-red-500/15 text-red-400 border-red-500/20',
+  MEDIUM: 'bg-amber-500/15 text-amber-400 border-amber-500/20',
+  LOW:    'bg-slate-500/15 text-slate-400 border-slate-500/20',
+}
 
 function ClassificationBadge({ classification }) {
   const cls = CLASS_BADGE[classification] || 'bg-slate-500/15 text-slate-400 border-slate-500/20'
   return (
     <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-semibold border ${cls}`}>
       {classification === 'observed' ? 'Observed' : classification === 'inferred' ? 'Inferred' : 'Unknown'}
+    </span>
+  )
+}
+
+function PriorityBadge({ priority }) {
+  const p = (priority || 'MEDIUM').toUpperCase()
+  const cls = PRIORITY_BADGE[p] || PRIORITY_BADGE.MEDIUM
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-semibold border ${cls}`}>
+      {p} priority
     </span>
   )
 }
@@ -83,31 +98,90 @@ function PainPointRow({ pp }) {
   )
 }
 
+// Opportunity row: the causal chain (pain point -> impact) already lives on
+// the pain point above; this row shows the opportunity that follows from it
+// (title/business_ease/why_it_matters/priority) — never a service pitch by itself.
 function OpportunityRow({ opp }) {
+  const [open, setOpen] = useState(false)
   return (
     <div className="rounded-lg border border-violet-500/20 bg-violet-500/5 p-2.5">
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[9px] font-bold uppercase tracking-wide text-violet-400">{opp.area}</span>
-        <ClassificationBadge classification={opp.classification} />
-      </div>
-      <p className="text-xs font-medium text-slate-200 mt-1">{opp.title}</p>
-      {opp.description && <p className="text-[10px] text-slate-400 mt-0.5 leading-relaxed">{opp.description}</p>}
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-start justify-between gap-2 text-left"
+      >
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[9px] font-bold uppercase tracking-wide text-violet-400">{opp.area}</span>
+            <PriorityBadge priority={opp.priority} />
+          </div>
+          <p className="text-xs font-medium text-slate-200 mt-1">{opp.title}</p>
+          {opp.business_ease && <p className="text-[10px] text-violet-300 mt-0.5">{opp.business_ease}</p>}
+          <div className="flex items-center gap-2 mt-1">
+            <ClassificationBadge classification={opp.classification} />
+            <ConfidenceBar value={opp.confidence} />
+          </div>
+        </div>
+        {open ? <ChevronUp size={12} className="text-slate-500 shrink-0 mt-0.5" /> : <ChevronDown size={12} className="text-slate-500 shrink-0 mt-0.5" />}
+      </button>
+      {open && (opp.why_it_matters || opp.description) && (
+        <div className="mt-2 pt-2 border-t border-slate-800/60">
+          <p className="text-[10px] text-slate-400"><span className="text-slate-500 font-semibold">Why it matters:</span> {opp.why_it_matters || opp.description}</p>
+        </div>
+      )}
     </div>
   )
 }
 
-function recommendedNextAction({ hasProfile, painPoints }) {
+// Recommended Solution row — deliberately last in the chain (Business -> Pain
+// Point -> Impact -> Opportunity -> Solution -> Service). "reason" and
+// evidence_ids trace every recommendation back to the signal that caused it,
+// so the user can always see *why* this specific service was suggested.
+function SolutionRow({ sol }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="rounded-lg border border-brand-500/20 bg-brand-600/5 p-2.5">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-start justify-between gap-2 text-left"
+      >
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5">
+            <Rocket size={10} className="text-brand-400 shrink-0" />
+            <p className="text-xs font-semibold text-slate-100">{sol.service_name}</p>
+          </div>
+          <div className="flex items-center gap-2 mt-1">
+            <ConfidenceBar value={sol.confidence} />
+          </div>
+        </div>
+        {open ? <ChevronUp size={12} className="text-slate-500 shrink-0 mt-0.5" /> : <ChevronDown size={12} className="text-slate-500 shrink-0 mt-0.5" />}
+      </button>
+      {open && (
+        <div className="mt-2 pt-2 border-t border-slate-800/60 space-y-1">
+          {sol.reason && <p className="text-[10px] text-slate-400"><span className="text-slate-500 font-semibold">Why this service:</span> {sol.reason}</p>}
+          {Array.isArray(sol.evidence_ids) && sol.evidence_ids.length > 0 && (
+            <p className="text-[9px] text-slate-600">Traced to {sol.evidence_ids.length} evidence record{sol.evidence_ids.length > 1 ? 's' : ''} below.</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function recommendedNextAction({ hasProfile, painPoints, opportunities }) {
   if (!hasProfile) {
-    return { label: 'Run research first', actionable: false }
+    return { label: 'Run research first', action: null }
   }
   if (!painPoints || painPoints.length === 0) {
-    return { label: 'Run pain point analysis', actionable: true }
+    return { label: 'Run pain point analysis', action: 'pain_points', buttonLabel: 'Run pain point analysis' }
+  }
+  if (!opportunities || opportunities.length === 0) {
+    return { label: 'Run opportunity analysis', action: 'opportunities', buttonLabel: 'Run opportunity analysis' }
   }
   const allObserved = painPoints.every((pp) => pp.classification === 'observed')
   if (allObserved) {
-    return { label: 'Business understanding looks complete', actionable: false }
+    return { label: 'Business understanding looks complete', action: null }
   }
-  return { label: 'Consider manually verifying inferred pain points', actionable: false }
+  return { label: 'Consider manually verifying inferred pain points', action: null }
 }
 
 export default function BusinessIntelligencePanel({ leadId }) {
@@ -121,9 +195,14 @@ export default function BusinessIntelligencePanel({ leadId }) {
     staleTime: 60 * 1000,
   })
 
-  const analyzeMutation = useMutation({
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['intelligence', leadId] })
+  const analyzePainPointsMutation = useMutation({
     mutationFn: () => intelligenceApi.analyzePainPoints(leadId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['intelligence', leadId] }),
+    onSuccess: invalidate,
+  })
+  const analyzeOpportunitiesMutation = useMutation({
+    mutationFn: () => intelligenceApi.analyzeOpportunities(leadId),
+    onSuccess: invalidate,
   })
 
   // 404 (no research yet) is an expected, non-error state here — not a fetch failure to surface.
@@ -147,8 +226,16 @@ export default function BusinessIntelligencePanel({ leadId }) {
     )
   }
 
-  const { profile, pain_points: painPoints = [], business_opportunities: opportunities = [] } = data
-  const next = recommendedNextAction({ hasProfile: Boolean(profile), painPoints })
+  const {
+    profile,
+    pain_points: painPoints = [],
+    business_opportunities: opportunities = [],
+    solution_recommendations: solutions = [],
+  } = data
+  const next = recommendedNextAction({ hasProfile: Boolean(profile), painPoints, opportunities })
+  const activeMutation = next.action === 'pain_points' ? analyzePainPointsMutation
+    : next.action === 'opportunities' ? analyzeOpportunitiesMutation
+    : null
 
   return (
     <div className="mt-1 pt-4 border-t border-slate-800 space-y-4">
@@ -169,7 +256,7 @@ export default function BusinessIntelligencePanel({ leadId }) {
         </div>
       )}
 
-      {/* Pain Points */}
+      {/* Pain Points -> Impact (impact shown inline per row when expanded) */}
       <div className="space-y-1.5">
         <SLabel icon={AlertTriangle} color="text-red-400">Pain Points ({painPoints.length})</SLabel>
         {painPoints.length === 0 ? (
@@ -181,7 +268,7 @@ export default function BusinessIntelligencePanel({ leadId }) {
         )}
       </div>
 
-      {/* Business Ease Opportunity */}
+      {/* Opportunity -> Business Ease */}
       {opportunities.length > 0 && (
         <div className="space-y-1.5">
           <SLabel icon={Lightbulb} color="text-violet-400">Business Ease Opportunity</SLabel>
@@ -191,25 +278,40 @@ export default function BusinessIntelligencePanel({ leadId }) {
         </div>
       )}
 
+      {/* Solution -> PopupGenix Service */}
+      {solutions.length > 0 && (
+        <div className="space-y-1.5">
+          <SLabel icon={Rocket} color="text-brand-400">Recommended Solution</SLabel>
+          <div className="space-y-1.5">
+            {solutions.map((sol) => <SolutionRow key={sol.id} sol={sol} />)}
+          </div>
+        </div>
+      )}
+      {opportunities.length > 0 && solutions.length === 0 && (
+        <p className="text-[10px] text-slate-600 italic">No confident PopupGenix service match yet for these opportunities.</p>
+      )}
+
       {/* Recommended next analysis */}
       <div className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-slate-800/40 border border-slate-700/30">
         <div className="flex items-center gap-1.5 min-w-0">
           <HelpCircle size={11} className="text-slate-500 shrink-0" />
           <span className="text-[10px] text-slate-400 truncate">{next.label}</span>
         </div>
-        {next.actionable && (
+        {activeMutation && (
           <button
-            onClick={() => analyzeMutation.mutate()}
-            disabled={analyzeMutation.isPending}
+            onClick={() => activeMutation.mutate()}
+            disabled={activeMutation.isPending}
             className="btn-primary text-[10px] py-1 px-2.5 shrink-0"
           >
-            {analyzeMutation.isPending ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
-            Run pain point analysis
+            {activeMutation.isPending ? <Loader2 size={10} className="animate-spin" /> : <Sparkles size={10} />}
+            {next.buttonLabel}
           </button>
         )}
       </div>
-      {analyzeMutation.isError && (
-        <p className="text-[10px] text-red-400">{analyzeMutation.error?.message || 'Analysis failed.'}</p>
+      {(analyzePainPointsMutation.isError || analyzeOpportunitiesMutation.isError) && (
+        <p className="text-[10px] text-red-400">
+          {(analyzePainPointsMutation.error || analyzeOpportunitiesMutation.error)?.message || 'Analysis failed.'}
+        </p>
       )}
     </div>
   )

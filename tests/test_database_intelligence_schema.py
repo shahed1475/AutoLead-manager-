@@ -199,3 +199,99 @@ async def test_cascade_delete_removes_pain_points_and_opportunities(clean_db):
     assert await db.delete_lead(lead_id)
     assert await db.get_pain_points(profile_id) == []
     assert await db.get_business_opportunities(profile_id) == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 2 — business_opportunities richer fields, solution_recommendations,
+# scores intelligence fields
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_business_opportunities_phase2_fields_roundtrip(clean_db):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Mu Dental"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE"})
+
+    await db.replace_business_opportunities(profile_id, [{
+        "area": "Appointment Scheduling",
+        "title": "Appointment automation",
+        "why_it_matters": "Staff handle scheduling manually.",
+        "business_ease": "Make appointment scheduling easier",
+        "priority": "HIGH",
+        "confidence": 0.85,
+        "classification": "observed",
+    }])
+
+    opportunities = await db.get_business_opportunities(profile_id)
+    assert len(opportunities) == 1
+    opp = opportunities[0]
+    assert opp["why_it_matters"] == "Staff handle scheduling manually."
+    assert opp["business_ease"] == "Make appointment scheduling easier"
+    assert opp["priority"] == "HIGH"
+
+
+async def test_replace_and_get_solution_recommendations(clean_db):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Nu Realty"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    [opp_id] = await db.replace_business_opportunities(profile_id, [
+        {"area": "Lead Qualification", "title": "Lead qualification automation", "confidence": 0.7},
+    ])
+
+    ids = await db.replace_solution_recommendations(profile_id, [{
+        "business_opportunity_id": opp_id,
+        "service_name": "WhatsApp Automation",
+        "reason": "Manual customer communication detected",
+        "evidence_ids": [1, 2, 3],
+        "confidence": 0.75,
+    }])
+    assert len(ids) == 1
+
+    recs = await db.get_solution_recommendations(profile_id)
+    assert len(recs) == 1
+    assert recs[0]["service_name"] == "WhatsApp Automation"
+    assert recs[0]["evidence_ids"] == [1, 2, 3]  # JSON round-trip
+    assert recs[0]["business_opportunity_id"] == opp_id
+
+
+async def test_replace_solution_recommendations_prevents_duplicates_on_rerun(clean_db):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Xi Agency"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE"})
+
+    item = {"service_name": "CRM Development", "confidence": 0.6, "evidence_ids": []}
+    await db.replace_solution_recommendations(profile_id, [item])
+    await db.replace_solution_recommendations(profile_id, [item])
+
+    recs = await db.get_solution_recommendations(profile_id)
+    assert len(recs) == 1
+
+
+async def test_cascade_delete_removes_solution_recommendations(clean_db):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Omicron Co"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    await db.replace_solution_recommendations(profile_id, [
+        {"service_name": "AI Chatbots", "confidence": 0.5, "evidence_ids": []},
+    ])
+
+    assert await db.delete_lead(lead_id)
+    assert await db.get_solution_recommendations(profile_id) == []
+
+
+async def test_scores_intelligence_fields_roundtrip_without_touching_final_score(clean_db):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Pi Corp"})
+
+    await db.upsert_score(lead_id, {
+        "final_score": 82.0, "category": "HOT",
+        "digital_score": 20, "website_score": 20, "business_score": 20, "opportunity_score": 22,
+    })
+    await db.upsert_score(lead_id, {
+        "intelligence_score": 67.5, "intelligence_category": "WARM",
+    })
+
+    score = await db.get_score(lead_id)
+    assert score["final_score"] == 82.0
+    assert score["category"] == "HOT"
+    assert score["intelligence_score"] == 67.5
+    assert score["intelligence_category"] == "WARM"

@@ -33,6 +33,20 @@ class _CrashingPainPointAgent:
         raise RuntimeError("simulated pain point agent crash")
 
 
+class _StubAgentOpportunity:
+    """Matches OpportunityAgent.run's 4-positional-arg signature (lead, company_profile, pain_points, evidence)."""
+    def __init__(self, result: AgentResult):
+        self._result = result
+
+    async def run(self, lead, company_profile, pain_points, evidence, campaign=None):
+        return self._result
+
+
+class _CrashingOpportunityAgent:
+    async def run(self, lead, company_profile, pain_points, evidence, campaign=None):
+        raise RuntimeError("simulated opportunity agent crash")
+
+
 async def test_qualified_lead_runs_full_pipeline(clean_db, monkeypatch):
     db = clean_db
     lead_id = await db.create_lead({"business_name": "Acme Dental", "email": "hi@acmedental.co"})
@@ -277,3 +291,151 @@ async def test_none_lead_returns_failed_instead_of_raising():
     assert result["status"] == "FAILED"
     assert result["lead_id"] is None
     assert "error" in result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# run_opportunity_analysis (Phase 2) — separate entry point, requires pain
+# points to already exist. Does not touch run_research_pipeline/
+# run_pain_point_analysis tests or behavior above.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_opportunity_analysis_skipped_when_no_profile(clean_db):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "No Profile Co"})
+    lead = await db.get_lead_by_id(lead_id)
+
+    result = await orch_module.run_opportunity_analysis(lead)
+    assert result["status"] == "SKIPPED"
+
+
+async def test_opportunity_analysis_skipped_when_no_pain_points(clean_db):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "No Pain Points Co"})
+    await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    lead = await db.get_lead_by_id(lead_id)
+
+    result = await orch_module.run_opportunity_analysis(lead)
+    assert result["status"] == "SKIPPED"
+    assert "pain points" in result["reason"]
+
+
+async def test_opportunity_analysis_persists_opportunities_and_solutions(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Researched Co", "website": "https://researchedco.io", "niche": "dentist"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE", "industry": "Dental Care"})
+    await db.replace_pain_points(profile_id, [
+        {"title": "No visible online appointment/booking system", "confidence": 0.9,
+         "severity": "high", "classification": "observed"},
+    ])
+    lead = await db.get_lead_by_id(lead_id)
+
+    stub_result = AgentResult(
+        status="ok",
+        data={"opportunities": [{
+            "opportunity": "Appointment automation",
+            "why_it_matters": "Manual customer communication currently required for scheduling.",
+            "business_ease": "Make appointment scheduling easier",
+            "area": "Appointment Scheduling",
+            "priority": "HIGH",
+            "confidence": 0.9,
+            "classification": "observed",
+            "pain_point_id": None,
+            "_source_pain_points": [],
+        }]},
+        evidence=[EvidenceItem("opportunity:Appointment automation", "heuristic", None, "snippet")],
+        confidence=0.9,
+    )
+    monkeypatch.setattr(orch_module, "_opportunity_agent", _StubAgentOpportunity(stub_result))
+
+    result = await orch_module.run_opportunity_analysis(lead)
+    assert result["status"] == "DONE"
+    assert result["opportunities_found"] == 1
+
+    opportunities = await db.get_business_opportunities(profile_id)
+    assert len(opportunities) == 1
+    assert opportunities[0]["title"] == "Appointment automation"
+    assert opportunities[0]["business_ease"] == "Make appointment scheduling easier"
+    assert opportunities[0]["priority"] == "HIGH"
+
+    # Solution matching ran against the persisted opportunity's signal text —
+    # "manual customer communication" is a WhatsApp Automation recommend_when keyword.
+    solutions = await db.get_solution_recommendations(profile_id)
+    assert len(solutions) == 1
+    assert solutions[0]["service_name"] == "WhatsApp Automation"
+    assert solutions[0]["business_opportunity_id"] == opportunities[0]["id"]
+
+    # score_opportunity_fit ran too — intelligence fields populated without touching final_score.
+    score = await db.get_score(lead_id)
+    assert score["intelligence_score"] > 0
+
+
+async def test_opportunity_analysis_no_solution_match_still_persists_opportunity(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Vague Co", "niche": "unknown"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    await db.replace_pain_points(profile_id, [{"title": "X", "confidence": 0.5}])
+    lead = await db.get_lead_by_id(lead_id)
+
+    stub_result = AgentResult(
+        status="ok",
+        data={"opportunities": [{
+            "opportunity": "", "why_it_matters": "", "business_ease": "",
+            "area": "Customer Communication", "priority": "LOW", "confidence": 0.3,
+            "classification": "inferred", "pain_point_id": None, "_source_pain_points": [],
+        }]},
+        evidence=[], confidence=0.3,
+    )
+    monkeypatch.setattr(orch_module, "_opportunity_agent", _StubAgentOpportunity(stub_result))
+
+    result = await orch_module.run_opportunity_analysis(lead)
+    assert result["status"] == "DONE"
+    assert result["solutions_recommended"] == 0
+
+    opportunities = await db.get_business_opportunities(profile_id)
+    assert len(opportunities) == 1  # opportunity persisted even with no confident solution match
+    assert await db.get_solution_recommendations(profile_id) == []
+
+
+async def test_opportunity_analysis_rerun_does_not_duplicate(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Rerun Co", "niche": "dentist"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    await db.replace_pain_points(profile_id, [{"title": "No SSL", "confidence": 0.8}])
+    lead = await db.get_lead_by_id(lead_id)
+
+    stub_result = AgentResult(
+        status="ok",
+        data={"opportunities": [{
+            "opportunity": "Security fix", "why_it_matters": "website is not served over https",
+            "business_ease": "Make security easier", "area": "Customer Communication",
+            "priority": "MEDIUM", "confidence": 0.8, "classification": "observed",
+            "pain_point_id": None, "_source_pain_points": [],
+        }]},
+        evidence=[], confidence=0.8,
+    )
+    monkeypatch.setattr(orch_module, "_opportunity_agent", _StubAgentOpportunity(stub_result))
+
+    await orch_module.run_opportunity_analysis(lead)
+    await orch_module.run_opportunity_analysis(lead)
+
+    assert len(await db.get_business_opportunities(profile_id)) == 1
+    assert len(await db.get_solution_recommendations(profile_id)) <= 1
+
+
+async def test_opportunity_analysis_returns_failed_on_agent_failure(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Failing Co"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    await db.replace_pain_points(profile_id, [{"title": "X", "confidence": 0.5}])
+    lead = await db.get_lead_by_id(lead_id)
+
+    monkeypatch.setattr(orch_module, "_opportunity_agent", _CrashingOpportunityAgent())
+
+    result = await orch_module.run_opportunity_analysis(lead)
+    assert result["status"] == "FAILED"
+
+
+async def test_opportunity_analysis_handles_none_lead(clean_db):
+    result = await orch_module.run_opportunity_analysis(None)
+    assert result["status"] == "FAILED"
+    assert result["lead_id"] is None

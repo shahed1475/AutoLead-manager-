@@ -41,6 +41,7 @@ _JSON_ARRAY_COLS = frozenset({
     "marketing_gaps", "issues", "conversion_gaps", "seo_gaps",
     "pitch_angles", "key_problems", "sources",
     "services", "products", "social_profiles", "tech_stack", "partnerships",
+    "evidence_ids",
 })
 
 _PG_PARAM_RE = re.compile(r'\$\d+')
@@ -486,6 +487,18 @@ CREATE TABLE IF NOT EXISTS business_opportunities (
     created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_biz_opp_profile ON business_opportunities (company_profile_id);
+
+CREATE TABLE IF NOT EXISTS solution_recommendations (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_profile_id       INTEGER NOT NULL REFERENCES company_profiles(id) ON DELETE CASCADE,
+    business_opportunity_id  INTEGER REFERENCES business_opportunities(id) ON DELETE SET NULL,
+    service_name             TEXT NOT NULL,
+    reason                   TEXT,
+    evidence_ids             TEXT,
+    confidence                REAL DEFAULT 0,
+    created_at                TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_solution_recs_profile ON solution_recommendations (company_profile_id);
 """
 
 
@@ -600,6 +613,26 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
         ("draft_sent_at", "TIMESTAMP"),
     ]:
         await _add_col_if_missing(raw, "replies", col, typedef)
+
+    # Upgrade columns for business_opportunities (idempotent) — Phase 2's
+    # OpportunityAgent output. Phase 1's naive per-pain-point opportunities
+    # (area/title/description/confidence/classification) keep working
+    # unchanged; these are additive fields the richer agent also populates.
+    for col, typedef in [
+        ("why_it_matters", "TEXT"),
+        ("business_ease",  "TEXT"),
+        ("priority",       "TEXT DEFAULT 'MEDIUM'"),
+    ]:
+        await _add_col_if_missing(raw, "business_opportunities", col, typedef)
+
+    # Upgrade columns for scores (idempotent) — Phase 2's additive
+    # "intelligence fit" score. Parallel to final_score/category, never
+    # replacing them — every existing HOT/WARM/COLD read path is unaffected.
+    for col, typedef in [
+        ("intelligence_score",    "REAL DEFAULT 0"),
+        ("intelligence_category", "TEXT"),
+    ]:
+        await _add_col_if_missing(raw, "scores", col, typedef)
 
     # Data normalisation
     await raw.execute("""
@@ -1476,6 +1509,7 @@ _SCORE_WRITABLE = frozenset({
     "digital_score", "website_score", "business_score",
     "opportunity_score", "final_score", "category",
     "key_problems", "opportunity_summary", "pitch_angle",
+    "intelligence_score", "intelligence_category",
 })
 
 
@@ -1614,6 +1648,11 @@ _PAIN_POINT_WRITABLE = frozenset({
 
 _BUSINESS_OPPORTUNITY_WRITABLE = frozenset({
     "pain_point_id", "area", "title", "description", "confidence", "classification",
+    "why_it_matters", "business_ease", "priority",
+})
+
+_SOLUTION_RECOMMENDATION_WRITABLE = frozenset({
+    "business_opportunity_id", "service_name", "reason", "evidence_ids", "confidence",
 })
 
 
@@ -1664,6 +1703,36 @@ async def get_business_opportunities(company_profile_id: int) -> List[Dict[str, 
     async with get_db() as conn:
         rows = await conn.fetch(
             "SELECT * FROM business_opportunities WHERE company_profile_id = $1 ORDER BY created_at",
+            company_profile_id,
+        )
+    return [dict(r) for r in rows]
+
+
+async def replace_solution_recommendations(company_profile_id: int, items: List[Dict[str, Any]]) -> List[int]:
+    """Delete all existing solution recommendations for this profile and insert the given set."""
+    async with transaction() as tx:
+        await tx.execute("DELETE FROM solution_recommendations WHERE company_profile_id = $1", company_profile_id)
+        new_ids: List[int] = []
+        for item in items:
+            clean = {
+                k: (json.dumps(v) if isinstance(v, list) else v)
+                for k, v in item.items()
+                if k in _SOLUTION_RECOMMENDATION_WRITABLE and v is not None
+            }
+            cols         = ", ".join(["company_profile_id"] + list(clean.keys()))
+            placeholders = ", ".join("?" for _ in range(len(clean) + 1))
+            new_id = await tx.fetchval(
+                f"INSERT INTO solution_recommendations ({cols}) VALUES ({placeholders}) RETURNING id",
+                company_profile_id, *clean.values(),
+            )
+            new_ids.append(new_id)
+    return new_ids
+
+
+async def get_solution_recommendations(company_profile_id: int) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM solution_recommendations WHERE company_profile_id = $1 ORDER BY created_at",
             company_profile_id,
         )
     return [dict(r) for r in rows]

@@ -159,8 +159,10 @@ export const intelligenceApi = {
   getIntelligence:  (leadId) => api.get(`/leads/${leadId}/intelligence`).then((r) => r.data),
   getPainPoints:    (leadId) => api.get(`/leads/${leadId}/pain-points`).then((r) => r.data),
   getOpportunities: (leadId) => api.get(`/leads/${leadId}/opportunities`).then((r) => r.data),
+  getSolutions:     (leadId) => api.get(`/leads/${leadId}/solutions`).then((r) => r.data),
   getEvidence:      (leadId) => api.get(`/leads/${leadId}/evidence`).then((r) => r.data),
-  analyzePainPoints: (leadId) => api.post(`/leads/${leadId}/pain-points/analyze`).then((r) => r.data),
+  analyzePainPoints:   (leadId) => api.post(`/leads/${leadId}/pain-points/analyze`).then((r) => r.data),
+  analyzeOpportunities: (leadId) => api.post(`/leads/${leadId}/opportunities/analyze`).then((r) => r.data),
 }
 
 export const authApi = {

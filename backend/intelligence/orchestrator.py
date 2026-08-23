@@ -11,16 +11,20 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .. import database as db
+from ..scoring.lead_scorer import score_opportunity_fit
 from .base import AgentResult
 from .company_research_agent import CompanyResearchAgent
+from .opportunity_agent import OpportunityAgent
 from .pain_point_agent import PainPointAgent
 from .qualification_agent import QualificationAgent
+from .solution_matcher import match_solution
 
 logger = logging.getLogger(__name__)
 
 _qualification_agent = QualificationAgent()
 _company_research_agent = CompanyResearchAgent()
 _pain_point_agent = PainPointAgent()
+_opportunity_agent = OpportunityAgent()
 
 
 async def _persist(lead_id: int, result: AgentResult, agent_name: str, extra: Dict[str, Any]) -> int:
@@ -172,4 +176,94 @@ async def run_pain_point_analysis(lead: Dict[str, Any]) -> Dict[str, Any]:
 
     except Exception as exc:
         logger.error("Pain point analysis crashed for lead %s: %s", lead_id, exc, exc_info=True)
+        return {"lead_id": lead_id, "status": "FAILED", "error": str(exc)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Opportunity + solution analysis (Phase 2) — another separate, on-demand
+# entry point (same pattern as run_pain_point_analysis above). Requires pain
+# points to already exist, so the causal order BUSINESS -> PAIN POINT ->
+# IMPACT -> OPPORTUNITY -> SOLUTION is enforced by construction: this can
+# never run before pain points do, and solution matching here always runs
+# against freshly-computed opportunities in the same call, never stale ones.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def run_opportunity_analysis(lead: Dict[str, Any]) -> Dict[str, Any]:
+    """Run the Opportunity Agent then the Solution Matcher for a lead that
+    already has pain points. Never raises."""
+    lead_id = None
+    try:
+        lead_id = lead["id"]
+        profile = await db.get_company_profile(lead_id)
+        if not profile:
+            return {"lead_id": lead_id, "status": "SKIPPED", "reason": "no completed research"}
+
+        pain_points = await db.get_pain_points(profile["id"])
+        if not pain_points:
+            return {"lead_id": lead_id, "status": "SKIPPED", "reason": "no pain points identified yet"}
+
+        evidence = await db.get_research_evidence(profile["id"])
+        result: AgentResult = await _opportunity_agent.run(lead, profile, pain_points, evidence)
+
+        if result.status != "ok":
+            logger.warning("Opportunity analysis failed for lead %s: %s", lead_id, result.reason)
+            return {"lead_id": lead_id, "status": "FAILED", "error": result.reason}
+
+        opportunities = result.data.get("opportunities", [])
+
+        # Solution-match each opportunity BEFORE persisting opportunities, so
+        # the source pain points (still carrying real DB ids/evidence links)
+        # are available to the matcher exactly as computed by the agent.
+        matches: List[Optional[Dict[str, Any]]] = []
+        for opp in opportunities:
+            source_pain_points = opp.get("_source_pain_points", [])
+            matches.append(match_solution(opp, source_pain_points, profile, evidence))
+
+        # Map the agent's output contract (opportunity/why_it_matters/business_ease/
+        # priority/confidence — see opportunity_agent.py) onto business_opportunities'
+        # columns: "opportunity" -> "title" (the table's existing NOT NULL name
+        # column, unchanged since Phase 1), and drop the non-persisted scratch key.
+        persistable_opportunities = [
+            {
+                **{k: v for k, v in opp.items() if k not in ("opportunity", "_source_pain_points")},
+                "title": opp.get("opportunity") or opp.get("title") or "Untitled opportunity",
+            }
+            for opp in opportunities
+        ]
+        opportunity_ids = await db.replace_business_opportunities(profile["id"], persistable_opportunities)
+
+        solution_items = []
+        for opp_id, match in zip(opportunity_ids, matches):
+            if match is None:
+                continue  # no confident service match — never force one
+            # match_solution() returns "service" per its documented output contract;
+            # the DB column is service_name (matches _SOLUTION_RECOMMENDATION_WRITABLE).
+            solution_items.append({
+                **{k: v for k, v in match.items() if k != "service"},
+                "service_name": match["service"],
+                "business_opportunity_id": opp_id,
+            })
+        await db.replace_solution_recommendations(profile["id"], solution_items)
+
+        if result.evidence:
+            await db.add_research_evidence(profile["id"], [
+                {"agent_name": "opportunity", "field_name": e.field_name, "source_type": e.source_type,
+                 "source_url": e.source_url, "snippet": e.snippet}
+                for e in result.evidence
+            ])
+
+        try:
+            await score_opportunity_fit(lead_id)
+        except Exception as exc:
+            logger.warning("score_opportunity_fit failed for lead %s: %s", lead_id, exc)
+
+        return {
+            "lead_id": lead_id,
+            "status": "DONE",
+            "opportunities_found": len(opportunities),
+            "solutions_recommended": len(solution_items),
+        }
+
+    except Exception as exc:
+        logger.error("Opportunity analysis crashed for lead %s: %s", lead_id, exc, exc_info=True)
         return {"lead_id": lead_id, "status": "FAILED", "error": str(exc)}
