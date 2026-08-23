@@ -14,6 +14,7 @@ from .. import database as db
 from ..scoring.lead_scorer import score_opportunity_fit
 from .base import AgentResult
 from .company_research_agent import CompanyResearchAgent
+from .followup_agent import FollowUpAgent
 from .marketing_agent import MarketingAgent
 from .opportunity_agent import OpportunityAgent
 from .pain_point_agent import PainPointAgent
@@ -27,6 +28,7 @@ _company_research_agent = CompanyResearchAgent()
 _pain_point_agent = PainPointAgent()
 _opportunity_agent = OpportunityAgent()
 _marketing_agent = MarketingAgent()
+_followup_agent = FollowUpAgent()
 
 
 async def _persist(lead_id: int, result: AgentResult, agent_name: str, extra: Dict[str, Any]) -> int:
@@ -327,3 +329,46 @@ async def run_marketing_agent(lead: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as exc:
         logger.error("Marketing agent crashed for lead %s: %s", lead_id, exc, exc_info=True)
         return {"lead_id": lead_id, "status": "FAILED", "error": str(exc)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Follow-up message generation (Phase 4) — used by followup_engine.py at
+# send time instead of its pre-Phase-4 evidence-blind fallback. Returns
+# {"generated": False} (never raises, never a FAILED status) when the lead
+# has no completed pain-point research — callers fall back to the legacy
+# pre-written column/ai_brain path in that case, same "degrade, don't error"
+# convention as every other agent entry point above.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def run_followup_agent(
+    lead: Dict[str, Any],
+    step: int,
+    previous_bodies: Optional[List[str]] = None,
+    latest_reply_intent: Optional[str] = None,
+) -> Dict[str, Any]:
+    lead_id = None
+    try:
+        lead_id = lead["id"]
+        profile = await db.get_company_profile(lead_id)
+        if not profile:
+            return {"lead_id": lead_id, "generated": False, "reason": "no completed research"}
+
+        pain_points = await db.get_pain_points(profile["id"])
+        if not pain_points:
+            return {"lead_id": lead_id, "generated": False, "reason": "no pain points identified yet"}
+
+        opportunities = await db.get_business_opportunities(profile["id"])
+        solutions = await db.get_solution_recommendations(profile["id"])
+
+        result: AgentResult = await _followup_agent.run(
+            lead, pain_points, opportunities, solutions, step,
+            previous_bodies=previous_bodies, latest_reply_intent=latest_reply_intent,
+        )
+        if result.status != "ok" or not result.data.get("generated"):
+            return {"lead_id": lead_id, "generated": False, "reason": result.reason or "no pain points"}
+
+        return {"lead_id": lead_id, **result.data}
+
+    except Exception as exc:
+        logger.error("Follow-up agent crashed for lead %s (step %s): %s", lead_id, step, exc, exc_info=True)
+        return {"lead_id": lead_id, "generated": False, "reason": str(exc)}

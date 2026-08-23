@@ -563,3 +563,61 @@ async def test_marketing_agent_handles_none_lead(clean_db):
     result = await orch_module.run_marketing_agent(None)
     assert result["status"] == "FAILED"
     assert result["lead_id"] is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# run_followup_agent (Phase 4) — separate entry point for follow-up message
+# generation. Requires pain points to already exist. Does not touch any test/
+# behavior above.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _StubAgentFollowUp:
+    """Matches FollowUpAgent.run's signature:
+    (lead, pain_points, opportunities, solutions, step, previous_bodies=None, latest_reply_intent=None)."""
+    def __init__(self, result: AgentResult):
+        self._result = result
+
+    async def run(self, lead, pain_points, opportunities, solutions, step, previous_bodies=None, latest_reply_intent=None):
+        return self._result
+
+
+class _CrashingFollowUpAgent:
+    async def run(self, lead, pain_points, opportunities, solutions, step, previous_bodies=None, latest_reply_intent=None):
+        raise RuntimeError("simulated followup agent crash")
+
+
+async def test_run_followup_agent_no_profile_returns_not_generated(clean_db):
+    from backend.intelligence.orchestrator import run_followup_agent
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "No Profile Co"})
+    lead = await db.get_lead_by_id(lead_id)
+
+    result = await run_followup_agent(dict(lead), step=2)
+    assert result["generated"] is False
+    assert result["lead_id"] == lead_id
+
+
+async def test_run_followup_agent_generates_grounded_content(clean_db, monkeypatch):
+    from backend.intelligence import followup_agent as fa_module
+    from backend.intelligence.orchestrator import run_followup_agent
+
+    async def no_llm(*args, **kwargs):
+        return None
+    monkeypatch.setattr(fa_module, "_generate_fragments_llm", no_llm)
+
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Grounded Co"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    await db.replace_pain_points(profile_id, [{"title": "No booking system", "confidence": 0.8}])
+    lead = await db.get_lead_by_id(lead_id)
+
+    result = await run_followup_agent(dict(lead), step=2)
+    assert result["generated"] is True
+    assert result["email_body"]
+    assert result["whatsapp_body"]
+
+
+async def test_run_followup_agent_never_raises_on_bad_lead():
+    from backend.intelligence.orchestrator import run_followup_agent
+    result = await run_followup_agent({"id": 999999}, step=2)
+    assert result["generated"] is False
