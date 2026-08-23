@@ -16,6 +16,7 @@ export const STATUS_BADGE = {
   SENT:           'badge-sent',
   REPLIED:        'badge-replied',
   SKIPPED:        'badge-skipped',
+  DO_NOT_CONTACT: 'badge bg-rose-600/20 text-rose-400 border border-rose-600/30',
   FAILED:         'badge-failed',
 }
 

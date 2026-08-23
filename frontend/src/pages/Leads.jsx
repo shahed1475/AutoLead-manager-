@@ -13,7 +13,7 @@ import { useFocusTrap } from '../hooks/useFocusTrap'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 
-const STATUSES = ['', 'PENDING', 'SENT', 'REPLIED', 'SKIPPED']
+const STATUSES = ['', 'PENDING', 'SENT', 'REPLIED', 'SKIPPED', 'DO_NOT_CONTACT']
 const CHANNELS = ['', 'EMAIL', 'WHATSAPP', 'BOTH']
 const SCORES   = ['', 'HOT', 'WARM', 'COLD']
 
@@ -39,6 +39,10 @@ const STATUS_BTN = {
   SKIPPED: {
     base: 'border-slate-700/50 text-slate-500',
     active: 'border-red-500/50 bg-red-500/15 text-red-300',
+  },
+  DO_NOT_CONTACT: {
+    base: 'border-slate-700/50 text-slate-500',
+    active: 'border-rose-600/50 bg-rose-600/15 text-rose-300',
   },
 }
 
