@@ -97,6 +97,8 @@ async def approve_draft(reply_id: int):
     lead = await db.get_lead_by_id(lead_id) if lead_id else None
     if not lead or not lead.get("email"):
         raise HTTPException(422, "Lead has no email address to send the reply to")
+    if (lead.get("status") or "").upper() == "DO_NOT_CONTACT":
+        raise HTTPException(400, "Lead is marked DO_NOT_CONTACT — cannot send reply")
 
     try:
         await send_reply_email(lead["email"], reply.get("draft_subject") or "", reply.get("draft_body") or "")

@@ -116,3 +116,42 @@ async def test_get_leads_due_for_stage_excludes_do_not_contact(clean_db):
     due = await db.get_leads_due_for_stage(2)
 
     assert all(row["id"] != lead_id for row in due)
+
+
+async def test_check_followups_skips_stale_snapshot_do_not_contact_lead(clean_db, monkeypatch):
+    from backend import scheduler as scheduler_module
+    from unittest.mock import AsyncMock
+    import asyncio
+    db = clean_db
+    lead_id = await db.create_lead({
+        "business_name": "Stale Sched Co", "email": "stalesched@company.com",
+        "status": "DO_NOT_CONTACT", "channel": "EMAIL",
+    })
+    await db.update_lead(lead_id, {
+        "follow_up_1_sent_at": "2000-01-01 00:00:00", "ai_follow_up_2": "stored followup text",
+    })
+    fresh_lead = await db.get_lead_by_id(lead_id)
+    stale_row = {**fresh_lead, "status": "SENT"}
+
+    async def fake_due(stage, limit=50):
+        return [stale_row] if stage == 2 else []
+    monkeypatch.setattr(db, "get_leads_due_for_stage", fake_due)
+    email_mock = AsyncMock()
+    monkeypatch.setattr(scheduler_module.email_sender, "send_followup_email", email_mock)
+
+    log_queue = asyncio.Queue()
+    results = await scheduler_module.check_followups(log_queue, db, {})
+
+    assert results["sent"] == 0
+    email_mock.assert_not_called()
+
+
+async def test_mark_lead_replied_does_not_clear_do_not_contact(clean_db):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Sticky Co", "status": "DO_NOT_CONTACT"})
+
+    ok = await db.mark_lead_replied(lead_id)
+
+    assert ok is True
+    lead = await db.get_lead_by_id(lead_id)
+    assert lead["status"] == "DO_NOT_CONTACT"

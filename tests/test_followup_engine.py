@@ -190,3 +190,62 @@ async def test_both_channel_lead_gets_channel_specific_bodies(clean_db, monkeypa
     whatsapp_body = whatsapp_sender_mock.calls[0]["ai_followup_msg"]
     assert email_body != whatsapp_body
     assert len(whatsapp_body) < len(email_body)
+
+
+async def test_stale_batch_snapshot_does_not_bypass_fresh_status_check(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({
+        "business_name": "Stale Snapshot Co", "email": "stale@company.com",
+        "status": "DO_NOT_CONTACT", "channel": "EMAIL",
+    })
+    await db.create_message({
+        "lead_id": lead_id, "sequence_step": 2, "message_type": "followup",
+        "status": "PENDING", "body": "old body", "scheduled_for": "2000-01-01 00:00:00",
+    })
+
+    real_due = await db.get_due_followup_messages(limit=100)
+    stale_due = [{**row, "lead_status": "SENT"} for row in real_due]
+
+    async def fake_get_due(limit=100):
+        return stale_due
+    monkeypatch.setattr(db, "get_due_followup_messages", fake_get_due)
+
+    sender = _RecordingSender()
+    monkeypatch.setattr(followup_engine, "email_sender", sender)
+
+    results = await followup_engine.process_followup_queue()
+
+    assert sender.calls == []
+    assert results["sent"] == 0
+    msg = (await db.get_messages(lead_id))[0]
+    assert msg["status"] == "CANCELLED"
+
+
+async def test_already_cancelled_message_never_resurrected_to_sent(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({
+        "business_name": "Cancelled Msg Co", "email": "cancelled@company.com",
+        "status": "SENT", "channel": "EMAIL",
+    })
+    msg_id = await db.create_message({
+        "lead_id": lead_id, "sequence_step": 2, "message_type": "followup",
+        "status": "PENDING", "body": "old body", "scheduled_for": "2000-01-01 00:00:00",
+    })
+
+    real_due = await db.get_due_followup_messages(limit=100)
+    async def fake_get_due(limit=100):
+        return real_due
+    monkeypatch.setattr(db, "get_due_followup_messages", fake_get_due)
+
+    # Simulate a cancellation landing between the snapshot and this message's turn
+    # (e.g. an opt-out processed by a concurrent reply-check background task).
+    await db.update_message(msg_id, {"status": "CANCELLED"})
+
+    sender = _RecordingSender()
+    monkeypatch.setattr(followup_engine, "email_sender", sender)
+
+    results = await followup_engine.process_followup_queue()
+
+    assert sender.calls == []
+    msg = (await db.get_messages(lead_id))[0]
+    assert msg["status"] == "CANCELLED"

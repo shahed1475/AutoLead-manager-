@@ -122,3 +122,20 @@ async def test_approve_422_when_lead_has_no_email(clean_db, monkeypatch):
         resp = await client.post(f"/api/replies/{reply_id}/approve")
 
     assert resp.status_code == 422
+
+
+async def test_approve_400_when_lead_is_do_not_contact(clean_db, monkeypatch):
+    db = clean_db
+    lead_id, reply_id = await _draft_reply(db, lead_overrides={"status": "DO_NOT_CONTACT"})
+
+    import backend.routers.replies as replies_router
+    sender = _RecordingReplySender()
+    monkeypatch.setattr(replies_router, "send_reply_email", sender)
+
+    from backend.main import app
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(f"/api/replies/{reply_id}/approve")
+
+    assert resp.status_code == 400
+    assert sender.calls == []

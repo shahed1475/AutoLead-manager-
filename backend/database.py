@@ -1168,6 +1168,11 @@ async def delete_all_leads(status: Optional[str] = None) -> int:
 
 async def mark_lead_replied(lead_id: int) -> bool:
     async with get_db() as conn:
+        lead = await conn.fetchrow("SELECT status FROM leads WHERE id = $1", lead_id)
+        if not lead:
+            return False
+        if (lead["status"] or "").upper() == "DO_NOT_CONTACT":
+            return True
         result = await conn.execute(
             "UPDATE leads SET status = 'REPLIED' WHERE id = $1", lead_id
         )
@@ -1889,6 +1894,12 @@ async def get_messages(lead_id: int) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+async def get_message_by_id(message_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow("SELECT * FROM messages WHERE id = $1", message_id)
+    return dict(row) if row else None
+
+
 async def delete_lead_messages(lead_id: int) -> int:
     async with get_db() as conn:
         result = await conn.execute("DELETE FROM messages WHERE lead_id = $1", lead_id)
@@ -1958,6 +1969,19 @@ async def update_reply_draft(reply_id: int, data: Dict[str, Any]) -> None:
             f"UPDATE replies SET {set_clause} WHERE id = ${len(clean) + 1}",
             *clean.values(), reply_id,
         )
+
+
+async def discard_pending_drafts_for_lead(lead_id: int) -> int:
+    """Discard every PENDING_APPROVAL draft for a lead — called on opt-out so a
+    stale draft can never be approved and sent after the lead has suppressed
+    future contact."""
+    async with get_db() as conn:
+        result = await conn.execute(
+            """UPDATE replies SET draft_status = 'DISCARDED'
+               WHERE lead_id = $1 AND draft_status = 'PENDING_APPROVAL'""",
+            lead_id,
+        )
+    return _rows_affected(result)
 
 
 async def update_reply_intelligence(reply_id: int, data: Dict[str, Any]) -> None:

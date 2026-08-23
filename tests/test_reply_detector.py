@@ -105,3 +105,19 @@ async def test_interested_reply_does_not_cancel_followups(clean_db, monkeypatch)
     assert await db.count_pending_followups() == 1
     lead = await db.get_lead_by_id(lead_id)
     assert lead["status"] == "REPLIED"
+
+
+async def test_opt_out_discards_other_pending_drafts_for_lead(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Two Reply Co", "email": "lead@company.com", "status": "SENT"})
+    earlier_reply_id = await db.create_reply({"lead_id": lead_id, "reply_text": "tell me more", "detected_intent": "interested"})
+    await db.set_reply_draft(earlier_reply_id, "Re: hello", "Earlier draft body")
+
+    _patch_imap(monkeypatch, [_imap_message(body="actually, stop contacting me")])
+    _patch_legacy_intent(monkeypatch, "unknown")
+    _patch_rich_intent(monkeypatch, "OPT_OUT", "SUPPRESS_OUTREACH", confidence=1.0)
+
+    await reply_detector.check_for_replies(_CONFIG)
+
+    earlier_reply = await db.get_reply_by_id(earlier_reply_id)
+    assert earlier_reply["draft_status"] == "DISCARDED"

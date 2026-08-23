@@ -574,6 +574,15 @@ async def check_followups(
                 results["skipped"] += 1
                 continue
 
+            # ── Fresh re-check immediately before sending — get_leads_due_for_stage
+            # was queried once at the top of this stage's loop; re-verify against
+            # live DB state right before the send (mirrors _dispatch_send's guard).
+            fresh_lead = await db.get_lead_by_id(lead_id)
+            if not fresh_lead or (fresh_lead.get("status") or "").upper() in ("REPLIED", "SKIPPED", "DO_NOT_CONTACT"):
+                await _qlog(log_queue, f"   ⏭️  Skip {biz} — status changed since batch was queued")
+                results["skipped"] += 1
+                continue
+
             # ── Send via lead's original channel ───────────────────────────────
             # Temporarily override the followup message field so senders pick it up
             send_lead = {**lead, "ai_followup_msg": msg_text}

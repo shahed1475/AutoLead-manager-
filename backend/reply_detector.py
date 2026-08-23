@@ -428,9 +428,10 @@ async def check_for_replies(
                 if rich["intent"] == "OPT_OUT":
                     await db.update_lead(lead_id, {"status": "DO_NOT_CONTACT"})
                     cancelled = await db.cancel_pending_followups(lead_id)
+                    discarded = await db.discard_pending_drafts_for_lead(lead_id)
                     await _log(
                         f"Reply detector: {biz} → marked DO_NOT_CONTACT (opt-out detected), "
-                        f"{cancelled} pending follow-up(s) cancelled"
+                        f"{cancelled} pending follow-up(s) cancelled, {discarded} pending draft(s) discarded"
                     )
                 elif action == "STOP_CAMPAIGN":
                     cancelled = await db.cancel_pending_followups(lead_id)

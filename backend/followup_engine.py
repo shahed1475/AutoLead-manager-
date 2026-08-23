@@ -253,6 +253,25 @@ async def process_followup_queue(
         if not subject:
             subject = f"Following up — {biz}"
 
+        # ── 3.5 Fresh re-check immediately before sending. The terminal-status
+        # check at the top of this loop reads a one-time batch snapshot taken
+        # before the loop started; a lead can opt out (or this exact message
+        # can be cancelled by that opt-out) while earlier messages in the same
+        # batch are still being processed. Re-verify against live DB state
+        # right before the send actually happens.
+        fresh_lead = await db.get_lead_by_id(lead_id)
+        fresh_msg  = await db.get_message_by_id(msg_id)
+        if (
+            not fresh_lead
+            or (fresh_lead.get("status") or "").upper() in _TERMINAL_STATUSES
+            or not fresh_msg
+            or fresh_msg.get("status") != "PENDING"
+        ):
+            await db.update_message(msg_id, {"status": "CANCELLED"})
+            await _log(f"Follow-up engine: {biz} {label} → CANCELLED (status changed since batch was queued)")
+            results["cancelled"] += 1
+            continue
+
         # ── 4. Build send payload ─────────────────────────────────────────────
         send_payload: Dict[str, Any] = {
             "id":               lead_id,
