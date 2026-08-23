@@ -28,6 +28,7 @@ from . import ai_brain
 from . import database as db
 from . import email_sender, whatsapp_sender
 from .config import get_settings
+from .intelligence.orchestrator import run_followup_agent
 
 logger   = logging.getLogger(__name__)
 settings = get_settings()
@@ -102,11 +103,16 @@ async def process_followup_queue(
     Find and deliver all overdue follow-up messages.
 
     For each PENDING message whose scheduled_for ≤ NOW():
-      1. Cancel if lead is REPLIED / SKIPPED.
-      2. Check for duplicate send (24 h window + first-50-char body match).
-         If duplicate → regenerate body via ai_brain before sending.
-      3. Send via lead's channel (EMAIL / WHATSAPP / BOTH).
-      4. Mark message SENT, update legacy follow_up_N_sent_at on lead,
+      1. Cancel if lead is REPLIED / SKIPPED / DO_NOT_CONTACT.
+      2. Resolve body via the grounded Follow-up Intelligence Agent
+         (orchestrator.run_followup_agent) when the lead has a completed
+         evidence chain; otherwise fall back to the legacy pre-written column.
+      3. For the legacy (ungrounded) path only: check for duplicate send
+         (24 h window + first-50-char body match) and regenerate via
+         ai_brain if needed — grounded content is structurally guaranteed
+         not to repeat, so this guard is skipped for it.
+      4. Send via lead's channel (EMAIL / WHATSAPP / BOTH).
+      5. Mark message SENT, update legacy follow_up_N_sent_at on lead,
          and log campaign action.
 
     Returns
@@ -145,50 +151,91 @@ async def process_followup_queue(
         biz         = msg.get("business_name") or f"Lead {lead_id}"
         label       = _STEP_LABEL.get(step, f"Step-{step}")
         lead_status = (msg.get("lead_status") or "").upper()
+        channel     = (msg.get("channel") or "EMAIL").upper()
 
         results["processed"] += 1
 
-        # ── 1. Cancel if lead no longer needs follow-ups ──────────────────────
+        # ── 1. Cancel if lead no longer needs follow-ups (includes DO_NOT_CONTACT
+        # — this must run before anything is sent) ─────────────────────────────
         if lead_status in _TERMINAL_STATUSES:
             await db.update_message(msg_id, {"status": "CANCELLED"})
             await _log(f"Follow-up engine: {biz} {label} → CANCELLED (lead is {lead_status})")
             results["cancelled"] += 1
             continue
 
-        # ── 2. Resolve message body (stored → lead column → ai_brain) ─────────
-        body    = (msg.get("msg_body")    or "").strip()
-        subject = (msg.get("msg_subject") or msg.get("ai_email_subject") or "").strip()
-
-        # Fallback: use lead column if messages.body wasn't pre-populated
-        if not body:
+        # ── 2. Resolve message body — grounded Follow-up Intelligence Agent
+        # first (considers pain point, prior message, prior follow-up, and the
+        # lead's latest reply intent; structurally never repeats a prior body).
+        # Falls back to the legacy pre-written column when the lead has no
+        # completed sales-intelligence research (no evidence chain to ground on).
+        subject     = (msg.get("msg_subject") or msg.get("ai_email_subject") or "").strip()
+        legacy_body = (msg.get("msg_body") or "").strip()
+        if not legacy_body:
             if step == 2:
-                body = (msg.get("ai_follow_up_1") or msg.get("ai_followup_msg") or "").strip()
+                legacy_body = (msg.get("ai_follow_up_1") or msg.get("ai_followup_msg") or "").strip()
             elif step == 3:
-                body = (msg.get("ai_follow_up_2") or "").strip()
+                legacy_body = (msg.get("ai_follow_up_2") or "").strip()
 
-        # ── 3. Duplicate detection (24 h + body similarity) ───────────────────
-        recent_info  = await db.get_recent_send_info(lead_id, hours=_RECENT_HOURS)
-        last_body    = (recent_info.get("last_body") or "").strip()
-        is_duplicate = (
-            recent_info["sent_recently"] or
-            (body and last_body and body[:50] == last_body[:50])
-        )
+        body = legacy_body
+        grounded = False
+        try:
+            prior_sent = await db.get_messages(lead_id)
+            previous_bodies = [
+                (m.get("body") or "").strip() for m in prior_sent
+                if m.get("status") == "SENT" and m.get("sequence_step") != step
+            ]
+            initial_msgs = await db.get_generated_messages(lead_id)
+            previous_bodies += [
+                (m.get("message") or "").strip() for m in initial_msgs
+                if m.get("channel") == "EMAIL" and m.get("approval_status") == "APPROVED"
+            ]
+            latest_reply_intent = None
+            recent_replies = await db.get_replies(lead_id)
+            if recent_replies:
+                latest_reply_intent = recent_replies[0].get("rich_intent")
 
-        if is_duplicate:
-            await _log(
-                f"Follow-up engine: {biz} {label} → regenerating "
-                f"({'sent recently' if recent_info['sent_recently'] else 'body duplicate'})"
+            lead_row = await db.get_lead_by_id(lead_id)
+            fu_result = (
+                await run_followup_agent(
+                    dict(lead_row), step, previous_bodies=previous_bodies,
+                    latest_reply_intent=latest_reply_intent,
+                )
+                if lead_row else {"generated": False}
             )
-            try:
-                lead_row = await db.get_lead_by_id(lead_id)
-                if lead_row:
-                    msgs = await ai_brain.generate_all_messages(dict(lead_row))
-                    fu_key = f"follow_up_{step - 1}"   # step 2 → follow_up_1, etc.
-                    body   = (msgs.get(fu_key) or msgs.get("follow_up_1") or "").strip()
-                    if body:
-                        await db.update_message(msg_id, {"body": body})
-            except Exception as exc:
-                logger.warning("Follow-up regen failed for lead %d: %s", lead_id, exc)
+
+            if fu_result.get("generated"):
+                body = fu_result["whatsapp_body"] if channel == "WHATSAPP" else fu_result["email_body"]
+                subject = fu_result.get("subject") or subject
+                grounded = True
+                await db.update_message(msg_id, {"body": body, "subject": subject})
+        except Exception as exc:
+            logger.warning("Follow-up intelligence failed for lead %d, step %d: %s", lead_id, step, exc)
+
+        # ── 3. Duplicate/recency guard — only for the legacy (ungrounded) path,
+        # since grounded content is structurally guaranteed not to repeat. ─────
+        if not grounded:
+            recent_info  = await db.get_recent_send_info(lead_id, hours=_RECENT_HOURS)
+            last_body    = (recent_info.get("last_body") or "").strip()
+            is_duplicate = (
+                recent_info["sent_recently"] or
+                (body and last_body and body[:50] == last_body[:50])
+            )
+            if is_duplicate:
+                await _log(
+                    f"Follow-up engine: {biz} {label} → regenerating "
+                    f"({'sent recently' if recent_info['sent_recently'] else 'body duplicate'})"
+                )
+                try:
+                    lead_row = await db.get_lead_by_id(lead_id)
+                    if lead_row:
+                        msgs = await ai_brain.generate_all_messages(dict(lead_row))
+                        fu_key = f"follow_up_{step - 1}"   # step 2 → follow_up_1, etc.
+                        regen  = (msgs.get(fu_key) or msgs.get("follow_up_1") or "").strip()
+                        if regen:
+                            body = regen
+                            await db.update_message(msg_id, {"body": body})
+                except Exception as exc:
+                    logger.warning("Follow-up regen failed for lead %d: %s", lead_id, exc)
 
         if not body:
             msg_err = f"{biz} {label}: empty body after all fallbacks — skipping"
@@ -201,7 +248,6 @@ async def process_followup_queue(
             subject = f"Following up — {biz}"
 
         # ── 4. Build send payload ─────────────────────────────────────────────
-        channel = (msg.get("channel") or "EMAIL").upper()
         send_payload: Dict[str, Any] = {
             "id":               lead_id,
             "business_name":    biz,
