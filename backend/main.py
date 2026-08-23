@@ -22,6 +22,7 @@ from .intelligence import intelligence_enabled
 from .scheduler import start_scheduler, stop_scheduler, get_scheduler_status
 from .routers import leads, campaigns, ai, scraper_router, settings_router, status, intelligence
 from .routers import marketing as marketing_router
+from .routers import pipeline as pipeline_router
 from .routers import auth_router
 from .routers import inbox as inbox_router
 from .routers import followups as followups_router
@@ -105,6 +106,7 @@ app.include_router(settings_router.router, dependencies=_authed)
 app.include_router(status.router,          dependencies=_authed)
 app.include_router(intelligence.router,    dependencies=_authed)
 app.include_router(marketing_router.router, dependencies=_authed)
+app.include_router(pipeline_router.router,  dependencies=_authed)
 
 
 # ── Log line formatter (shared by SSE stream) ─────────────────────────────────

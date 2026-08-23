@@ -344,6 +344,11 @@ class StatusUpdate(BaseModel):
     status: LeadStatus
 
 
+class StageUpdate(BaseModel):
+    to_status: LeadStatus
+    reason:    Optional[str] = None
+
+
 class ScraperRequest(BaseModel):
     query:       str
     city:        str

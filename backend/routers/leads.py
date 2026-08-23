@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import Response
 from .. import database as db
-from ..models import Lead, LeadCreate, LeadUpdate, LeadListResponse, StatusUpdate
+from ..models import Lead, LeadCreate, LeadUpdate, LeadListResponse, StatusUpdate, StageUpdate
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +136,42 @@ async def patch_status(lead_id: int, payload: StatusUpdate):
     if not updated:
         raise HTTPException(404, "Lead not found")
     return await db.get_lead_by_id(lead_id)
+
+
+# Manual moves may only target a real, single-valued board stage. NEW and
+# CONTACTED are display-only aggregates (NEW groups PENDING/ENRICHED/SCORED/
+# MESSAGES_READY) with no single underlying status to move a lead "back" to
+# other than their canonical member — PENDING and SENT respectively. ENRICHED/
+# SCORED/MESSAGES_READY/SKIPPED/DO_NOT_CONTACT are reachable only through their
+# own dedicated flows (scoring, opt-out), never through this endpoint.
+_MANUAL_STAGE_TARGETS = frozenset({
+    "PENDING", "SENT", "REPLIED", "INTERESTED", "MEETING", "PROPOSAL", "WON", "LOST",
+})
+
+
+@router.post("/{lead_id}/stage")
+async def move_lead_stage(lead_id: int, payload: StageUpdate):
+    """Manual deal-stage move (drag-and-drop on the pipeline board, or a
+    button on the lead detail drawer). Rejects a DO_NOT_CONTACT lead — an
+    opted-out lead cannot be pulled back into an active pipeline stage
+    through this endpoint."""
+    lead = await db.get_lead_by_id(lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    if (lead.get("status") or "").upper() == "DO_NOT_CONTACT":
+        raise HTTPException(400, "Lead is marked DO_NOT_CONTACT — cannot move to a pipeline stage")
+    if payload.to_status.value not in _MANUAL_STAGE_TARGETS:
+        raise HTTPException(400, f"{payload.to_status.value} is not a valid manual stage target")
+    await db.set_lead_stage(lead_id, payload.to_status.value, "operator", payload.reason)
+    return await db.get_lead_by_id(lead_id)
+
+
+@router.get("/{lead_id}/stage-history")
+async def lead_stage_history(lead_id: int):
+    lead = await db.get_lead_by_id(lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    return await db.get_stage_history(lead_id)
 
 
 @router.delete("", status_code=200)
