@@ -571,16 +571,6 @@ async def test_marketing_agent_handles_none_lead(clean_db):
 # behavior above.
 # ─────────────────────────────────────────────────────────────────────────────
 
-class _StubAgentFollowUp:
-    """Matches FollowUpAgent.run's signature:
-    (lead, pain_points, opportunities, solutions, step, previous_bodies=None, latest_reply_intent=None)."""
-    def __init__(self, result: AgentResult):
-        self._result = result
-
-    async def run(self, lead, pain_points, opportunities, solutions, step, previous_bodies=None, latest_reply_intent=None):
-        return self._result
-
-
 class _CrashingFollowUpAgent:
     async def run(self, lead, pain_points, opportunities, solutions, step, previous_bodies=None, latest_reply_intent=None):
         raise RuntimeError("simulated followup agent crash")
@@ -617,7 +607,27 @@ async def test_run_followup_agent_generates_grounded_content(clean_db, monkeypat
     assert result["whatsapp_body"]
 
 
-async def test_run_followup_agent_never_raises_on_bad_lead():
+async def test_run_followup_agent_never_raises_on_malformed_lead(clean_db):
+    """A lead dict with no 'id' key raises KeyError inside run_followup_agent's
+    try block — this genuinely exercises the except-Exception guarantee,
+    independent of DB state (the previous version of this test only passed
+    because a shared-fixture ordering quirk left the test DB uninitialized)."""
     from backend.intelligence.orchestrator import run_followup_agent
-    result = await run_followup_agent({"id": 999999}, step=2)
+    result = await run_followup_agent({}, step=2)
     assert result["generated"] is False
+    assert result["lead_id"] is None
+
+
+async def test_run_followup_agent_returns_not_generated_on_agent_crash(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Crashing Followup Co"})
+    profile_id = await db.upsert_company_profile(lead_id, {"status": "DONE"})
+    await db.replace_pain_points(profile_id, [{"title": "X", "confidence": 0.5}])
+    lead = await db.get_lead_by_id(lead_id)
+
+    monkeypatch.setattr(orch_module, "_followup_agent", _CrashingFollowUpAgent())
+
+    from backend.intelligence.orchestrator import run_followup_agent
+    result = await run_followup_agent(dict(lead), step=2)
+    assert result["generated"] is False
+    assert result["lead_id"] == lead_id
