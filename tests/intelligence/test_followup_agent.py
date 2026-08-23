@@ -121,3 +121,32 @@ async def test_no_solution_match_never_names_a_service(monkeypatch):
 
     result = await agent.run(lead, [_pain_point()], [], [], step=2)
     assert result.data["service_name"] is None
+
+
+async def test_maybe_later_step_2_and_step_3_differ(monkeypatch):
+    _patch_no_llm(monkeypatch)
+    agent = FollowUpAgent()
+    lead = {"id": 1, "business_name": "Acme Dental"}
+
+    r2 = await agent.run(
+        lead, [_pain_point()], [_opportunity()], [_solution()], step=2,
+        latest_reply_intent="MAYBE_LATER",
+    )
+    r3 = await agent.run(
+        lead, [_pain_point()], [_opportunity()], [_solution()], step=3,
+        latest_reply_intent="MAYBE_LATER",
+    )
+    assert r2.data["email_body"] != r3.data["email_body"]
+
+
+async def test_heuristic_collision_fallback_produces_different_body(monkeypatch):
+    _patch_no_llm(monkeypatch)
+    agent = FollowUpAgent()
+    lead = {"id": 1, "business_name": "Acme Dental"}
+
+    first = await agent.run(lead, [_pain_point()], [_opportunity()], [_solution()], step=2)
+    second = await agent.run(
+        lead, [_pain_point()], [_opportunity()], [_solution()], step=2,
+        previous_bodies=[first.data["email_body"]],
+    )
+    assert second.data["email_body"] != first.data["email_body"]

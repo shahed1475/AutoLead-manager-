@@ -63,11 +63,19 @@ _STEP_ANGLE_INSTRUCTION: Dict[int, str] = {
     ),
 }
 
-_MAYBE_LATER_ANGLE_INSTRUCTION = (
-    "The lead previously said they might be interested later. Open by "
-    "acknowledging that gently (no pressure), then add ONE new, specific "
-    "observation about the pain point they haven't heard from you before."
-)
+_MAYBE_LATER_ANGLE_INSTRUCTION: Dict[int, str] = {
+    2: (
+        "The lead previously said they might be interested later. Open by "
+        "acknowledging that gently (no pressure), then add ONE new, specific "
+        "observation about the pain point they haven't heard from you before."
+    ),
+    3: (
+        "The lead previously said they might be interested later, and this is "
+        "the final note in the sequence. Open with a brief, low-pressure "
+        "acknowledgment, then reference the customer-facing impact of the pain "
+        "point — keep it short."
+    ),
+}
 
 # Heuristic (non-LLM) opening templates — lexically distinct per step by
 # construction, and distinct from marketing_agent's initial-outreach opening
@@ -76,7 +84,15 @@ _STEP_HEURISTIC_OPENING: Dict[int, str] = {
     2: "Following up on my note about {biz} — one more thing I noticed: {pain_point}.",
     3: "Last note from me — {pain_point} still stood out when I checked back on {biz}.",
 }
-_MAYBE_LATER_HEURISTIC_OPENING = "No rush at all — one more thought on {biz}: {pain_point}."
+_MAYBE_LATER_HEURISTIC_OPENING: Dict[int, str] = {
+    2: "No rush at all — one more thought on {biz}: {pain_point}.",
+    3: "Totally understand if now isn't the time — one last thought on {biz}: {pain_point}.",
+}
+# Defensive fallback if the heuristic candidate still collides with a previous
+# body (belt-and-suspenders — should be unreachable given the step-keyed
+# templates above are always distinct, but this makes the no-repeat guarantee
+# structural rather than contingent on that staying true as templates evolve).
+_COLLISION_FALLBACK_OPENING = "Circling back on {biz} — {pain_point} is still worth solving."
 
 
 def _normalize_prefix(text: str, length: int = 60) -> str:
@@ -123,7 +139,8 @@ class FollowUpAgent:
         confidence = max(0.0, min(1.0, float(strongest_pp.get("confidence") or 0.0)))
 
         is_maybe_later = latest_reply_intent == "MAYBE_LATER"
-        angle_instruction = _MAYBE_LATER_ANGLE_INSTRUCTION if is_maybe_later else _STEP_ANGLE_INSTRUCTION.get(step, _STEP_ANGLE_INSTRUCTION[2])
+        angle_map = _MAYBE_LATER_ANGLE_INSTRUCTION if is_maybe_later else _STEP_ANGLE_INSTRUCTION
+        angle_instruction = angle_map.get(step, angle_map[2])
 
         fragments = await _generate_fragments_llm(
             pain_point_text, evidence_snippet, business_impact, solution_desc, benefit_text,
@@ -142,13 +159,15 @@ class FollowUpAgent:
         if fragments is None:
             fragments = _heuristic_fragments(pain_point_text, business_impact, solution_desc, benefit_text, business_name)
             biz = business_name or "your business"
-            if is_maybe_later:
-                opening = _MAYBE_LATER_HEURISTIC_OPENING.format(biz=biz, pain_point=_strip_period(pain_point_text))
-            else:
-                opening_template = _STEP_HEURISTIC_OPENING.get(step, _STEP_HEURISTIC_OPENING[2])
-                opening = opening_template.format(biz=biz, pain_point=_strip_period(pain_point_text))
+            opening_map = _MAYBE_LATER_HEURISTIC_OPENING if is_maybe_later else _STEP_HEURISTIC_OPENING
+            opening_template = opening_map.get(step, opening_map[2])
+            opening = opening_template.format(biz=biz, pain_point=_strip_period(pain_point_text))
             fragments = {**fragments, "opening": opening}
             email_body = _assemble_email(fragments["opening"], fragments["solution_benefit"], fragments["cta"])
+            if _collides_with_previous(email_body, previous_bodies):
+                fallback_opening = _COLLISION_FALLBACK_OPENING.format(biz=biz, pain_point=_strip_period(pain_point_text))
+                fragments = {**fragments, "opening": fallback_opening}
+                email_body = _assemble_email(fragments["opening"], fragments["solution_benefit"], fragments["cta"])
             source = "heuristic"
 
         whatsapp_body = _assemble_whatsapp(fragments["opening"], fragments["solution_benefit"], fragments["cta"], email_body)
