@@ -529,6 +529,17 @@ CREATE TABLE IF NOT EXISTS generated_messages (
     reviewed_at          TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_generated_messages_lead ON generated_messages (lead_id);
+
+CREATE TABLE IF NOT EXISTS lead_stage_history (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id      INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    from_status  TEXT,
+    to_status    TEXT NOT NULL,
+    changed_by   TEXT NOT NULL,
+    reason       TEXT,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_lead_stage_history_lead ON lead_stage_history (lead_id);
 """
 
 
@@ -682,7 +693,10 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
     await raw.execute("""
         UPDATE leads SET status = 'PENDING'
         WHERE status IS NULL
-           OR status NOT IN ('PENDING','SENT','REPLIED','SKIPPED','MESSAGES_READY','ENRICHED','SCORED','DO_NOT_CONTACT')
+           OR status NOT IN (
+               'PENDING','SENT','REPLIED','SKIPPED','MESSAGES_READY','ENRICHED','SCORED','DO_NOT_CONTACT',
+               'INTERESTED','MEETING','PROPOSAL','WON','LOST'
+           )
     """)
     await raw.execute("""
         UPDATE campaign_runs SET status = 'FAILED', stage = 'FAILED', finished_at = CURRENT_TIMESTAMP
@@ -1177,6 +1191,92 @@ async def mark_lead_replied(lead_id: int) -> bool:
             "UPDATE leads SET status = 'REPLIED' WHERE id = $1", lead_id
         )
     return _rows_affected(result) > 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CRM deal-stage pipeline — set_lead_stage is the single choke point for every
+# board-relevant status write (automatic from reply_detector.py, manual from
+# the pipeline router), so lead_stage_history can never drift from leads.status.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_BOARD_COLUMNS: Dict[str, List[str]] = {
+    "NEW":        ["PENDING", "ENRICHED", "SCORED", "MESSAGES_READY"],
+    "CONTACTED":  ["SENT"],
+    "REPLIED":    ["REPLIED"],
+    "INTERESTED": ["INTERESTED"],
+    "MEETING":    ["MEETING"],
+    "PROPOSAL":   ["PROPOSAL"],
+    "WON":        ["WON"],
+    "LOST":       ["LOST"],
+}
+
+
+async def set_lead_stage(
+    lead_id: int, to_status: str, changed_by: str, reason: Optional[str] = None,
+) -> bool:
+    """Atomically write leads.status and a lead_stage_history row. No-op
+    (returns False, writes nothing) if the lead doesn't exist or to_status
+    already equals the current status."""
+    async with transaction() as tx:
+        current = await tx.fetchrow("SELECT status FROM leads WHERE id = $1", lead_id)
+        if not current:
+            return False
+        from_status = current["status"]
+        if (from_status or "").upper() == to_status.upper():
+            return False
+        await tx.execute("UPDATE leads SET status = $1 WHERE id = $2", to_status, lead_id)
+        await tx.execute(
+            """INSERT INTO lead_stage_history (lead_id, from_status, to_status, changed_by, reason)
+               VALUES ($1, $2, $3, $4, $5)""",
+            lead_id, from_status, to_status, changed_by, reason,
+        )
+    return True
+
+
+async def get_stage_history(lead_id: int) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM lead_stage_history WHERE lead_id = $1 ORDER BY created_at DESC, id DESC",
+            lead_id,
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_board_leads() -> Dict[str, List[Dict[str, Any]]]:
+    """Every lead currently in one of the 8 board columns, grouped by column
+    name. days_in_stage is computed from the most recent lead_stage_history
+    row for that lead, or the lead's created_at if it has no history yet
+    (true for every pre-existing lead and every NEW/CONTACTED lead that has
+    never had an automatic or manual stage change)."""
+    all_statuses = [s for statuses in _BOARD_COLUMNS.values() for s in statuses]
+    placeholders = ", ".join(f"${i + 1}" for i in range(len(all_statuses)))
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            f"""SELECT l.*,
+                       (SELECT h.created_at FROM lead_stage_history h
+                        WHERE h.lead_id = l.id ORDER BY h.created_at DESC, h.id DESC LIMIT 1) AS last_stage_change
+                FROM leads l WHERE l.status IN ({placeholders})""",
+            *all_statuses,
+        )
+
+    board: Dict[str, List[Dict[str, Any]]] = {col: [] for col in _BOARD_COLUMNS}
+    status_to_col = {s: col for col, statuses in _BOARD_COLUMNS.items() for s in statuses}
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        lead = dict(row)
+        col = status_to_col.get((lead.get("status") or "").upper())
+        if not col:
+            continue
+        anchor_raw = lead.pop("last_stage_change", None) or lead.get("created_at")
+        try:
+            anchor = datetime.fromisoformat(str(anchor_raw).replace("Z", "+00:00"))
+            if anchor.tzinfo is None:
+                anchor = anchor.replace(tzinfo=timezone.utc)
+            lead["days_in_stage"] = max(0, (now - anchor).days)
+        except (ValueError, TypeError):
+            lead["days_in_stage"] = 0
+        board[col].append(lead)
+    return board
 
 
 async def find_lead_by_email(email: str) -> Optional[Dict[str, Any]]:
