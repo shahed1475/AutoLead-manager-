@@ -71,6 +71,12 @@ async def _send_one(lead_id: int, channel: str) -> dict:
         return {"lead_id": lead_id, "success": False, "error": "Lead not found"}
 
     channel    = channel.upper()
+
+    if (lead.get("status") or "").upper() == "DO_NOT_CONTACT":
+        msg = f"Lead {lead_id} is marked DO_NOT_CONTACT — send blocked"
+        await db.log_campaign_action(lead_id, channel, "SEND", False, msg)
+        return {"lead_id": lead_id, "success": False, "error": msg}
+
     has_email  = bool(lead.get("email"))
     has_phone  = bool(lead.get("phone"))
     errors: list[str] = []
@@ -514,6 +520,8 @@ async def send_followup(request: Request, lead_id: int, channel: str = Query("EM
     lead = await db.get_lead_by_id(lead_id)
     if not lead:
         raise HTTPException(404, "Lead not found")
+    if (lead.get("status") or "").upper() == "DO_NOT_CONTACT":
+        raise HTTPException(400, "Lead is marked DO_NOT_CONTACT — cannot send follow-up")
 
     channel  = channel.upper()
     sent_via = []

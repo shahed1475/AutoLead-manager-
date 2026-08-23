@@ -37,7 +37,7 @@ _STEP_DAYS:  Dict[int, int] = {2: 3, 3: 7}
 _STEP_LABEL: Dict[int, str] = {2: "Day-3", 3: "Day-7"}
 
 # Lead statuses that mean "stop the sequence"
-_TERMINAL_STATUSES = frozenset({"REPLIED", "SKIPPED"})
+_TERMINAL_STATUSES = frozenset({"REPLIED", "SKIPPED", "DO_NOT_CONTACT"})
 
 # Recency window for duplicate detection (hours)
 _RECENT_HOURS = 24

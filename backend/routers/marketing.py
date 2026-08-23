@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/leads", tags=["marketing"])
 # Same "never downgrade an already-progressed lead" convention used by
 # lead_scorer.py's score_lead() — approving a draft must not resurrect a
 # lead that already replied, was sent, or opted out.
-_NO_STATUS_ADVANCE = frozenset({"SENT", "REPLIED", "SKIPPED"})
+_NO_STATUS_ADVANCE = frozenset({"SENT", "REPLIED", "SKIPPED", "DO_NOT_CONTACT"})
 
 
 async def _get_lead_or_404(lead_id: int):
@@ -34,8 +34,8 @@ async def _get_lead_or_404(lead_id: int):
 
 
 def _assert_not_opted_out(lead: dict) -> None:
-    if (lead.get("status") or "").upper() == "SKIPPED":
-        raise HTTPException(400, "Lead has opted out (SKIPPED) — cannot queue or approve marketing messages")
+    if (lead.get("status") or "").upper() in ("SKIPPED", "DO_NOT_CONTACT"):
+        raise HTTPException(400, "Lead has opted out — cannot queue or approve marketing messages")
 
 
 async def _get_generated_message_or_404(lead_id: int, message_id: int) -> dict:
