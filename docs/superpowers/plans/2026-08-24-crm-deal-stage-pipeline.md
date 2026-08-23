@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - No existing `LeadStatus` value is renamed or removed. `PENDING`/`SENT`/`REPLIED`/`SKIPPED`/`DO_NOT_CONTACT` and every endpoint/query that depends on them keep working exactly as today.
-- `STOP_CAMPAIGN`'s existing behavior (in `reply_detector.py`) for a lead that never advanced past `REPLIED` must stay **byte-for-byte identical** to Phase 4's tested behavior — it still sets `SKIPPED`. Only leads that already reached `INTERESTED`/`MEETING`/`PROPOSAL` get the new `LOST` destination.
+- `STOP_CAMPAIGN`'s existing behavior (in `reply_detector.py`) for a lead already at `REPLIED` must stay **byte-for-byte identical** to Phase 4's tested behavior: `REPLIED` is itself in `_LOCKED_STATUSES`, so the lead is left at `REPLIED` unchanged (correction from an earlier draft of this plan, which incorrectly stated this path "sets SKIPPED" — verified against the real code and `test_not_interested_stop_campaign_does_not_downgrade_replied`). `SKIPPED` is still the correct destination for a lead in a non-locked, non-`DO_NOT_CONTACT` status (`PENDING`/`SENT`/`ENRICHED`/`SCORED`/`MESSAGES_READY`) — that part of Phase 4's behavior is unaffected by this plan. Only leads that already reached `INTERESTED`/`MEETING`/`PROPOSAL` get the new `LOST` destination.
 - Every board-relevant status write goes through `set_lead_stage()` — no other function/endpoint in this plan writes `leads.status` directly for any of the 5 new values.
 - A `DO_NOT_CONTACT` lead can never be manually moved into a board stage (`POST /{lead_id}/stage` rejects it) — mirrors the guard convention Phase 4 established everywhere else.
 - The startup status-normalization migration (`backend/database.py`, the `UPDATE leads SET status = 'PENDING' WHERE status NOT IN (...)` query) must allow-list all 5 new values, or any lead sitting in one of them reverts to `PENDING` on the next restart — this exact class of bug was the headline fix Phase 4 needed for `DO_NOT_CONTACT`.
@@ -409,11 +409,15 @@ async def test_stop_campaign_from_meeting_goes_to_lost(clean_db, monkeypatch):
     assert lead["status"] == "LOST"
 
 
-async def test_stop_campaign_from_replied_still_goes_to_skipped_unchanged(clean_db, monkeypatch):
-    """Regression: the pre-existing Phase 4 behavior for a lead that never
-    advanced past REPLIED must not change."""
+async def test_stop_campaign_from_replied_stays_replied_unchanged(clean_db, monkeypatch):
+    """Regression: REPLIED is itself in _LOCKED_STATUSES, so the pre-existing
+    Phase 4 behavior for a lead already at REPLIED is to leave it unchanged
+    (not downgrade to SKIPPED) — this is the same behavior
+    test_not_interested_stop_campaign_does_not_downgrade_replied already
+    covers from Phase 4; this is the same assertion re-run as a guard against
+    this plan's LOST branch accidentally swallowing the REPLIED case."""
     db = clean_db
-    lead_id = await db.create_lead({"business_name": "Still Skipped Co", "email": "lead@company.com", "status": "REPLIED"})
+    lead_id = await db.create_lead({"business_name": "Still Replied Co", "email": "lead@company.com", "status": "REPLIED"})
 
     _patch_imap(monkeypatch, [_imap_message(body="Not interested, thanks")])
     _patch_legacy_intent(monkeypatch, "not_interested")
@@ -422,13 +426,13 @@ async def test_stop_campaign_from_replied_still_goes_to_skipped_unchanged(clean_
     await reply_detector.check_for_replies(_CONFIG)
 
     lead = await db.get_lead_by_id(lead_id)
-    assert lead["status"] == "SKIPPED"
+    assert lead["status"] == "REPLIED"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_reply_detector.py -v`
-Expected: the first four new tests FAIL (no `INTERESTED`/`LOST` transitions exist yet); `test_stop_campaign_from_replied_still_goes_to_skipped_unchanged` PASSES already (confirms the regression baseline before you touch anything).
+Expected: the first four new tests FAIL (no `INTERESTED`/`LOST` transitions exist yet); `test_stop_campaign_from_replied_stays_replied_unchanged` PASSES already (confirms the regression baseline before you touch anything — it's asserting the same pre-existing behavior `test_not_interested_stop_campaign_does_not_downgrade_replied` already covers).
 
 - [ ] **Step 3: Wire the transitions**
 
@@ -473,8 +477,9 @@ Replace with:
                     cancelled = await db.cancel_pending_followups(lead_id)
                     # A lead that already reached the deal-stage pipeline (INTERESTED and
                     # beyond) is LOST when the campaign stops — it got further than a plain
-                    # SKIPPED implies. A lead that never advanced past REPLIED keeps the
-                    # exact pre-existing SKIPPED behavior, unchanged.
+                    # SKIPPED implies. A lead already at REPLIED keeps the exact pre-existing
+                    # behavior: REPLIED is itself in _LOCKED_STATUSES, so the elif below
+                    # leaves it unchanged (no downgrade to SKIPPED) — same as before this task.
                     if current_status in ("INTERESTED", "MEETING", "PROPOSAL"):
                         await db.set_lead_stage(lead_id, "LOST", "system", f"{rich['intent']} — campaign stopped")
                     elif current_status not in _LOCKED_STATUSES and current_status != "DO_NOT_CONTACT":
