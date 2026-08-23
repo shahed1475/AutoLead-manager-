@@ -9,6 +9,7 @@ import ScoreBadge from './ScoreBadge'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import BusinessIntelligencePanel from './BusinessIntelligencePanel'
 import MarketingMessagesPanel from './MarketingMessagesPanel'
+import StageHistoryPanel from './StageHistoryPanel'
 import { SLabel, TagCloud, BulletList } from './ui/DrawerPrimitives'
 
 // ── SVG score ring ────────────────────────────────────────────────────────────
@@ -319,6 +320,8 @@ export default function EnrichmentDrawer({ lead, onClose, onEnrich, onViewMessag
               gated behind human approval before anything reaches the
               existing Send controls. */}
           <MarketingMessagesPanel leadId={lead?.id} />
+
+          <StageHistoryPanel leadId={lead?.id} currentStatus={lead?.status} />
         </div>
 
         {/* ── Footer actions ──────────────────────────────────────────────── */}
