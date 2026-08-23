@@ -121,3 +121,87 @@ async def test_opt_out_discards_other_pending_drafts_for_lead(clean_db, monkeypa
 
     earlier_reply = await db.get_reply_by_id(earlier_reply_id)
     assert earlier_reply["draft_status"] == "DISCARDED"
+
+
+async def test_schedule_meeting_advances_replied_lead_to_interested(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Meeting Bound Co", "email": "lead@company.com", "status": "REPLIED"})
+
+    _patch_imap(monkeypatch, [_imap_message(body="Sounds great, tell me more")])
+    _patch_legacy_intent(monkeypatch, "interested")
+    _patch_rich_intent(monkeypatch, "INTERESTED", "SCHEDULE_MEETING", draft="Happy to share more.")
+
+    await reply_detector.check_for_replies(_CONFIG)
+
+    lead = await db.get_lead_by_id(lead_id)
+    assert lead["status"] == "INTERESTED"
+    history = await db.get_stage_history(lead_id)
+    assert len(history) == 1
+    assert history[0]["to_status"] == "INTERESTED"
+    assert history[0]["changed_by"] == "system"
+
+
+async def test_schedule_meeting_does_not_downgrade_lead_already_past_interested(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Already Meeting Co", "email": "lead@company.com", "status": "MEETING"})
+
+    _patch_imap(monkeypatch, [_imap_message(body="Looking forward to our call")])
+    _patch_legacy_intent(monkeypatch, "interested")
+    _patch_rich_intent(monkeypatch, "INTERESTED", "SCHEDULE_MEETING", draft="See you then.")
+
+    await reply_detector.check_for_replies(_CONFIG)
+
+    lead = await db.get_lead_by_id(lead_id)
+    assert lead["status"] == "MEETING"
+    history = await db.get_stage_history(lead_id)
+    assert history == []
+
+
+async def test_stop_campaign_from_interested_goes_to_lost_not_skipped(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Lost Deal Co", "email": "lead@company.com", "status": "INTERESTED"})
+
+    _patch_imap(monkeypatch, [_imap_message(body="Actually we've decided to go another direction")])
+    _patch_legacy_intent(monkeypatch, "unknown")
+    _patch_rich_intent(monkeypatch, "NOT_INTERESTED", "STOP_CAMPAIGN")
+
+    await reply_detector.check_for_replies(_CONFIG)
+
+    lead = await db.get_lead_by_id(lead_id)
+    assert lead["status"] == "LOST"
+    history = await db.get_stage_history(lead_id)
+    assert history[0]["to_status"] == "LOST"
+
+
+async def test_stop_campaign_from_meeting_goes_to_lost(clean_db, monkeypatch):
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Lost After Meeting Co", "email": "lead@company.com", "status": "MEETING"})
+
+    _patch_imap(monkeypatch, [_imap_message(body="Wrong contact, I no longer work here")])
+    _patch_legacy_intent(monkeypatch, "unknown")
+    _patch_rich_intent(monkeypatch, "WRONG_CONTACT", "STOP_CAMPAIGN")
+
+    await reply_detector.check_for_replies(_CONFIG)
+
+    lead = await db.get_lead_by_id(lead_id)
+    assert lead["status"] == "LOST"
+
+
+async def test_stop_campaign_from_replied_stays_replied_unchanged(clean_db, monkeypatch):
+    """Regression: REPLIED is itself in _LOCKED_STATUSES, so the pre-existing
+    Phase 4 behavior for a lead already at REPLIED is to leave it unchanged
+    (not downgrade to SKIPPED) — this is the same behavior
+    test_not_interested_stop_campaign_does_not_downgrade_replied already
+    covers from Phase 4; this is the same assertion re-run as a guard against
+    this plan's LOST branch accidentally swallowing the REPLIED case."""
+    db = clean_db
+    lead_id = await db.create_lead({"business_name": "Still Replied Co", "email": "lead@company.com", "status": "REPLIED"})
+
+    _patch_imap(monkeypatch, [_imap_message(body="Not interested, thanks")])
+    _patch_legacy_intent(monkeypatch, "not_interested")
+    _patch_rich_intent(monkeypatch, "NOT_INTERESTED", "STOP_CAMPAIGN")
+
+    await reply_detector.check_for_replies(_CONFIG)
+
+    lead = await db.get_lead_by_id(lead_id)
+    assert lead["status"] == "REPLIED"

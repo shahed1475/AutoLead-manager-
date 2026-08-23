@@ -398,7 +398,7 @@ async def check_for_replies(
         # ── Update lead status based on intent (existing 5-category classifier) ─
         if lead_id:
             current_status = (lead.get("status") or "").upper()
-            if current_status not in _LOCKED_STATUSES:
+            if current_status not in _LOCKED_STATUSES and current_status not in ("INTERESTED", "MEETING", "PROPOSAL", "WON", "LOST"):
                 if intent in _POSITIVE_INTENTS:
                     await db.update_lead(lead_id, {"status": "REPLIED"})
                     await _log(f"Reply detector: {biz} → marked REPLIED (positive intent)")
@@ -425,6 +425,7 @@ async def check_for_replies(
                 # OPT_OUT is a hard safety override — always honored, even over a
                 # locked REPLIED/SKIPPED status, and suppresses all future outreach.
                 action = rich["recommended_action"]
+                current_status = (lead.get("status") or "").upper()
                 if rich["intent"] == "OPT_OUT":
                     await db.update_lead(lead_id, {"status": "DO_NOT_CONTACT"})
                     cancelled = await db.cancel_pending_followups(lead_id)
@@ -435,13 +436,27 @@ async def check_for_replies(
                     )
                 elif action == "STOP_CAMPAIGN":
                     cancelled = await db.cancel_pending_followups(lead_id)
-                    current_status = (lead.get("status") or "").upper()
-                    if current_status not in _LOCKED_STATUSES and current_status != "DO_NOT_CONTACT":
+                    # A lead that already reached the deal-stage pipeline (INTERESTED and
+                    # beyond) is LOST when the campaign stops — it got further than a plain
+                    # SKIPPED implies. A lead already at REPLIED keeps the exact pre-existing
+                    # behavior: REPLIED is itself in _LOCKED_STATUSES, so the elif below
+                    # leaves it unchanged (no downgrade to SKIPPED) — same as before this task.
+                    if current_status in ("INTERESTED", "MEETING", "PROPOSAL"):
+                        await db.set_lead_stage(lead_id, "LOST", "system", f"{rich['intent']} — campaign stopped")
+                    elif current_status not in _LOCKED_STATUSES and current_status != "DO_NOT_CONTACT":
                         await db.update_lead(lead_id, {"status": "SKIPPED"})
                     await _log(
                         f"Reply detector: {biz} → campaign stopped ({rich['intent']}), "
                         f"{cancelled} pending follow-up(s) cancelled"
                     )
+                elif action == "SCHEDULE_MEETING" and current_status == "REPLIED":
+                    await db.set_lead_stage(lead_id, "INTERESTED", "system", f"{rich['intent']} — SCHEDULE_MEETING recommended")
+                    if rich["draft_response"]:
+                        draft_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}" if subject else "Re: your message"
+                        await db.set_reply_draft(reply_id, draft_subject, rich["draft_response"])
+                        await _log(f"Reply detector: {biz} → advanced to INTERESTED, reply draft queued for approval")
+                    else:
+                        await _log(f"Reply detector: {biz} → advanced to INTERESTED")
                 elif rich["draft_response"]:
                     draft_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}" if subject else "Re: your message"
                     await db.set_reply_draft(reply_id, draft_subject, rich["draft_response"])
