@@ -8,6 +8,7 @@ import { PageSkeleton } from './components/ui/Skeleton'
 
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Leads     = lazy(() => import('./pages/Leads'))
+const Pipeline  = lazy(() => import('./pages/Pipeline'))
 const Campaign  = lazy(() => import('./pages/Campaign'))
 const AILab     = lazy(() => import('./pages/AILab'))
 const Inbox     = lazy(() => import('./pages/Inbox'))
@@ -25,6 +26,7 @@ function RoutedContent() {
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/leads"     element={<Leads />} />
+          <Route path="/pipeline"  element={<Pipeline />} />
           <Route path="/campaign"  element={<Campaign />} />
           <Route path="/ai-lab"    element={<AILab />} />
           <Route path="/inbox"     element={<Inbox />} />

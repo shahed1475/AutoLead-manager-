@@ -177,6 +177,13 @@ export const marketingApi = {
   reject:   (leadId, msgId, reason) => api.post(`/leads/${leadId}/messages/${msgId}/reject`, { reason }).then((r) => r.data),
 }
 
+export const pipelineApi = {
+  board: () => api.get('/pipeline/board').then((r) => r.data),
+  moveStage: (leadId, toStatus, reason) =>
+    api.post(`/leads/${leadId}/stage`, { to_status: toStatus, reason }).then((r) => r.data),
+  stageHistory: (leadId) => api.get(`/leads/${leadId}/stage-history`).then((r) => r.data),
+}
+
 export const authApi = {
   status:        ()        => api.get('/auth/status').then((r) => r.data),
   unlock:        (password) => api.post('/auth/unlock', { password }).then((r) => r.data),
