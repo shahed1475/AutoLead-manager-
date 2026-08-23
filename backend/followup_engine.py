@@ -177,6 +177,7 @@ async def process_followup_queue(
                 legacy_body = (msg.get("ai_follow_up_2") or "").strip()
 
         body = legacy_body
+        whatsapp_override = None
         grounded = False
         try:
             prior_sent = await db.get_messages(lead_id)
@@ -187,7 +188,7 @@ async def process_followup_queue(
             initial_msgs = await db.get_generated_messages(lead_id)
             previous_bodies += [
                 (m.get("message") or "").strip() for m in initial_msgs
-                if m.get("channel") == "EMAIL" and m.get("approval_status") == "APPROVED"
+                if m.get("approval_status") == "APPROVED"
             ]
             latest_reply_intent = None
             recent_replies = await db.get_replies(lead_id)
@@ -204,7 +205,12 @@ async def process_followup_queue(
             )
 
             if fu_result.get("generated"):
-                body = fu_result["whatsapp_body"] if channel == "WHATSAPP" else fu_result["email_body"]
+                if channel == "WHATSAPP":
+                    body = fu_result["whatsapp_body"]
+                else:
+                    body = fu_result["email_body"]
+                    if channel == "BOTH":
+                        whatsapp_override = fu_result["whatsapp_body"]
                 subject = fu_result.get("subject") or subject
                 grounded = True
                 await db.update_message(msg_id, {"body": body, "subject": subject})
@@ -258,7 +264,7 @@ async def process_followup_queue(
             "channel":          channel,
             "ai_email_subject": subject,
             "ai_email_body":    body,
-            "ai_followup_msg":  body,
+            "ai_followup_msg":  whatsapp_override or body,
         }
 
         # ── 5. Send ───────────────────────────────────────────────────────────
