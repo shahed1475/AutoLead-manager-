@@ -1268,19 +1268,19 @@ async def get_leads_due_for_stage(stage: int, limit: int = 50) -> List[Dict[str,
     days  = _DAYS.get(stage, 3)
     if stage == 1:
         sql = """SELECT * FROM leads
-                 WHERE status NOT IN ('REPLIED','SKIPPED') AND status = 'SENT'
+                 WHERE status NOT IN ('REPLIED','SKIPPED','DO_NOT_CONTACT') AND status = 'SENT'
                    AND follow_up_1_sent_at IS NULL AND sent_at IS NOT NULL
                    AND DATE(sent_at) <= DATE('now', '-' || ? || ' days')
                  LIMIT ?"""
     elif stage == 2:
         sql = """SELECT * FROM leads
-                 WHERE status NOT IN ('REPLIED','SKIPPED')
+                 WHERE status NOT IN ('REPLIED','SKIPPED','DO_NOT_CONTACT')
                    AND follow_up_1_sent_at IS NOT NULL AND follow_up_2_sent_at IS NULL
                    AND DATE(follow_up_1_sent_at) <= DATE('now', '-' || ? || ' days')
                  LIMIT ?"""
     elif stage == 3:
         sql = """SELECT * FROM leads
-                 WHERE status NOT IN ('REPLIED','SKIPPED')
+                 WHERE status NOT IN ('REPLIED','SKIPPED','DO_NOT_CONTACT')
                    AND follow_up_2_sent_at IS NOT NULL AND follow_up_3_sent_at IS NULL
                    AND DATE(follow_up_2_sent_at) <= DATE('now', '-' || ? || ' days')
                  LIMIT ?"""

@@ -74,3 +74,45 @@ async def test_marketing_router_blocks_do_not_contact_lead(clean_db):
 
     with pytest.raises(HTTPException):
         marketing_router._assert_not_opted_out(lead)
+
+
+async def test_scheduler_dispatch_send_blocks_do_not_contact_lead(clean_db, monkeypatch):
+    from backend import scheduler as scheduler_module
+    from unittest.mock import AsyncMock
+
+    db = clean_db
+    lead_id = await db.create_lead({
+        "business_name": "Blocked Sched Co", "email": "x@company.com", "status": "DO_NOT_CONTACT",
+    })
+
+    # Mock senders to track whether they're called
+    email_mock = AsyncMock()
+    whatsapp_mock = AsyncMock()
+    monkeypatch.setattr(scheduler_module.email_sender, "send_email_lead", email_mock)
+    monkeypatch.setattr(scheduler_module.whatsapp_sender, "send_whatsapp_lead", whatsapp_mock)
+
+    import asyncio
+    log_queue = asyncio.Queue()
+
+    sent_ok, err = await scheduler_module._dispatch_send(
+        {"id": lead_id, "email": "x@company.com"}, "EMAIL", db, log_queue,
+    )
+
+    assert sent_ok is False
+    assert "DO_NOT_CONTACT" in err
+    email_mock.assert_not_called()  # Guard should prevent sender from being called
+
+
+async def test_get_leads_due_for_stage_excludes_do_not_contact(clean_db):
+    db = clean_db
+    lead_id = await db.create_lead({
+        "business_name": "Opted Out Followup Co", "email": "y@company.com",
+        "status": "DO_NOT_CONTACT", "channel": "EMAIL",
+    })
+    await db.update_lead(lead_id, {
+        "follow_up_1_sent_at": "2000-01-01 00:00:00",
+    })
+
+    due = await db.get_leads_due_for_stage(2)
+
+    assert all(row["id"] != lead_id for row in due)

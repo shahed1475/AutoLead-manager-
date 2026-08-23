@@ -168,6 +168,10 @@ async def _dispatch_send(
 
     Returns (any_succeeded: bool, combined_error_msg: str).
     """
+    fresh = await db_mod.get_lead_by_id(lead["id"])
+    if fresh and (fresh.get("status") or "").upper() == "DO_NOT_CONTACT":
+        return False, f"Lead {lead['id']} is marked DO_NOT_CONTACT — send blocked"
+
     channel = channel.upper()
     errors: List[str] = []
     sent_any = False
