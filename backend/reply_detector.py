@@ -424,9 +424,23 @@ async def check_for_replies(
 
                 # OPT_OUT is a hard safety override — always honored, even over a
                 # locked REPLIED/SKIPPED status, and suppresses all future outreach.
+                action = rich["recommended_action"]
                 if rich["intent"] == "OPT_OUT":
                     await db.update_lead(lead_id, {"status": "DO_NOT_CONTACT"})
-                    await _log(f"Reply detector: {biz} → marked DO_NOT_CONTACT (opt-out detected)")
+                    cancelled = await db.cancel_pending_followups(lead_id)
+                    await _log(
+                        f"Reply detector: {biz} → marked DO_NOT_CONTACT (opt-out detected), "
+                        f"{cancelled} pending follow-up(s) cancelled"
+                    )
+                elif action == "STOP_CAMPAIGN":
+                    cancelled = await db.cancel_pending_followups(lead_id)
+                    current_status = (lead.get("status") or "").upper()
+                    if current_status not in _LOCKED_STATUSES and current_status != "DO_NOT_CONTACT":
+                        await db.update_lead(lead_id, {"status": "SKIPPED"})
+                    await _log(
+                        f"Reply detector: {biz} → campaign stopped ({rich['intent']}), "
+                        f"{cancelled} pending follow-up(s) cancelled"
+                    )
                 elif rich["draft_response"]:
                     draft_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}" if subject else "Re: your message"
                     await db.set_reply_draft(reply_id, draft_subject, rich["draft_response"])
