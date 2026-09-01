@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Loader2, Send, X } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import { emailCampaignsApi, emailSendersApi } from '../../api/client'
 
@@ -12,6 +12,7 @@ function isDisabledError(err) {
 }
 
 export default function SendToCampaignModal({ leadIds, leads, defaultName, onClose, onDone }) {
+  const navigate = useNavigate()
   const [name, setName] = useState(defaultName)
   const [senderId, setSenderId] = useState('')
   const [bigConfirm, setBigConfirm] = useState(false)
@@ -33,8 +34,8 @@ export default function SendToCampaignModal({ leadIds, leads, defaultName, onClo
       toast.success((t) => (
         <span>
           Added {data.added} lead{data.added === 1 ? '' : 's'} to “{data.name}”.{' '}
-          <Link to="/email-campaigns" className="text-brand-400 underline"
-                onClick={() => toast.dismiss(t.id)}>Open →</Link>
+          <button className="text-brand-400 underline"
+                  onClick={() => { toast.dismiss(t.id); navigate('/email-campaigns') }}>Open →</button>
         </span>
       ), { duration: 8000 })
       if (data.missing_email + data.invalid_email > 0) {
