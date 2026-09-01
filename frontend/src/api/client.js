@@ -198,4 +198,94 @@ export const followupsApi = {
   run:     ()            => api.post('/followups/run').then((r) => r.data),
 }
 
+// Phase 1 — Universal Lead Discovery (Quick Search / Discovery Planner)
+export const discoveryApi = {
+  search:  (payload) => api.post('/discovery/search', payload).then((r) => r.data),
+  status:  (runId)   => api.get(`/discovery/search/${runId}`).then((r) => r.data),
+  results: (runId)   => api.get(`/discovery/search/${runId}/results`).then((r) => r.data),
+  cancel:  (runId)   => api.post(`/discovery/search/${runId}/cancel`).then((r) => r.data),
+  // Reconnect to an in-flight (or just-finished) run after a navigation/refresh.
+  active:  ()        => api.get('/discovery/search/active').then((r) => r.data),
+}
+
+// Browser Research Agent — iterative LLM+Playwright deep research
+export const researchAgentApi = {
+  start:   (payload)   => api.post('/research-agent/start', payload).then((r) => r.data),
+  status:  (sessionId) => api.get(`/research-agent/${sessionId}`).then((r) => r.data),
+  results: (sessionId) => api.get(`/research-agent/${sessionId}/results`).then((r) => r.data),
+  cancel:  (sessionId) => api.post(`/research-agent/${sessionId}/cancel`).then((r) => r.data),
+  resume:  (sessionId) => api.post(`/research-agent/${sessionId}/resume`).then((r) => r.data),
+  active:  ()          => api.get('/research-agent/active').then((r) => r.data),
+  // Full researched dataset (business + management + evidence + statuses) as CSV.
+  exportCsv: (sessionId) =>
+    api.get(`/research-agent/${sessionId}/results.csv`, { responseType: 'blob' }).then((r) => r.data),
+}
+
+// Lead Search Automation — bulk niche×location scheduled discovery
+export const automationApi = {
+  previewImport: (formData) =>
+    api.post('/automation/import/preview', formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then((r) => r.data),
+  confirmImport: (payload) => api.post('/automation/import/confirm', payload).then((r) => r.data),
+  status:        ()        => api.get('/automation/status').then((r) => r.data),
+  queue:         (params)  => api.get('/automation/queue', { params }).then((r) => r.data),
+  log:           (limit)   => api.get('/automation/log', { params: { limit } }).then((r) => r.data),
+  saveSettings:  (payload) => api.put('/automation/settings', payload).then((r) => r.data),
+  start:         ()        => api.post('/automation/start').then((r) => r.data),
+  pause:         ()        => api.post('/automation/pause').then((r) => r.data),
+  resume:        ()        => api.post('/automation/resume').then((r) => r.data),
+  stop:          ()        => api.post('/automation/stop').then((r) => r.data),
+  reset:         ()        => api.post('/automation/reset', null, { params: { confirm: true } }).then((r) => r.data),
+}
+
+// Email Campaigns (PopupGenix) — feature-flagged (email_campaigns_enabled).
+// TEST_MODE is forced on by the backend; the native email_sender is the only
+// production sender. Endpoints return 503 while the feature flag is off.
+export const emailCampaignsApi = {
+  list:        ()                 => api.get('/email-campaigns').then((r) => r.data),
+  get:         (id)              => api.get(`/email-campaigns/${id}`).then((r) => r.data),
+  create:      (payload)         => api.post('/email-campaigns', payload).then((r) => r.data),
+  patch:       (id, fields)      => api.patch(`/email-campaigns/${id}`, fields).then((r) => r.data),
+  importLeads: (id, file)        => {
+    const form = new FormData()
+    form.append('file', file)
+    return api.post(`/email-campaigns/${id}/leads/import`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then((r) => r.data)
+  },
+  leads:       (id, params = {}) => api.get(`/email-campaigns/${id}/leads`, { params }).then((r) => r.data),
+  uploadAttachment: (id, file)  => {
+    const form = new FormData()
+    form.append('file', file)
+    return api.post(`/email-campaigns/${id}/attachment`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then((r) => r.data)
+  },
+  deleteAttachment: (id)        => api.delete(`/email-campaigns/${id}/attachment`).then((r) => r.data),
+  prepare:     (id)             => api.post(`/email-campaigns/${id}/prepare`).then((r) => r.data),
+  markReady:   (id)             => api.post(`/email-campaigns/${id}/ready`).then((r) => r.data),
+  start:       (id, key)        => api.post(`/email-campaigns/${id}/start`, { idempotency_key: key }).then((r) => r.data),
+  pause:       (id)             => api.post(`/email-campaigns/${id}/pause`).then((r) => r.data),
+  resume:      (id, key)        => api.post(`/email-campaigns/${id}/resume`, { idempotency_key: key }).then((r) => r.data),
+  stats:       (id)             => api.get(`/email-campaigns/${id}/stats`).then((r) => r.data),
+  activity:    (id, limit = 100) => api.get(`/email-campaigns/${id}/activity`, { params: { limit } }).then((r) => r.data),
+  n8nStatus:   ()               => api.get('/email-campaigns/n8n/status').then((r) => r.data),
+  createFromSearch: (payload) =>
+    api.post('/email-campaigns/from-search', payload).then((r) => r.data),
+}
+
+// Sender Profiles (Checkpoint 4) — which authorized account a campaign sends
+// from. Responses carry only safe metadata (never passwords / OAuth tokens).
+export const emailSendersApi = {
+  list:         ()              => api.get('/email-senders').then((r) => r.data),
+  get:          (id)            => api.get(`/email-senders/${id}`).then((r) => r.data),
+  createSmtp:   (payload)       => api.post('/email-senders', payload).then((r) => r.data),
+  patch:        (id, fields)    => api.patch(`/email-senders/${id}`, fields).then((r) => r.data),
+  remove:       (id)            => api.delete(`/email-senders/${id}`).then((r) => r.data),
+  test:         (id)            => api.post(`/email-senders/${id}/test`).then((r) => r.data),
+  disconnect:   (id)            => api.post(`/email-senders/${id}/disconnect`).then((r) => r.data),
+  setDefault:   (id)            => api.post(`/email-senders/${id}/default`).then((r) => r.data),
+  gmailConfigStatus: ()         => api.get('/email-senders/gmail/config-status').then((r) => r.data),
+  gmailConnect: ()              => api.get('/email-senders/gmail/connect').then((r) => r.data),
+}
+
 export default api
