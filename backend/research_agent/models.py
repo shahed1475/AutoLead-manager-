@@ -1,0 +1,162 @@
+"""
+models.py — Browser Research Agent data model.
+
+Dataclasses, matching intelligence/base.py's convention for internal agent
+state (Pydantic request models for the API layer live in backend/models.py).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+# ── Field-level evidence status ─────────────────────────────────────────────
+STATUS_FOUND = "FOUND"
+STATUS_NOT_FOUND = "NOT_FOUND"
+# NOT_FOUND_AFTER_SEARCH: the loop actively researched this field (visited pages
+# and/or ran searches) and it isn't publicly available — a stronger, auditable
+# "we looked" than a bare NOT_FOUND. Never a substitute for a real value.
+STATUS_NOT_FOUND_AFTER_SEARCH = "NOT_FOUND_AFTER_SEARCH"
+STATUS_SECURE_WEB_FORM = "SECURE_WEB_FORM"
+STATUS_UNCONFIRMED = "UNCONFIRMED"
+STATUS_VERIFIED_BY_SOURCE = "VERIFIED_BY_SOURCE"
+
+VALID_FIELD_STATUSES = frozenset({
+    STATUS_FOUND, STATUS_NOT_FOUND, STATUS_NOT_FOUND_AFTER_SEARCH,
+    STATUS_SECURE_WEB_FORM, STATUS_UNCONFIRMED, STATUS_VERIFIED_BY_SOURCE,
+})
+
+# ── Lead-level research status ──────────────────────────────────────────────
+RESEARCH_PENDING = "PENDING"
+RESEARCH_IN_PROGRESS = "IN_PROGRESS"
+RESEARCH_COMPLETE = "COMPLETE"
+RESEARCH_PARTIAL = "PARTIAL"
+RESEARCH_FAILED = "FAILED"
+
+# A lead is "complete enough" once these are known — business_email and every
+# management_* field are valuable but never block completion on their own,
+# since many small businesses genuinely have no public email or named owner.
+REQUIRED_FIELDS = ("business_name", "business_phone", "business_website")
+OPTIONAL_FIELDS = (
+    "business_email", "management_contact_name", "management_title",
+    "management_phone", "management_email",
+)
+
+# Roles considered per business type — the agent narrows this list based on
+# the niche rather than asking the same titles for every business (brief §13).
+DEFAULT_MANAGEMENT_TITLES = ("Owner", "Founder", "General Manager", "Director")
+NICHE_MANAGEMENT_TITLES: Dict[str, tuple] = {
+    "dental": ("Dentist", "Owner", "Practice Manager", "Office Manager"),
+    "medical": ("Doctor", "Practice Owner", "Practice Manager", "Office Manager"),
+    "law": ("Partner", "Attorney", "Managing Partner", "Office Manager"),
+    "restaurant": ("Owner", "General Manager", "Chef Owner"),
+    "hotel": ("General Manager", "Owner", "Director of Operations"),
+    "salon": ("Owner", "Salon Manager"),
+    "gym": ("Owner", "General Manager"),
+    "real estate": ("Broker", "Owner", "Managing Broker"),
+    "saas": ("Founder", "CEO", "CTO", "COO"),
+    "startup": ("Founder", "CEO", "CTO", "COO"),
+    "tech": ("Founder", "CEO", "CTO"),
+    "ecommerce": ("Founder", "Owner", "CEO"),
+}
+
+
+def management_titles_for_niche(niche: str) -> tuple:
+    n = (niche or "").lower()
+    for key, titles in NICHE_MANAGEMENT_TITLES.items():
+        if key in n:
+            return titles
+    return DEFAULT_MANAGEMENT_TITLES
+
+
+@dataclass
+class ResearchEvidence:
+    field_name: str
+    source_type: str                       # "google_search" | "website" | "ai_extraction"
+    source_url: Optional[str] = None
+    snippet: Optional[str] = None
+    confidence: float = 0.0
+    status: str = STATUS_UNCONFIRMED
+
+    def __post_init__(self) -> None:
+        if self.status not in VALID_FIELD_STATUSES:
+            self.status = STATUS_UNCONFIRMED
+        self.confidence = max(0.0, min(1.0, float(self.confidence or 0.0)))
+
+
+@dataclass
+class ResearchLead:
+    city: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = None
+
+    business_name: Optional[str] = None
+    business_phone: Optional[str] = None
+    business_email: Optional[str] = None
+    business_website: Optional[str] = None
+    business_email_status: str = STATUS_UNCONFIRMED
+
+    management_contact_name: Optional[str] = None
+    management_title: Optional[str] = None
+    management_phone: Optional[str] = None
+    management_phone_type: Optional[str] = None   # "BUSINESS" | "DIRECT"
+    management_email: Optional[str] = None
+    management_email_status: str = STATUS_UNCONFIRMED
+
+    confidence: float = 0.0
+    research_status: str = RESEARCH_PENDING
+    research_notes: Optional[str] = None
+    evidence: List[ResearchEvidence] = field(default_factory=list)
+
+    # Internal loop bookkeeping — not exported.
+    actions_taken: int = 0
+    searches_taken: int = 0
+    pages_visited: int = 0
+    consecutive_failures: int = 0
+
+    def missing_required_fields(self) -> List[str]:
+        return [f for f in REQUIRED_FIELDS if not getattr(self, f)]
+
+    def add_evidence(self, item: ResearchEvidence) -> None:
+        self.evidence.append(item)
+        if item.status == STATUS_FOUND and hasattr(self, item.field_name):
+            pass  # the caller sets the field itself; evidence just records provenance
+
+    def to_export_dict(self) -> Dict[str, Any]:
+        return {
+            "City": self.city or "",
+            "State": self.state or "",
+            "Country": self.country or "",
+            "Business_Name": self.business_name or "",
+            "Business_Phone": self.business_phone or "",
+            "Business_Email": self.business_email or "",
+            "Business_Website": self.business_website or "",
+            "Management_Contact_Name": self.management_contact_name or "",
+            "Management_Title": self.management_title or "",
+            "Management_Phone": self.management_phone or "",
+            "Management_Email": self.management_email or "",
+            "Confidence": round(self.confidence, 2),
+            "Research_Status": self.research_status,
+            "Evidence_URLs": "; ".join(
+                sorted({e.source_url for e in self.evidence if e.source_url})
+            ),
+        }
+
+
+# ── Agent action (LLM decision) ─────────────────────────────────────────────
+
+VALID_ACTIONS = frozenset({
+    "google_search", "open_url", "extract_page_text", "find_links",
+    "click", "scroll", "go_back", "open_new_tab", "screenshot",
+    "save_evidence", "finish_research",
+})
+
+
+@dataclass
+class AgentAction:
+    action: str
+    params: Dict[str, Any] = field(default_factory=dict)
+    reason: str = ""
+    confidence: float = 0.0
+
+    def is_valid(self) -> bool:
+        return self.action in VALID_ACTIONS
