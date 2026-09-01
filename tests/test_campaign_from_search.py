@@ -215,3 +215,104 @@ async def test_cannot_add_when_campaign_not_draft_or_ready(enabled):
     await db.update_email_campaign(camp["id"], {"status": "RUNNING"})
     with pytest.raises(EmailCampaignError):
         await svc.add_leads_from_db(camp["id"], [lid])
+
+
+# ── Task 3: the endpoint ─────────────────────────────────────────────────
+
+async def test_endpoint_creates_campaign_and_adds_leads(enabled):
+    db = enabled
+    a = await _make_lead(db, business_name="Acme", email="a@acme.com")
+    b = await _make_lead(db, business_name="Beta", email=None, phone="5551112222")
+    async with _client() as c:
+        r = await c.post("/api/email-campaigns/from-search",
+                         json={"name": "Dental — CA", "lead_ids": [a, b]})
+    assert r.status_code == 201
+    body = r.json()
+    assert body["name"] == "Dental — CA"
+    assert body["added"] == 2
+    assert body["missing_email"] == 1
+    cid = body["campaign_id"]
+
+    async with _client() as c:
+        camp = (await c.get(f"/api/email-campaigns/{cid}")).json()
+    assert camp["status"] == "DRAFT"
+    assert camp["test_mode"] is True
+
+
+async def test_empty_lead_ids_422(enabled):
+    async with _client() as c:
+        r = await c.post("/api/email-campaigns/from-search",
+                         json={"name": "X", "lead_ids": []})
+    assert r.status_code == 422
+
+
+async def test_too_many_lead_ids_422(enabled):
+    async with _client() as c:
+        r = await c.post("/api/email-campaigns/from-search",
+                         json={"name": "X", "lead_ids": list(range(1, 2002))})
+    assert r.status_code == 422
+
+
+async def test_empty_name_422(enabled):
+    db = enabled
+    lid = await _make_lead(db, email="a@acme.com")
+    async with _client() as c:
+        r = await c.post("/api/email-campaigns/from-search",
+                         json={"name": "", "lead_ids": [lid]})
+    assert r.status_code == 422
+
+
+async def test_sender_profile_persisted(enabled):
+    from backend.secrets_crypto import encrypt
+    db = enabled
+    pid = await db.create_sender_profile({
+        "name": "PG SMTP", "provider": "smtp", "transport": "smtp",
+        "email_address": "hello@popupgenix.com", "status": "connected",
+        "smtp_host": "mail.popupgenix.com", "smtp_port": 465, "smtp_security": "ssl",
+        "smtp_username": "hello@popupgenix.com", "smtp_password_enc": encrypt("pw"),
+    })
+    lid = await _make_lead(db, email="a@acme.com")
+    async with _client() as c:
+        r = await c.post("/api/email-campaigns/from-search",
+                         json={"name": "X", "sender_profile_id": pid, "lead_ids": [lid]})
+        assert r.status_code == 201
+        cid = r.json()["campaign_id"]
+        camp = (await c.get(f"/api/email-campaigns/{cid}")).json()
+    assert camp["sender_profile_id"] == pid
+
+
+async def test_bad_sender_profile_id_404(enabled):
+    db = enabled
+    lid = await _make_lead(db, email="a@acme.com")
+    async with _client() as c:
+        r = await c.post("/api/email-campaigns/from-search",
+                         json={"name": "X", "sender_profile_id": 999999, "lead_ids": [lid]})
+    assert r.status_code == 404
+
+
+async def test_feature_flag_off_503(clean_db):
+    lid = await clean_db.create_lead({"business_name": "Acme", "email": "a@acme.com"})
+    async with _client() as c:
+        r = await c.post("/api/email-campaigns/from-search",
+                         json={"name": "X", "lead_ids": [lid]})
+    assert r.status_code == 503
+
+
+async def test_handoff_never_touches_a_send_path(enabled, monkeypatch):
+    from backend import email_sender
+    from backend.email_campaigns import senders as senders_mod
+    from backend.email_campaigns import n8n_client
+
+    def _boom(*a, **k):
+        raise AssertionError("a send/transport/n8n path was called during handoff")
+
+    monkeypatch.setattr(email_sender, "send_email", _boom)
+    monkeypatch.setattr(senders_mod, "resolve_transport", _boom)
+    monkeypatch.setattr(n8n_client, "describe", _boom, raising=False)
+
+    db = enabled
+    lid = await _make_lead(db, business_name="Acme", email="a@acme.com")
+    async with _client() as c:
+        r = await c.post("/api/email-campaigns/from-search",
+                         json={"name": "H", "lead_ids": [lid]})
+    assert r.status_code == 201
