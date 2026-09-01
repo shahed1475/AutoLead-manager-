@@ -314,6 +314,48 @@ class EmailCampaignService:
         )
         return summary
 
+    async def add_leads_from_db(self, campaign_id: int, lead_ids: List[int]) -> Dict[str, Any]:
+        """Add existing global leads (Lead Search selection) to a DRAFT/READY
+        campaign. Reuses the file-import persistence path. Never prepares,
+        never sends, never touches the source `leads` rows."""
+        camp = await self.get_campaign(campaign_id)
+        if camp["status"] not in ("DRAFT", "READY"):
+            raise EmailCampaignError(
+                f"cannot add leads while campaign is {camp['status']} "
+                f"(must be DRAFT or READY)"
+            )
+
+        ordered_ids = list(dict.fromkeys(int(x) for x in lead_ids))
+        leads_map = await db.get_leads_by_ids(ordered_ids)
+
+        not_found = [lid for lid in ordered_ids if lid not in leads_map]
+        rows = [
+            _lead_row_to_campaign_row(campaign_id, leads_map[lid])
+            for lid in ordered_ids if lid in leads_map
+        ]
+        missing_email = sum(1 for r in rows if r["status"] == "MISSING_EMAIL")
+        invalid_email = sum(1 for r in rows if r["status"] == "INVALID_EMAIL")
+
+        inserted = await db.bulk_insert_email_campaign_leads(campaign_id, rows)
+        await db.recount_email_campaign(campaign_id)
+
+        summary = {
+            "total_requested": len(ordered_ids),
+            "added": inserted,
+            "skipped_existing": len(rows) - inserted,
+            "missing_email": missing_email,
+            "invalid_email": invalid_email,
+            "not_found": not_found,
+        }
+        await db.log_email_campaign_activity(
+            campaign_id, "leads_added_from_search",
+            f"requested={summary['total_requested']} added={inserted} "
+            f"skipped_existing={summary['skipped_existing']} "
+            f"missing_email={missing_email} invalid_email={invalid_email} "
+            f"not_found={len(not_found)}",
+        )
+        return summary
+
     # ── attachment ────────────────────────────────────────────────────────
 
     async def set_attachment(self, campaign_id: int, filename: str, data: bytes) -> Dict[str, Any]:
