@@ -25,6 +25,10 @@ pydantic>=2.10.0
 pydantic[email]>=2.10.0
 pydantic-settings>=2.7.0
 
+# ── Contact verification (Checkpoint 5C) — deterministic, offline/DNS only ───
+phonenumbers>=8.13
+dnspython>=2.6
+
 # ── Auth & rate limiting ───────────────────────────────────────────────────────
 bcrypt>=4.1.0
 slowapi>=0.1.9
@@ -55,3 +59,4 @@ aiofiles>=24.1.0
 urllib3>=2.0.0
 selenium>=4.27.1
 webdriver-manager>=4.0.2
+openpyxl>=3.1
