@@ -249,6 +249,11 @@ export default function LeadSearch() {
     })
   const clearSelection = () => setSelected(new Set())
 
+  // Any change of runId (new search, mount-reconnect, 404 reset) means the
+  // current results set is about to change — drop the selection so "N selected"
+  // never refers to ids that aren't in the results anymore.
+  useEffect(() => { setSelected(new Set()) }, [runId])
+
   function handleSubmit(e) {
     e.preventDefault()
     if (!query.trim() || !location.trim()) {
@@ -345,7 +350,7 @@ export default function LeadSearch() {
 
       {!!run && TERMINAL_STATUSES.has(run.status) && resultsQuery.isLoading && (
         <div className="rounded-xl border border-slate-800 bg-slate-900/30 overflow-hidden">
-          <table className="w-full text-sm"><tbody><SkeletonTableRows rows={4} cols={4} /></tbody></table>
+          <table className="w-full text-sm"><tbody><SkeletonTableRows rows={4} cols={5} /></tbody></table>
         </div>
       )}
 

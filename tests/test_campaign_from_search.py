@@ -302,6 +302,7 @@ async def test_handoff_never_touches_a_send_path(enabled, monkeypatch):
     from backend import email_sender
     from backend.email_campaigns import senders as senders_mod
     from backend.email_campaigns import n8n_client
+    from backend.email_campaigns import safety as _safety
 
     def _boom(*a, **k):
         raise AssertionError("a send/transport/n8n path was called during handoff")
@@ -309,6 +310,7 @@ async def test_handoff_never_touches_a_send_path(enabled, monkeypatch):
     monkeypatch.setattr(email_sender, "send_email", _boom)
     monkeypatch.setattr(senders_mod, "resolve_transport", _boom)
     monkeypatch.setattr(n8n_client, "describe", _boom, raising=False)
+    monkeypatch.setattr(_safety, "assert_send_allowed", _boom)
 
     db = enabled
     lid = await _make_lead(db, business_name="Acme", email="a@acme.com")
@@ -316,3 +318,10 @@ async def test_handoff_never_touches_a_send_path(enabled, monkeypatch):
         r = await c.post("/api/email-campaigns/from-search",
                          json={"name": "H", "lead_ids": [lid]})
     assert r.status_code == 201
+
+    # ...and no campaign run was ever created for the handoff campaign.
+    cid = r.json()["campaign_id"]
+    async with db.get_db() as conn:
+        n = await conn.fetchval(
+            "SELECT COUNT(*) FROM email_campaign_runs WHERE campaign_id = $1", cid)
+    assert n == 0

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, Send, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
@@ -13,6 +13,7 @@ function isDisabledError(err) {
 
 export default function SendToCampaignModal({ leadIds, leads, defaultName, onClose, onDone }) {
   const navigate = useNavigate()
+  const qc = useQueryClient()
   const [name, setName] = useState(defaultName)
   const [senderId, setSenderId] = useState('')
   const [bigConfirm, setBigConfirm] = useState(false)
@@ -41,6 +42,7 @@ export default function SendToCampaignModal({ leadIds, leads, defaultName, onClo
       if (data.missing_email + data.invalid_email > 0) {
         toast(`${data.missing_email + data.invalid_email} lead(s) had no usable email — added but not emailable.`)
       }
+      qc.invalidateQueries({ queryKey: ['email-campaigns'] })
       onDone()
     },
     onError: (err) => {
