@@ -121,11 +121,24 @@ async def test_evaluate_error_mid_scroll_returns_error_content_never_raises():
     assert content.url == "https://broken.test"
 
 
-async def test_page_time_cap_stops_a_slow_growing_page():
-    # Never stabilises and never reaches bottom — only the time cap can stop it.
+async def test_page_time_cap_stops_a_slow_growing_page(monkeypatch):
+    """A page whose content keeps growing and never reaches the bottom can
+    only be stopped by the wall-clock cap. Real timing is unpredictable at
+    microsecond scale against an instant (zero-delay) pacing controller, so
+    this test controls time.monotonic directly: each call advances a fake
+    clock by a fixed step, making the cap deterministic regardless of
+    machine speed."""
+    fake_now = {"t": 0.0}
+
+    def fake_monotonic():
+        fake_now["t"] += 0.01
+        return fake_now["t"]
+
+    monkeypatch.setattr("backend.research_agent.reader.time.monotonic", fake_monotonic)
+
     growing = [
         _round(f"content {i}", scroll_height=100000, scroll_y=i * 10, card_count=i + 1)
-        for i in range(50)
+        for i in range(20)
     ]
     page = ScriptedPage(growing)
     content = await read_page(page, instant_controller(), initial=INITIAL, max_scrolls=1000, page_time_cap_s=0.05)
