@@ -431,7 +431,7 @@ async def test_one_failed_lead_does_not_stop_the_batch(monkeypatch):
     ]
     result = await agent_mod.run_research_session(
         niche="dental clinics", location="Abbeville, USA", target_count=3,
-        seed_businesses=seeds, cfg=_cfg(),
+        seed_businesses=seeds, cfg=_cfg(), pacing=agent_mod.pacing_mod.instant_controller(),
     )
     assert result["failed_count"] == 1
     assert len(result["leads"]) == 2
@@ -478,6 +478,7 @@ async def test_already_processed_candidates_are_skipped(monkeypatch):
     result = await agent_mod.run_research_session(
         niche="dental clinics", location="Akron", target_count=5,
         seed_businesses=seeds, cfg=_cfg(), already_processed=already,
+        pacing=agent_mod.pacing_mod.instant_controller(),
     )
     assert researched == ["New Co"]          # the finished one was not re-researched
     assert result["skipped_count"] == 1
@@ -496,7 +497,7 @@ async def test_progress_callback_reports_phase_city_and_counts(monkeypatch):
     await agent_mod.run_research_session(
         niche="dental clinics", location="Akron", target_count=2,
         seed_businesses=[{"business_name": "A", "city": "Akron"}, {"business_name": "B", "city": "Akron"}],
-        cfg=_cfg(), on_progress=on_progress,
+        cfg=_cfg(), on_progress=on_progress, pacing=agent_mod.pacing_mod.instant_controller(),
     )
     phases = [e.get("research_phase") for e in events if "research_phase" in e]
     assert "RESEARCH" in phases and "DONE" in phases
@@ -534,7 +535,7 @@ async def test_discovery_fallback_used_when_google_search_blocked(monkeypatch):
 
     result = await agent_mod.run_research_session(
         niche="dental clinics", location="Akron", target_count=5, cfg=_cfg(),
-        discovery_fallback=fake_fallback,
+        discovery_fallback=fake_fallback, pacing=agent_mod.pacing_mod.instant_controller(),
     )
 
     assert fallback_calls, "discovery_fallback should be invoked when native discovery is blocked"
@@ -566,7 +567,7 @@ async def test_discovery_fallback_not_called_when_native_discovery_returns_enoug
     # native discovery is "enough", the scraper pipeline is not consulted.
     await agent_mod.run_research_session(
         niche="dental clinics", location="Akron", target_count=2, cfg=_cfg(),
-        discovery_fallback=fake_fallback,
+        discovery_fallback=fake_fallback, pacing=agent_mod.pacing_mod.instant_controller(),
     )
     assert not called
     assert sorted(researched) == ["Real Dental Co", "Second Dental"]
@@ -594,7 +595,7 @@ async def test_thin_native_discovery_is_supplemented_and_deduped(monkeypatch):
 
     await agent_mod.run_research_session(
         niche="dental clinics", location="Akron", target_count=5, cfg=_cfg(),
-        discovery_fallback=fake_fallback,
+        discovery_fallback=fake_fallback, pacing=agent_mod.pacing_mod.instant_controller(),
     )
     assert sorted(researched) == ["Downtown Dental", "Real Dental Co"]  # aggregator dropped, dup merged
 
@@ -629,7 +630,7 @@ async def test_scraper_fallback_aggregator_hints_are_filtered_and_geo_backfilled
 
     await agent_mod.run_research_session(
         niche="dental clinics", location="California", target_count=2, cfg=_cfg(),
-        discovery_fallback=fake_fallback,
+        discovery_fallback=fake_fallback, pacing=agent_mod.pacing_mod.instant_controller(),
     )
     assert "Find Medi-Cal Dentists in San Francisco" not in seen   # aggregator hint dropped
     assert seen["Sunset Dental"]["state"] == "California"           # geo backfilled onto the hint
@@ -765,4 +766,4 @@ async def test_domain_time_cap_finalises_a_slow_candidate(monkeypatch):
     cfg = _cfg(max_domain_seconds=0, max_actions_per_lead=50, max_time_per_lead_seconds=60)
     a = agent_mod.ResearchAgent(browser, cfg, "dental clinics")
     lead = await a.research_business({"business_name": "Slow Co", "website": "https://slow.test"})
-    assert lead.actions_taken < 50   # stopped well before the action budget, via the domain cap
+    assert lead.actions_taken == 1   # stopped on the very next guard check after the domain was entered — only the domain cap does this; the failure-count path would run to ~25
