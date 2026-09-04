@@ -634,3 +634,135 @@ async def test_scraper_fallback_aggregator_hints_are_filtered_and_geo_backfilled
     assert "Find Medi-Cal Dentists in San Francisco" not in seen   # aggregator hint dropped
     assert seen["Sunset Dental"]["state"] == "California"           # geo backfilled onto the hint
     assert seen["Sunset Dental"]["city"] == "Los Angeles"
+
+
+from backend.research_agent.models import ResearchLead
+from backend.research_agent.pacing import PACING_PROFILES, PacingController
+
+
+class _RecordingSleep:
+    def __init__(self):
+        self.calls = []
+
+    async def __call__(self, seconds):
+        self.calls.append(seconds)
+
+
+TALL_TEAM_PAGE_ROUND_1 = "Acme Family Dental\nContact us at info@acmefamilydental.test."
+TALL_TEAM_PAGE_ROUND_2 = TALL_TEAM_PAGE_ROUND_1 + "\nEmma Papp — Office Manager, has been with the practice for 10 years."
+
+
+async def test_extract_page_text_is_routed_through_the_reader(monkeypatch):
+    """R2 (page just opened, not yet read) must now produce content via
+    PageReader — proven here by content that only appears after a scroll,
+    which the OLD bare extract_page_text action could never see. The first
+    snapshot still comes from the normal scripted extract_page_text result
+    (round 1's text); browser._page is swapped for a fake that supports
+    scrolling so the reader can fetch round 2's content on top of it."""
+    scrolled = {"n": 0}
+
+    async def fake_evaluate(js):
+        if "document.readyState" in js:
+            return "complete"
+        if "innerText.length" in js:
+            return len(TALL_TEAM_PAGE_ROUND_1)  # settle() sees this before any scroll
+        if "scrollBy" in js:
+            scrolled["n"] += 1
+            return None
+        if "scrollHeight" in js and "querySelectorAll" in js:
+            # Not at bottom before the scroll; at bottom after it.
+            return {"scrollHeight": 2000, "scrollY": 2000 if scrolled["n"] else 0,
+                     "innerHeight": 900, "cardCount": 2 if scrolled["n"] else 1}
+        if "querySelectorAll('a" in js:
+            return []
+        if "innerText" in js:
+            return TALL_TEAM_PAGE_ROUND_2  # only asked for AFTER the scroll succeeds
+        raise AssertionError(js)
+
+    class _FakePageForReader:
+        url = "https://acmefamilydental.test"
+        evaluate = staticmethod(fake_evaluate)
+
+        async def wait_for_timeout(self, ms):
+            return None
+
+    browser = ScriptedBrowser({
+        "open_url": [ok("open_url", url="https://acmefamilydental.test", title="Acme Family Dental")],
+        "extract_page_text": [ok("extract_page_text", url="https://acmefamilydental.test", text=TALL_TEAM_PAGE_ROUND_1)],
+    })
+    browser._page = _FakePageForReader()
+
+    actions = [
+        AgentAction(action="open_url", params={"url": "https://acmefamilydental.test"}),
+        AgentAction(action="finish_research", params={"reason": "done"}),
+    ]
+    monkeypatch.setattr(agent_mod.llm_mod, "decide_next_action", _scripted_llm(actions))
+    monkeypatch.setattr(agent_mod.llm_mod, "extract_fields", _no_management_extraction)
+
+    a = agent_mod.ResearchAgent(browser, _cfg(), "dental clinics")
+    lead = await a.research_business({"business_name": "Acme Family Dental", "website": "https://acmefamilydental.test"})
+
+    assert lead.business_email == "info@acmefamilydental.test"
+    # Emma Papp only appears in round 2's text, reachable only via scrolling.
+    assert scrolled["n"] >= 1
+
+
+async def test_pacing_wait_called_between_leads(monkeypatch):
+    """Session-level pacing (between_leads) is exercised even without a real
+    or scripted browser — follows this file's existing _FakeBrowserCtx +
+    ResearchAgent.research_business monkeypatch pattern (see
+    test_one_failed_lead_does_not_stop_the_batch above) and injects a spy
+    PacingController via run_research_session's new `pacing=` parameter."""
+    seen_ops = []
+
+    class _SpyPacing(PacingController):
+        async def wait(self, op):
+            seen_ops.append(op)
+            return await super().wait(op)
+
+    spy = _SpyPacing(PACING_PROFILES["standard"], sleep_fn=_RecordingSleep())
+
+    async def fake_research_business(self, hint, **kwargs):
+        return ResearchLead(business_name=hint["business_name"], business_phone="555",
+                            business_website=hint.get("website"))
+
+    monkeypatch.setattr(agent_mod.ResearchAgent, "research_business", fake_research_business)
+
+    class _FakeBrowserCtx:
+        async def __aenter__(self):
+            return ScriptedBrowser({})
+        async def __aexit__(self, *exc):
+            return False
+    monkeypatch.setattr(agent_mod, "BrowserController", lambda **kw: _FakeBrowserCtx())
+
+    result = await agent_mod.run_research_session(
+        niche="dental clinics", location="Abbeville, LA", target_count=2,
+        seed_businesses=[{"business_name": "A Inc", "website": "https://a.test", "city": "Abbeville"},
+                          {"business_name": "B Inc", "website": "https://b.test", "city": "Abbeville"}],
+        cfg=_cfg(), pacing=spy,
+    )
+    assert len(result["leads"]) == 2
+    assert seen_ops.count("between_leads") >= 1
+
+
+async def test_domain_time_cap_finalises_a_slow_candidate(monkeypatch):
+    """A candidate that spends longer than max_domain_seconds on one domain
+    is finalised with whatever was found — the session moves on rather than
+    hanging on one slow site."""
+    browser = ScriptedBrowser({
+        "open_url": [ok("open_url", url="https://slow.test", title="Slow Co")],
+        "extract_page_text": [ok("extract_page_text", url="https://slow.test", text="Slow Co. No contact info here.")],
+        "find_links": [ok("find_links", links=[])] * 20,
+    })
+
+    async def _always_read_more(state_summary, cfg=None):
+        # Never says finish_research on its own — only the domain cap should end the loop.
+        return AgentAction(action="find_links", params={})
+
+    monkeypatch.setattr(agent_mod.llm_mod, "decide_next_action", _always_read_more)
+    monkeypatch.setattr(agent_mod.llm_mod, "extract_fields", _no_management_extraction)
+
+    cfg = _cfg(max_domain_seconds=0, max_actions_per_lead=50, max_time_per_lead_seconds=60)
+    a = agent_mod.ResearchAgent(browser, cfg, "dental clinics")
+    lead = await a.research_business({"business_name": "Slow Co", "website": "https://slow.test"})
+    assert lead.actions_taken < 50   # stopped well before the action budget, via the domain cap

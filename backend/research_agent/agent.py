@@ -26,6 +26,8 @@ from typing import Any, Dict, List, Optional
 from . import evidence as evidence_mod
 from . import extraction
 from . import llm as llm_mod
+from . import pacing as pacing_mod
+from . import reader as reader_mod
 from . import validation
 from .actions import ActionResult, ActionValidationError, validate_action
 from .browser import BrowserController
@@ -115,10 +117,18 @@ def candidate_key(hint: Dict[str, Any]) -> str:
 class ResearchAgent:
     """One instance per research session. Owns the BrowserController."""
 
-    def __init__(self, browser: BrowserController, cfg: Dict[str, Any], niche: str) -> None:
+    def __init__(
+        self, browser: BrowserController, cfg: Dict[str, Any], niche: str,
+        pacing: Optional[pacing_mod.PacingController] = None,
+    ) -> None:
         self.browser = browser
         self.cfg = cfg
         self.niche = niche
+        # Callers that build a ResearchAgent directly without going through
+        # run_research_session's depth/profile resolution (today: tests) get
+        # a zero-delay controller — production sessions always pass a real
+        # one built from the resolved pacing profile.
+        self.pacing = pacing or pacing_mod.instant_controller()
 
     # ── Discovery (used only when no seed businesses are supplied) ────────
 
@@ -188,6 +198,11 @@ class ResearchAgent:
         relevant_links: List[str] = []
         last_opened_url: Optional[str] = lead.business_website or None
         just_opened = False
+        current_domain: Optional[str] = None
+        domain_entered_at: float = 0.0
+        max_domain_seconds = self.cfg.get("research_agent_max_domain_seconds", 120)
+        max_scrolls_per_page = self.cfg.get("research_agent_max_scrolls_per_page", 6)
+        page_time_cap_s = self.cfg.get("research_agent_page_time_cap_seconds", 40)
 
         while True:
             if is_cancelled and await is_cancelled():
@@ -201,6 +216,9 @@ class ResearchAgent:
                 break
             if lead.consecutive_failures >= max_failures:
                 logger.info("[RESEARCH] Lead '%s': max_consecutive_failures reached", lead.business_name)
+                break
+            if current_domain and time.monotonic() - domain_entered_at > max_domain_seconds:
+                logger.info("[RESEARCH] Lead '%s': max_domain_seconds reached on %s", lead.business_name, current_domain)
                 break
             if validation.is_research_sufficient(lead) and lead.actions_taken > 0:
                 current_page_read = bool(last_opened_url and last_opened_url in pages_read)
@@ -267,7 +285,21 @@ class ResearchAgent:
                 continue
 
             logger.info("[LLM] Action: %s — %s", action.action, action.reason or "")
-            result = await self.browser.execute(action)
+            if action.action in ("open_url", "open_new_tab"):
+                target_domain = _domain(action.params.get("url", ""))
+                if target_domain and target_domain != current_domain:
+                    await self.pacing.wait("between_domains" if current_domain else "navigation")
+                    current_domain, domain_entered_at = target_domain, time.monotonic()
+                else:
+                    await self.pacing.wait("navigation")
+                result = await self.browser.execute(action)
+            elif action.action == "extract_page_text":
+                result = await self._read_current_page(max_scrolls_per_page, page_time_cap_s)
+            elif action.action == "click":
+                await self.pacing.wait("link_selection")
+                result = await self.browser.execute(action)
+            else:
+                result = await self.browser.execute(action)
             logger.info("[BROWSER] %s -> %s", action.action, result.status)
             if on_action:
                 try:
@@ -326,6 +358,21 @@ class ResearchAgent:
             if getattr(lead, status_field, "") == STATUS_SECURE_WEB_FORM:
                 continue
             evidence_mod.record_not_found(lead, f, reason=reason, after_search=True)
+
+    async def _read_current_page(self, max_scrolls: int, page_time_cap_s: float) -> ActionResult:
+        first = await self.browser.execute(AgentAction(action="extract_page_text", params={}))
+        if first.status != "success":
+            return first
+        content = await reader_mod.read_page(
+            self.browser._page, self.pacing, initial=first.data,
+            max_scrolls=max_scrolls, page_time_cap_s=page_time_cap_s,
+        )
+        status = "error" if content.stopped_reason == "error" else "success"
+        return ActionResult(action="extract_page_text", status=status, data={
+            "url": content.url, "text": content.text, "links": content.links,
+            "headings": content.headings, "scroll_rounds": content.scroll_rounds,
+            "stopped_reason": content.stopped_reason,
+        })
 
     def _forced_action(
         self, lead: ResearchLead, *, just_opened: bool, last_opened_url: Optional[str],
@@ -387,17 +434,24 @@ class ResearchAgent:
             pass  # extraction happens on extract_page_text (deterministically forced by the loop)
 
         elif action.action == "find_links":
-            self._collect_relevant_links(data.get("links", []), opened_urls, relevant_links)
+            self._collect_relevant_links(
+                data.get("links", []), opened_urls, relevant_links,
+                max_queued=self.cfg.get("research_agent_max_queued_links", 6),
+            )
 
         elif action.action == "extract_page_text":
-            self._collect_relevant_links(data.get("links", []), opened_urls, relevant_links)
+            self._collect_relevant_links(
+                data.get("links", []), opened_urls, relevant_links,
+                max_queued=self.cfg.get("research_agent_max_queued_links", 6),
+            )
             await self._process_page_text(lead, data)
 
     @staticmethod
     def _collect_relevant_links(links: List[Dict[str, str]], opened_urls: Optional[set],
-                                relevant_links: Optional[List[str]]) -> None:
-        """Queue Contact/About/Team page URLs the loop hasn't opened yet, so
-        R3 in _deterministic_override can follow one when a field is missing."""
+                                relevant_links: Optional[List[str]], max_queued: int = 6) -> None:
+        """Queue useful page URLs the loop hasn't opened yet (people pages
+        score highest, then offering pages, then peripheral pages), so R3 in
+        _forced_action can follow one when it's still worth visiting."""
         if relevant_links is None:
             return
         opened = opened_urls or set()
@@ -408,11 +462,10 @@ class ResearchAgent:
                 continue
             if href in opened or href in relevant_links:
                 continue
-            if extraction.is_relevant_nav_link(text) or extraction.is_relevant_nav_link(href):
+            if extraction.link_relevance(href, text) > 0:
                 relevant_links.append(href)
-        # keep it bounded and prioritised (contact/team first)
-        relevant_links.sort(key=lambda u: 0 if re.search(r"contact|team|about|staff|our-team", u, re.I) else 1)
-        del relevant_links[6:]
+        relevant_links.sort(key=lambda u: -extraction.link_relevance(u, ""))
+        del relevant_links[max_queued:]
 
     def _apply_save_evidence(self, lead: ResearchLead, action: AgentAction) -> None:
         """save_evidence is bookkeeping, never routed through the browser
@@ -589,6 +642,7 @@ async def run_research_session(
     is_cancelled: Optional[Any] = None,
     already_processed: Optional[set] = None,
     discovery_fallback: Optional[Any] = None,
+    pacing: Optional[pacing_mod.PacingController] = None,
 ) -> Dict[str, Any]:
     """
     Public entry point. Runs discovery (unless seed_businesses given) then
@@ -648,11 +702,17 @@ async def run_research_session(
     skipped_count = 0
     researched_count = 0
 
+    session_pacing = pacing or pacing_mod.PacingController(
+        pacing_mod.resolve_profile(resolved_cfg.get("research_agent_pacing_profile"))
+    )
+    time_budget_s = float(resolved_cfg.get("research_agent_time_budget_seconds") or 0)
+    session_started = time.monotonic()
+
     async with BrowserController(
         headless=resolved_cfg["research_agent_headless"],
         page_timeout_ms=resolved_cfg["research_agent_page_timeout_ms"],
     ) as browser:
-        agent = ResearchAgent(browser, resolved_cfg, niche)
+        agent = ResearchAgent(browser, resolved_cfg, niche, session_pacing)
 
         for geo in geo_tasks:
             if len(leads) >= target_count:
@@ -722,6 +782,13 @@ async def run_research_session(
                 hint["country"] = hint.get("country") or geo.country
                 if len(leads) >= target_count:
                     break
+                if time_budget_s and time.monotonic() - session_started > time_budget_s:
+                    logger.info(
+                        "[AGENT] Session time budget (%.0fs) reached — stopping with partial results",
+                        time_budget_s,
+                    )
+                    return {"leads": leads, "failed_count": failed_count, "skipped_count": skipped_count,
+                            "geo_tasks": geo_tasks, "processed_keys": processed_keys}
                 if is_cancelled and await is_cancelled():
                     logger.info("[AGENT] Session cancelled — stopping before next lead")
                     return {"leads": leads, "failed_count": failed_count, "skipped_count": skipped_count,
@@ -738,6 +805,7 @@ async def run_research_session(
                     "current_business": hint.get("business_name") or "",
                     "businesses_researched": researched_count,
                 })
+                await session_pacing.wait("between_leads")
                 try:
                     lead = await agent.research_business(hint, on_action=on_action, is_cancelled=is_cancelled)
                     # Persist BEFORE counting this lead as done — if
