@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
 PACING_OPS = (
@@ -27,6 +27,7 @@ class PacingProfile:
     settle_cap_s: float
     retry_attempts: int = 2
     retry_backoff: Tuple[float, float] = (1.0, 3.0)
+    settle_poll_s: float = 0.3
 
     def range_for(self, op: str) -> Tuple[float, float]:
         return self.ranges.get(op, (0.0, 0.0))
@@ -117,7 +118,7 @@ class PacingController:
             else:
                 stable_rounds = 0
             last_len = text_len
-            await self._sleep(0.3)
+            await self._sleep(self.profile.settle_poll_s)
         return "timeout"
 
 
