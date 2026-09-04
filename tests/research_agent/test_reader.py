@@ -123,11 +123,19 @@ async def test_evaluate_error_mid_scroll_returns_error_content_never_raises():
 
 async def test_page_time_cap_stops_a_slow_growing_page(monkeypatch):
     """A page whose content keeps growing and never reaches the bottom can
-    only be stopped by the wall-clock cap. Real timing is unpredictable at
-    microsecond scale against an instant (zero-delay) pacing controller, so
-    this test controls time.monotonic directly: each call advances a fake
-    clock by a fixed step, making the cap deterministic regardless of
-    machine speed."""
+    only be stopped by the wall-clock cap. reader.py and pacing.py both call
+    the process-global time.monotonic, so patching it patches both — to keep
+    this test meaningful (several scroll rounds actually happen before the
+    cap fires, rather than the cap tripping during settle()'s own internal
+    polling before any scrolling), stub PacingController.settle to a no-op
+    with no timing calls of its own, and let the shared fake clock only be
+    consumed by read_page's own loop-top cap check."""
+    pacing = instant_controller()
+
+    async def _instant_settle(page, *, cap_s=None):
+        return "settled"
+    monkeypatch.setattr(pacing, "settle", _instant_settle)
+
     fake_now = {"t": 0.0}
 
     def fake_monotonic():
@@ -141,5 +149,6 @@ async def test_page_time_cap_stops_a_slow_growing_page(monkeypatch):
         for i in range(20)
     ]
     page = ScriptedPage(growing)
-    content = await read_page(page, instant_controller(), initial=INITIAL, max_scrolls=1000, page_time_cap_s=0.05)
+    content = await read_page(page, pacing, initial=INITIAL, max_scrolls=1000, page_time_cap_s=0.05)
     assert content.stopped_reason == "page_time_cap"
+    assert content.scroll_rounds > 0   # proves several scrolls happened before the cap fired, not zero
