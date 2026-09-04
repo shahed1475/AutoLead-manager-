@@ -1,0 +1,39 @@
+{
+  "label": "before",
+  "businesses": [
+    {
+      "business": "Sunny Dental Clinic",
+      "pages_visited": 2,
+      "useful_pages": 7,
+      "fields_found": 4,
+      "decision_makers_found": 1,
+      "wall_time_s": 0.17,
+      "research_status": "COMPLETE"
+    },
+    {
+      "business": "Thin Consulting Co",
+      "pages_visited": 1,
+      "useful_pages": 4,
+      "fields_found": 2,
+      "decision_makers_found": 0,
+      "wall_time_s": 0.03,
+      "research_status": "COMPLETE"
+    },
+    {
+      "business": "Broken Widgets Inc",
+      "pages_visited": 1,
+      "useful_pages": 2,
+      "fields_found": 0,
+      "decision_makers_found": 0,
+      "wall_time_s": 0.03,
+      "research_status": "PARTIAL"
+    }
+  ],
+  "totals": {
+    "pages_visited": 4,
+    "useful_pages": 13,
+    "fields_found": 6,
+    "decision_makers_found": 1,
+    "wall_time_s": 0.23
+  }
+}

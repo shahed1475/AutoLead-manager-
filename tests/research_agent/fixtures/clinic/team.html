@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><title>Our Team - Sunny Dental Clinic</title></head>
+<body>
+<h1>Meet Our Team</h1>
+<div id="cards">
+  <div class="card">Amanda Reyes &mdash; Lead Dentist and Practice Owner</div>
+</div>
+<div style="height:1400px"></div>
+<script>
+  var more = [
+    {text: "Marcus Bell — Practice Manager"},
+    {text: "Dana Whitfield — Office Manager"}
+  ];
+  var revealed = 0;
+  window.addEventListener('scroll', function () {
+    var nearBottom = (window.scrollY + window.innerHeight) > (document.body.scrollHeight - 500);
+    if (nearBottom && revealed < more.length) {
+      var div = document.createElement('div');
+      div.className = 'card';
+      div.textContent = more[revealed].text;
+      document.getElementById('cards').appendChild(div);
+      revealed += 1;
+    }
+  });
+</script>
+</body></html>
