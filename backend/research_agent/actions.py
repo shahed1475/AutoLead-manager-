@@ -59,9 +59,6 @@ def validate_action(action: AgentAction) -> None:
     elif action.action == "click":
         if not str(p.get("text", "")).strip() and not str(p.get("selector", "")).strip():
             raise ActionValidationError("click requires 'text' or 'selector'")
-    elif action.action == "scroll":
-        if p.get("direction") not in ("up", "down"):
-            raise ActionValidationError("scroll requires direction 'up' or 'down'")
     elif action.action == "save_evidence":
         if not str(p.get("field_name", "")).strip():
             raise ActionValidationError("save_evidence requires 'field_name'")

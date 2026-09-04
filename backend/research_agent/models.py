@@ -146,7 +146,7 @@ class ResearchLead:
 
 VALID_ACTIONS = frozenset({
     "google_search", "open_url", "extract_page_text", "find_links",
-    "click", "scroll", "go_back", "open_new_tab", "screenshot",
+    "click", "go_back", "open_new_tab",
     "save_evidence", "finish_research",
 })
 

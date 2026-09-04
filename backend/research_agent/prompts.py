@@ -11,10 +11,8 @@ ACTION_TOOL_DESCRIPTIONS = """\
 - extract_page_text: {"action": "extract_page_text"} — read the visible text of the current page
 - find_links: {"action": "find_links", "keyword": "contact"} — list links on the current page, optionally filtered
 - click: {"action": "click", "text": "Contact Us"} — click a link/button by its visible text
-- scroll: {"action": "scroll", "direction": "down"} — scroll the current page
 - go_back: {"action": "go_back"} — go back to the previous page
 - open_new_tab: {"action": "open_new_tab", "url": "..."} — open a URL in a new tab
-- screenshot: {"action": "screenshot"} — capture a screenshot for evidence
 - save_evidence: {"action": "save_evidence", "field_name": "...", "value": "...", "confidence": 0.8, "status": "FOUND"} — record a finding you are confident about
 - finish_research: {"action": "finish_research", "reason": "..."} — stop researching this business (found enough, or nothing more to try)
 """

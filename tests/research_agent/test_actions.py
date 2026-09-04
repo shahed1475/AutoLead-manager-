@@ -11,11 +11,8 @@ VALID_EXAMPLES = [
     AgentAction(action="find_links", params={"keyword": "contact"}),
     AgentAction(action="click", params={"text": "Contact Us"}),
     AgentAction(action="click", params={"selector": "#contact-link"}),
-    AgentAction(action="scroll", params={"direction": "down"}),
-    AgentAction(action="scroll", params={"direction": "up"}),
     AgentAction(action="go_back", params={}),
     AgentAction(action="open_new_tab", params={"url": "https://example-dental.test"}),
-    AgentAction(action="screenshot", params={}),
     AgentAction(action="save_evidence", params={"field_name": "business_phone", "value": "5551234567", "confidence": 0.8, "status": "FOUND"}),
     AgentAction(action="finish_research", params={"reason": "done"}),
 ]
@@ -65,11 +62,13 @@ def test_click_requires_text_or_selector():
         validate_action(AgentAction(action="click", params={}))
 
 
-def test_scroll_requires_valid_direction():
-    with pytest.raises(ActionValidationError):
-        validate_action(AgentAction(action="scroll", params={"direction": "sideways"}))
-    with pytest.raises(ActionValidationError):
-        validate_action(AgentAction(action="scroll", params={}))
+def test_scroll_and_screenshot_are_retired_actions():
+    """Scrolling and screenshot capture are now owned entirely by
+    PageReader (reader.py) — the LLM can no longer request them as
+    standalone actions."""
+    for retired in ("scroll", "screenshot"):
+        with pytest.raises(ActionValidationError, match="Unknown action"):
+            validate_action(AgentAction(action=retired, params={"direction": "down"}))
 
 
 def test_save_evidence_requires_field_name_and_value():
