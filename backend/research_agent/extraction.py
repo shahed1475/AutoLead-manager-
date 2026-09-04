@@ -14,9 +14,24 @@ from typing import Dict, List, Optional
 from ..scrapers.email_finder import _EMAIL_RE, _PHONE_RE
 from ..validators import clean_email, clean_phone, is_valid_email, is_valid_phone
 
-_TEAM_PAGE_HINTS = re.compile(
-    r"\b(contact|about|team|staff|leadership|doctors|management|our[- ]team|meet[- ]the[- ]team|location)\b",
-    re.I,
+# Scored link map — replaces the old flat _TEAM_PAGE_HINTS regex. Weight 3 =
+# likely to name a person; weight 2 = an offering/booking page (useful for
+# services/tech context, Cycle 2); weight 1 = peripheral but sometimes
+# useful; 0 = not worth queuing.
+_LINK_HINTS_BY_WEIGHT = (
+    (3, re.compile(
+        r"\b(contact|about|team|our[- ]team|meet[- ]the[- ]team|staff|leadership|"
+        r"management|providers?|doctors?|physicians?|dentists?|attorneys?|"
+        r"people|who[- ]we[- ]are)\b", re.I,
+    )),
+    (2, re.compile(
+        r"\b(services?|treatments?|procedures?|what[- ]we[- ]do|specialt(y|ies)|"
+        r"pricing|plans?|fees?|book(ing)?|appointments?|schedule|request|"
+        r"patient[- ]portal|new[- ]patients?)\b", re.I,
+    )),
+    (1, re.compile(
+        r"\b(locations?|offices?|careers?|jobs?|blog|news|press|insights?)\b", re.I,
+    )),
 )
 
 _ROLE_HINT = re.compile(
@@ -84,10 +99,22 @@ def phones_from_contact_links(links: List[Dict[str, str]]) -> List[str]:
     return out
 
 
+def link_relevance(href: str, anchor_text: str = "") -> int:
+    """0 = not worth queuing; higher = more likely to hold people or
+    offering information. Scored from the href path and anchor text
+    together, so a link is still recognised even with no visible text."""
+    haystack = f"{anchor_text} {href}"
+    for weight, pattern in _LINK_HINTS_BY_WEIGHT:
+        if pattern.search(haystack):
+            return weight
+    return 0
+
+
 def is_relevant_nav_link(anchor_text: str) -> bool:
-    """Whether a link's anchor text looks like it leads to a page worth
-    visiting for management/contact info (brief §16 Step 3)."""
-    return bool(_TEAM_PAGE_HINTS.search(anchor_text or ""))
+    """Back-compat shim over link_relevance — True iff the text alone scores
+    above 0. Prefer link_relevance directly in new code (it also recognises
+    offering/peripheral pages, not just people pages)."""
+    return link_relevance(anchor_text, "") > 0
 
 
 def find_role_sentences(text: str, max_sentences: int = 8) -> List[str]:

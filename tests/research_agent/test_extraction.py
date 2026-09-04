@@ -97,3 +97,36 @@ def test_phones_from_contact_links_reads_tel_hrefs():
 def test_contact_links_helpers_ignore_junk():
     assert extraction.emails_from_contact_links([{"text": "x", "href": "mailto:not@@bad"}]) == []
     assert extraction.phones_from_contact_links([{"text": "x", "href": "tel:12"}]) == []
+
+
+def test_link_relevance_people_pages_score_highest():
+    assert extraction.link_relevance("https://x.test/team", "Meet Our Team") == 3
+    assert extraction.link_relevance("https://x.test/about", "About") == 3
+    assert extraction.link_relevance("https://x.test/providers", "Our Providers") == 3
+    assert extraction.link_relevance("https://x.test/contact", "Contact Us") == 3
+
+
+def test_link_relevance_offering_pages_score_medium():
+    assert extraction.link_relevance("https://x.test/services", "Services") == 2
+    assert extraction.link_relevance("https://x.test/book-appointment", "Book Now") == 2
+    assert extraction.link_relevance("https://x.test/pricing", "Pricing") == 2
+
+
+def test_link_relevance_peripheral_pages_score_low():
+    assert extraction.link_relevance("https://x.test/careers", "Careers") == 1
+    assert extraction.link_relevance("https://x.test/blog/post-1", "Blog") == 1
+
+
+def test_link_relevance_irrelevant_pages_score_zero():
+    assert extraction.link_relevance("https://x.test/shop", "Shop Now") == 0
+    assert extraction.link_relevance("https://x.test/cart", "Cart") == 0
+
+
+def test_link_relevance_checks_href_even_with_no_anchor_text():
+    assert extraction.link_relevance("https://x.test/our-team/", "") == 3
+
+
+def test_is_relevant_nav_link_still_works_as_a_shim():
+    assert extraction.is_relevant_nav_link("Meet the Team")
+    assert extraction.is_relevant_nav_link("Contact")
+    assert not extraction.is_relevant_nav_link("Shop Now")
