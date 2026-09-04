@@ -30,6 +30,8 @@ export const SOURCE_BADGE = {
   FOURSQUARE:    'badge bg-pink-500/20 text-pink-400 border border-pink-500/30',
   TOP_LIST:      'badge bg-teal-500/20 text-teal-400 border border-teal-500/30',
   GENERIC_DIR:   'badge bg-slate-500/20 text-slate-400 border border-slate-500/30',
+  BROWSER_RESEARCH_AGENT: 'badge bg-indigo-500/20 text-indigo-400 border border-indigo-500/30',
+  AUTOMATION:    'badge bg-cyan-500/20 text-cyan-400 border border-cyan-500/30',
 }
 
 export const SOURCE_LABEL = {
@@ -42,6 +44,26 @@ export const SOURCE_LABEL = {
   FOURSQUARE:    '📍 4sq',
   TOP_LIST:      '📰 List',
   GENERIC_DIR:   '📂 Dir',
+  BROWSER_RESEARCH_AGENT: '🤖 Research',
+  AUTOMATION:    '🤖 Auto',
+}
+
+// leads.research_status — small inline text colors (not full badges)
+export const RESEARCH_BADGE = {
+  QUEUED:      'text-amber-400',
+  RESEARCHING: 'text-sky-400',
+  COMPLETED:   'text-emerald-400',
+  FAILED:      'text-rose-400',
+  EXCLUDED:    'text-slate-500',
+}
+
+export const RESEARCH_LABEL = {
+  NOT_STARTED: 'Not researched',
+  QUEUED:      'Research queued',
+  RESEARCHING: 'Researching',
+  COMPLETED:   'Researched',
+  FAILED:      'Research failed',
+  EXCLUDED:    'Research excluded',
 }
 
 // campaign_runs.status colors

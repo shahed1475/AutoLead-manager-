@@ -27,6 +27,12 @@ from .routers import auth_router
 from .routers import inbox as inbox_router
 from .routers import followups as followups_router
 from .routers import replies as replies_router
+from .routers import discovery as discovery_router
+from .routers import research_agent as research_agent_router
+from .routers import automation as automation_router
+from .routers import lead_search as lead_search_router
+from .routers import email_campaigns as email_campaigns_router
+from .routers import email_senders as email_senders_router
 from .routers.campaigns import get_campaign_state
 from .queue_worker import init_queue, get_queue
 
@@ -36,6 +42,17 @@ logging.basicConfig(
 )
 settings = get_settings()
 logger   = logging.getLogger(__name__)
+
+
+async def _reconcile_automation(queue) -> None:
+    """A RUNNING automation_state after a restart means the previous slice
+    worker died — re-queue it (state + per-item statuses resume from
+    current_position). Module-level so it is testable."""
+    from .automation.scheduler_hooks import resume_running_slice
+    try:
+        await resume_running_slice(queue)
+    except Exception as exc:
+        logger.warning("Startup automation reconcile failed: %s", exc)
 
 
 # ── App lifespan ──────────────────────────────────────────────────────────────
@@ -63,6 +80,33 @@ async def lifespan(app: FastAPI):
     n_workers = int(stored.get("queue_workers") or settings.queue_workers)
     queue = init_queue(n_workers=n_workers)
     await queue.start()
+
+    # Reconcile background jobs left mid-run by a previous process:
+    #   - research sessions get re-queued (resumable — saved leads + processed
+    #     keys let the worker skip finished work)
+    #   - Quick Search discovery runs are fast; a stuck one is just marked
+    #     FAILED so the UI stops polling it forever.
+    async def _reconcile_interrupted_jobs() -> None:
+        from datetime import datetime, timezone
+        from . import database as _db
+        from .research_agent.session import reconcile_interrupted_sessions
+        try:
+            n = await reconcile_interrupted_sessions(queue)
+            if n:
+                logger.info("Startup: re-queued %d interrupted research session(s)", n)
+        except Exception as exc:
+            logger.warning("Startup research-session reconcile failed: %s", exc)
+        try:
+            for run in await _db.list_interrupted_discovery_runs():
+                await _db.update_discovery_run(run["id"], {
+                    "status": "FAILED",
+                    "error_message": "Interrupted by a server restart — start a new search.",
+                    "finished_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                })
+        except Exception as exc:
+            logger.warning("Startup discovery-run reconcile failed: %s", exc)
+        await _reconcile_automation(queue)
+    asyncio.create_task(_reconcile_interrupted_jobs())
 
     yield
 
@@ -107,6 +151,12 @@ app.include_router(status.router,          dependencies=_authed)
 app.include_router(intelligence.router,    dependencies=_authed)
 app.include_router(marketing_router.router, dependencies=_authed)
 app.include_router(pipeline_router.router,  dependencies=_authed)
+app.include_router(discovery_router.router, dependencies=_authed)
+app.include_router(research_agent_router.router, dependencies=_authed)
+app.include_router(automation_router.router, dependencies=_authed)
+app.include_router(lead_search_router.router, dependencies=_authed)
+app.include_router(email_campaigns_router.router, dependencies=_authed)  # feature-flagged (email_campaigns_enabled, default OFF)
+app.include_router(email_senders_router.router)  # per-route session/flag deps (Gmail OAuth callback must stay public)
 
 
 # ── Log line formatter (shared by SSE stream) ─────────────────────────────────

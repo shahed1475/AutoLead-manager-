@@ -9,6 +9,8 @@ import {
 import { settingsApi, aiApi, leadsApi, authApi, setSessionToken } from '../api/client'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
+import EmailSendersSection from '../components/settings/EmailSendersSection'
+import SearchProvidersSection from '../components/settings/SearchProvidersSection'
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
@@ -266,6 +268,9 @@ const DEFAULTS = {
   scraper_headless: 'true',
   scraper_delay_min: '2.0',
   scraper_delay_max: '5.0',
+  discovery_enrichment_enabled: 'true',
+  research_handoff_mode: 'manual',
+  research_handoff_min_score: '60',
   llm_provider: 'ollama',
   openai_api_key: '',
   openai_model: 'gpt-4o-mini',
@@ -468,6 +473,9 @@ export default function Settings() {
             : 'Test SMTP Connection'}
         </button>
       </SectionCard>
+
+      {/* ─── Email Senders (campaign Send From) ─── */}
+      <EmailSendersSection />
 
       {/* ─── IMAP / Reply Detection ─── */}
       <SectionCard
@@ -721,6 +729,37 @@ export default function Settings() {
           />
         </div>
       </SectionCard>
+
+      {/* ─── Lead Search & Research ─── */}
+      <SectionCard
+        title="Lead Search & Research"
+        description="Post-discovery enrichment and how leads reach the Research Agent."
+        icon={Bot}
+        iconColor="text-indigo-400"
+      >
+        <Toggle
+          label="Enrich & score new leads automatically"
+          description="After every search (manual or automation), find missing emails, analyse websites, and assign a HOT/WARM/COLD score."
+          checked={values.discovery_enrichment_enabled !== 'false'}
+          onChange={() => set('discovery_enrichment_enabled', values.discovery_enrichment_enabled === 'false' ? 'true' : 'false')}
+        />
+        <Toggle
+          label="Automatic Research Agent handoff"
+          description="When on, qualified new leads are sent to the Research Agent automatically. When off, you send them yourself from the Leads list. This setting persists until you turn it off."
+          checked={values.research_handoff_mode === 'automatic'}
+          onChange={() => set('research_handoff_mode', values.research_handoff_mode === 'automatic' ? 'manual' : 'automatic')}
+        />
+        <Field
+          label="Minimum score for automatic handoff"
+          name="research_handoff_min_score"
+          value={values.research_handoff_min_score}
+          onChange={set}
+          placeholder="60"
+          hint="0–100 · only leads at or above this score are auto-sent"
+        />
+      </SectionCard>
+
+      <SearchProvidersSection />
 
       {/* ─── Company DNA ─── */}
       <SectionCard

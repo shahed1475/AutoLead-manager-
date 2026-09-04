@@ -627,7 +627,19 @@ async def run_research_session(
             except Exception:
                 logger.debug("on_progress callback failed (non-fatal)", exc_info=True)
 
-    geo_tasks = await expand_geography(location, target_count, resolved_cfg["research_agent_max_geographic_units"])
+    if seed_businesses:
+        # Handoff: research exactly the supplied businesses, no geographic
+        # expansion. One synthetic unit with no city so the seed loop below
+        # takes the whole list (agent.py:655).
+        target_count = len(seed_businesses)
+        geo_tasks = [GeoTask(
+            city=None, state=None, country=None,
+            raw_location=location or "seed list", target_count=target_count,
+        )]
+    else:
+        geo_tasks = await expand_geography(
+            location, target_count, resolved_cfg["research_agent_max_geographic_units"],
+        )
     if not geo_tasks:
         return {"leads": [], "failed_count": 0, "skipped_count": 0, "geo_tasks": [], "processed_keys": processed_keys}
 

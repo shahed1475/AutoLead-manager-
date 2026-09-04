@@ -24,6 +24,18 @@ def _redact_settings(raw: dict) -> dict:
     }
 
 
+def _is_secret_key(key: str) -> bool:
+    return key.lower().endswith(_SECRET_KEY_SUFFIXES)
+
+
+def _should_skip_secret_write(key: str, value: str) -> bool:
+    """GET redacts secret values to _MASKED. The Settings form loads that mask
+    into its state and a later save sends it straight back — which would
+    overwrite the real secret with the placeholder. Never persist the mask (or
+    an empty string) for a secret key; keep whatever is already stored."""
+    return _is_secret_key(key) and (value == _MASKED or value == "")
+
+
 @router.get("")
 async def get_settings():
     try:
@@ -36,6 +48,10 @@ async def get_settings():
 
 @router.put("")
 async def update_setting(payload: SettingsUpdate):
+    if payload.key == "research_handoff_mode" and str(payload.value).strip().lower() not in ("manual", "automatic"):
+        raise HTTPException(422, "research_handoff_mode must be 'manual' or 'automatic'")
+    if _should_skip_secret_write(payload.key, payload.value):
+        return {"key": payload.key, "value": _MASKED, "skipped": "unchanged secret"}
     try:
         await db.upsert_setting(payload.key, payload.value)
     except Exception as exc:
@@ -48,8 +64,12 @@ async def update_setting(payload: SettingsUpdate):
 async def bulk_update(payload: SettingsBulkUpdate):
     items = payload.model_dump()
     saved = 0
+    skipped = 0
     try:
         for key, value in items.items():
+            if _should_skip_secret_write(str(key), str(value)):
+                skipped += 1
+                continue
             await db.upsert_setting(str(key), str(value))
             saved += 1
     except Exception as exc:
@@ -64,7 +84,7 @@ async def bulk_update(payload: SettingsBulkUpdate):
         except Exception as exc:
             logger.warning("Failed to reschedule daily job: %s", exc)  # non-fatal — scheduler may not be running
 
-    return {"updated": saved}
+    return {"updated": saved, "skipped_unchanged_secrets": skipped}
 
 
 @router.post("/test-smtp")

@@ -15,9 +15,23 @@ sys.path.insert(0, str(REPO_ROOT))
 _TEST_DB_PATH = REPO_ROOT / "backend" / "data" / "test_autolead.db"
 os.environ["DATABASE_PATH"] = str(_TEST_DB_PATH)
 
+import pytest  # noqa: E402
 import pytest_asyncio  # noqa: E402
 
 from backend import database as db  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """slowapi's Limiter keeps per-IP counters in process memory. Without a
+    reset between tests they accumulate across a run and a later test on a
+    rate-limited endpoint gets a spurious 429. Clear it before every test."""
+    try:
+        from backend.rate_limit import limiter
+        limiter.reset()
+    except Exception:
+        pass
+    yield
 
 
 @pytest_asyncio.fixture

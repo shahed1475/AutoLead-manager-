@@ -25,6 +25,7 @@ import math
 import os
 import re
 import sqlite3
+from difflib import SequenceMatcher
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
@@ -41,7 +42,7 @@ _JSON_ARRAY_COLS = frozenset({
     "marketing_gaps", "issues", "conversion_gaps", "seo_gaps",
     "pitch_angles", "key_problems", "sources",
     "services", "products", "social_profiles", "tech_stack", "partnerships",
-    "evidence_ids",
+    "evidence_ids", "sources_planned",
 })
 
 _PG_PARAM_RE = re.compile(r'\$\d+')
@@ -540,6 +541,319 @@ CREATE TABLE IF NOT EXISTS lead_stage_history (
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_lead_stage_history_lead ON lead_stage_history (lead_id);
+
+-- Phase 1 — Universal Lead Discovery. One row per Quick Search or Campaign
+-- discovery run; campaign_run_id links a CAMPAIGN-mode row to the existing
+-- campaign_runs table (campaign_runs itself is untouched).
+CREATE TABLE IF NOT EXISTS lead_discovery_runs (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode                TEXT NOT NULL,
+    raw_query           TEXT,
+    niche               TEXT,
+    city                TEXT,
+    country             TEXT,
+    target_count        INTEGER,
+    planner_intent      TEXT,
+    planner_confidence  REAL,
+    sources_planned     TEXT,
+    status              TEXT DEFAULT 'QUEUED',
+    raw_candidates      INTEGER DEFAULT 0,
+    deduplicated_count  INTEGER DEFAULT 0,
+    results_count       INTEGER DEFAULT 0,
+    campaign_run_id     INTEGER REFERENCES campaign_runs(id) ON DELETE SET NULL,
+    error_message       TEXT,
+    started_at          TIMESTAMP,
+    finished_at         TIMESTAMP,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_discovery_runs_status ON lead_discovery_runs (status);
+
+-- One row per (lead, source) that ever discovered it — preserves provenance
+-- across merges instead of discarding the second/third source's info.
+-- run_id is nullable: Campaign-mode scraping (which doesn't use this table
+-- in Phase 1 — see design spec) never populates it.
+CREATE TABLE IF NOT EXISTS lead_sources (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id            INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    source             TEXT NOT NULL,
+    source_identifier  TEXT,
+    run_id             INTEGER REFERENCES lead_discovery_runs(id) ON DELETE SET NULL,
+    discovered_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    raw_snapshot       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_lead_sources_lead ON lead_sources (lead_id);
+CREATE INDEX IF NOT EXISTS idx_lead_sources_run  ON lead_sources (run_id);
+
+-- Browser Research Agent — independent subsystem (see
+-- docs/superpowers/specs/2026-08-25-browser-research-agent-design.md).
+-- Deliberately separate from lead_discovery_runs/lead_sources above: same
+-- provenance *pattern*, no coupling to Phase 1's tables. lead_id links a
+-- completed/partial result into the main leads table via the existing
+-- create_or_merge_lead() — optional, nullable.
+CREATE TABLE IF NOT EXISTS lead_research_sessions (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    niche                 TEXT NOT NULL,
+    location              TEXT NOT NULL,
+    country               TEXT,
+    target_count          INTEGER NOT NULL,
+    status                TEXT DEFAULT 'QUEUED',
+    current_action        TEXT,
+    current_query         TEXT,
+    current_business      TEXT,
+    current_source        TEXT,
+    current_city          TEXT,
+    research_phase        TEXT,
+    leads_found           INTEGER DEFAULT 0,
+    leads_completed       INTEGER DEFAULT 0,
+    leads_failed          INTEGER DEFAULT 0,
+    businesses_researched INTEGER DEFAULT 0,
+    businesses_skipped    INTEGER DEFAULT 0,
+    processed_keys        TEXT,
+    resume_count          INTEGER DEFAULT 0,
+    resumable             INTEGER DEFAULT 0,
+    error_message         TEXT,
+    started_at            TIMESTAMP,
+    finished_at           TIMESTAMP,
+    created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_research_sessions_status ON lead_research_sessions (status);
+
+CREATE TABLE IF NOT EXISTS lead_research_results (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id               INTEGER NOT NULL REFERENCES lead_research_sessions(id) ON DELETE CASCADE,
+    lead_id                  INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+    city                     TEXT,
+    state                    TEXT,
+    country                  TEXT,
+    business_name            TEXT,
+    business_phone           TEXT,
+    business_email           TEXT,
+    business_website         TEXT,
+    business_email_status    TEXT DEFAULT 'UNCONFIRMED',
+    management_contact_name  TEXT,
+    management_title         TEXT,
+    management_phone         TEXT,
+    management_phone_type    TEXT,
+    management_email         TEXT,
+    management_email_status  TEXT DEFAULT 'UNCONFIRMED',
+    confidence               REAL DEFAULT 0,
+    research_status          TEXT DEFAULT 'PENDING',
+    research_notes           TEXT,
+    created_at               TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_research_results_session ON lead_research_results (session_id);
+
+CREATE TABLE IF NOT EXISTS lead_research_evidence (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    result_id   INTEGER NOT NULL REFERENCES lead_research_results(id) ON DELETE CASCADE,
+    field_name  TEXT NOT NULL,
+    source_type TEXT,
+    source_url  TEXT,
+    snippet     TEXT,
+    confidence  REAL DEFAULT 0,
+    status      TEXT DEFAULT 'UNCONFIRMED',
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_research_evidence_result ON lead_research_evidence (result_id);
+
+-- ── Lead Search Automation (Phase 1 — single config + single queue) ──────────
+-- See docs/superpowers/specs/2026-08-30-lead-search-automation-design.md
+-- Discovery-only: collects deduplicated leads, never sends outreach.
+CREATE TABLE IF NOT EXISTS automation_imports (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename       TEXT,
+    layout         TEXT,
+    n_locations    INTEGER DEFAULT 0,
+    n_niches       INTEGER DEFAULT 0,
+    n_combinations INTEGER DEFAULT 0,
+    imported_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS automation_state (
+    id                    INTEGER PRIMARY KEY CHECK (id = 1),
+    status                TEXT DEFAULT 'IDLE',
+    current_position      INTEGER DEFAULT 0,
+    today_count           INTEGER DEFAULT 0,
+    total_count           INTEGER DEFAULT 0,
+    today_date            TEXT,
+    duration_deadline     TIMESTAMP,
+    next_run_at           TIMESTAMP,
+    queue_total           INTEGER DEFAULT 0,
+    queue_completed       INTEGER DEFAULT 0,
+    last_niche            TEXT,
+    last_location         TEXT,
+    last_query            TEXT,
+    last_success_at       TIMESTAMP,
+    last_run_started_at   TIMESTAMP,
+    last_run_finished_at  TIMESTAMP,
+    paused_at             TIMESTAMP,
+    import_id             INTEGER REFERENCES automation_imports(id) ON DELETE SET NULL,
+    updated_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS automation_queue (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    position       INTEGER NOT NULL UNIQUE,
+    niche          TEXT NOT NULL,
+    city           TEXT,
+    state          TEXT,
+    status         TEXT DEFAULT 'PENDING',
+    leads_found    INTEGER DEFAULT 0,
+    new_leads      INTEGER DEFAULT 0,
+    attempts       INTEGER DEFAULT 0,
+    error_message  TEXT,
+    started_at     TIMESTAMP,
+    finished_at    TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_automation_queue_status   ON automation_queue (status);
+CREATE INDEX IF NOT EXISTS idx_automation_queue_position ON automation_queue (position);
+
+CREATE TABLE IF NOT EXISTS automation_log (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    level    TEXT DEFAULT 'INFO',
+    message  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_automation_log_ts ON automation_log (id);
+
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Email Campaigns (PopupGenix Email Campaign module — n8n orchestrates
+-- preparation, AutoLead's email_sender.send_email() is still the ONLY sender).
+-- Feature-flagged by app_settings 'email_campaigns_enabled' (default false).
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS email_campaigns (
+    id                  INTEGER   PRIMARY KEY AUTOINCREMENT,
+    name                TEXT      NOT NULL,
+    description         TEXT,
+    status              TEXT      DEFAULT 'DRAFT',   -- DRAFT/READY/RUNNING/PAUSED/COMPLETED/FAILED
+    test_mode           INTEGER   DEFAULT 1,          -- 1 = true (SQLite has no bool); production is a separate gated change
+    test_recipient      TEXT      DEFAULT 'shahedalfahad20@gmail.com',
+    ai_enabled          INTEGER   DEFAULT 1,
+    from_name           TEXT,
+    from_email          TEXT,
+    attachment_filename TEXT,
+    attachment_path     TEXT,                         -- backend-managed absolute path; NEVER returned to the frontend
+    attachment_size     INTEGER,
+    attachment_mime     TEXT,
+    config_json         TEXT,                         -- extra per-campaign config (subject hints, ai model override, …)
+    sender_profile_id   INTEGER,                       -- -> email_sender_profiles.id (NULL = use global SMTP, back-compat); SET NULL on profile delete (enforced in code, FK omitted for ALTER-safe migration)
+    reply_to            TEXT,                          -- optional campaign-level Reply-To (does NOT change the authenticated From)
+    total_leads         INTEGER   DEFAULT 0,
+    valid_leads         INTEGER   DEFAULT 0,
+    sent_count          INTEGER   DEFAULT 0,
+    failed_count        INTEGER   DEFAULT 0,
+    replied_count       INTEGER   DEFAULT 0,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at          TIMESTAMP,
+    completed_at        TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_email_campaigns_status ON email_campaigns (status);
+
+CREATE TABLE IF NOT EXISTS email_campaign_leads (
+    id              INTEGER   PRIMARY KEY AUTOINCREMENT,
+    campaign_id     INTEGER   NOT NULL REFERENCES email_campaigns(id) ON DELETE CASCADE,
+    lead_key        TEXT      NOT NULL,               -- stable identity within the campaign (see build_lead_key)
+    lead_id         INTEGER   REFERENCES leads(id) ON DELETE SET NULL,  -- link to the global lead when matched
+    email           TEXT,
+    first_name      TEXT,
+    last_name       TEXT,
+    company         TEXT,
+    raw_json        TEXT,                             -- original imported row, kept for audit / immutability
+    body_source     TEXT      DEFAULT 'ai',           -- 'ai' | 'provided'
+    provided_body   TEXT,                             -- verbatim supplied body when body_source = 'provided'
+    ai_subject      TEXT,
+    ai_body         TEXT,
+    status          TEXT      DEFAULT 'IMPORTED',
+        -- IMPORTED/VALIDATED/MISSING_EMAIL/INVALID_EMAIL/DUPLICATE/READY/
+        -- GENERATED/AI_GENERATION_FAILED/SENT/SEND_FAILED/SKIPPED/DO_NOT_CONTACT
+    status_detail   TEXT,
+    message_id      TEXT,
+    sent_at         TIMESTAMP,
+    failure_reason  TEXT,
+    idempotency_key TEXT,                             -- set at send time = '<campaign_id>:<lead_key>'
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ecl_campaign_leadkey ON email_campaign_leads (campaign_id, lead_key);
+CREATE INDEX IF NOT EXISTS idx_ecl_campaign_status  ON email_campaign_leads (campaign_id, status);
+
+CREATE TABLE IF NOT EXISTS email_campaign_runs (
+    id              INTEGER   PRIMARY KEY AUTOINCREMENT,
+    campaign_id     INTEGER   NOT NULL REFERENCES email_campaigns(id) ON DELETE CASCADE,
+    idempotency_key TEXT      NOT NULL,               -- caller-supplied; a repeat start with the same key returns this run
+    status          TEXT      DEFAULT 'PENDING',      -- PENDING/PREPARING/SENDING/PAUSED/COMPLETED/FAILED
+    n8n_trigger_ref TEXT,                             -- opaque ref from N8nCampaignExecutor; never shown to users
+    batch_size      INTEGER   DEFAULT 0,
+    processed_count INTEGER   DEFAULT 0,
+    sent_count      INTEGER   DEFAULT 0,
+    failed_count    INTEGER   DEFAULT 0,
+    error           TEXT,
+    started_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at    TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ecr_campaign_idem   ON email_campaign_runs (campaign_id, idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_ecr_campaign_status ON email_campaign_runs (campaign_id, status);
+
+CREATE TABLE IF NOT EXISTS email_campaign_activity (
+    id          INTEGER   PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER   NOT NULL REFERENCES email_campaigns(id) ON DELETE CASCADE,
+    ts          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    level       TEXT      DEFAULT 'INFO',
+    event       TEXT      NOT NULL,   -- campaign_created / leads_imported / campaign_started / ...
+    lead_key    TEXT,                 -- optional, for per-lead events
+    detail      TEXT                  -- human-readable; NEVER a secret
+);
+CREATE INDEX IF NOT EXISTS idx_eca_campaign_ts ON email_campaign_activity (campaign_id, id);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Sender Profiles (Checkpoint 4) — the authorized email account a campaign
+-- sends from. AutoLead's email_sender / transport layer is still the ONLY
+-- sender; a profile just selects the authenticated account + transport.
+-- Secrets are encrypted at rest via secrets_crypto (the *_enc columns).
+-- Single-operator app: no owner/tenant column.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS email_sender_profiles (
+    id                      INTEGER   PRIMARY KEY AUTOINCREMENT,
+    name                    TEXT      NOT NULL,
+    provider                TEXT      NOT NULL,                 -- 'smtp' | 'gmail'
+    transport               TEXT      NOT NULL DEFAULT 'smtp',  -- 'smtp' | 'gmail_api'
+    email_address           TEXT      NOT NULL,                 -- authoritative From identity
+    display_name            TEXT,
+    reply_to                TEXT,                              -- profile default Reply-To (campaign may override)
+    status                  TEXT      NOT NULL DEFAULT 'disconnected',  -- 'connected' | 'disconnected' | 'error'
+    is_default              INTEGER   NOT NULL DEFAULT 0,
+    -- SMTP
+    smtp_host               TEXT,
+    smtp_port               INTEGER,
+    smtp_security           TEXT,                              -- 'ssl' | 'starttls'
+    smtp_username           TEXT,
+    smtp_password_enc       TEXT,                              -- secrets_crypto — NEVER returned by the API
+    -- Gmail OAuth2
+    oauth_client_id         TEXT,                              -- which client id authorized this (not secret)
+    oauth_refresh_token_enc TEXT,                              -- secrets_crypto — NEVER returned/logged
+    oauth_access_token_enc  TEXT,                              -- secrets_crypto — NEVER returned/logged
+    oauth_expires_at        TIMESTAMP,
+    oauth_scopes            TEXT,
+    created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_tested_at          TIMESTAMP,
+    last_error              TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sender_profiles_provider ON email_sender_profiles (provider);
+CREATE INDEX IF NOT EXISTS idx_sender_profiles_default  ON email_sender_profiles (is_default);
+
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state       TEXT      PRIMARY KEY,
+    purpose     TEXT      NOT NULL,          -- 'gmail_sender'
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at  TIMESTAMP NOT NULL,
+    used_at     TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_states_expires ON oauth_states (expires_at);
 """
 
 
@@ -620,6 +934,20 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
         ("country",        "TEXT"),
         ("reviews_count",  "INTEGER"),
         ("score_category", "TEXT DEFAULT 'COLD'"),
+        # Lead Search Upgrade (2026-09-04) — discovery provenance + research handoff
+        ("source_type",             "TEXT"),
+        ("research_status",         "TEXT DEFAULT 'NOT_STARTED'"),
+        ("email_status",            "TEXT"),
+        ("last_research_session_id", "INTEGER"),
+        ("excluded_from_research",  "INTEGER DEFAULT 0"),
+        ("latitude",                "REAL"),
+        ("longitude",               "REAL"),
+        ("google_place_id",         "TEXT"),
+        # Phase A — preserve incomplete businesses. FULL = has a contact
+        # channel; MINIMAL = name + location/category only (still a valid
+        # research candidate, excluded from outreach until enriched).
+        ("discovery_status",        "TEXT"),
+        ("research_submission_source", "TEXT"),
     ]:
         await _add_col_if_missing(raw, "leads", col, typedef)
 
@@ -686,6 +1014,53 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
     ]:
         await _add_col_if_missing(raw, "replies", col, typedef)
 
+    # Browser Research Agent — live-progress + resumability columns, added
+    # after the table's first release. Idempotent; a dev DB that already ran
+    # CREATE TABLE IF NOT EXISTS for lead_research_sessions won't have these
+    # without this block.
+    for col, typedef in [
+        ("current_source",        "TEXT"),
+        ("current_city",          "TEXT"),
+        ("research_phase",        "TEXT"),
+        ("businesses_researched", "INTEGER DEFAULT 0"),
+        ("businesses_skipped",    "INTEGER DEFAULT 0"),
+        ("processed_keys",        "TEXT"),
+        ("resume_count",          "INTEGER DEFAULT 0"),
+        ("resumable",             "INTEGER DEFAULT 0"),
+    ]:
+        await _add_col_if_missing(raw, "lead_research_sessions", col, typedef)
+    # Lead Search Upgrade — research handoff of existing leads
+    for col, typedef in [
+        ("mode",            "TEXT DEFAULT 'discovery'"),
+        ("seed_businesses", "TEXT"),
+        ("seed_lead_ids",   "TEXT"),
+        ("submission_source", "TEXT"),
+    ]:
+        await _add_col_if_missing(raw, "lead_research_sessions", col, typedef)
+    for col, typedef in [
+        ("emails_found",   "INTEGER DEFAULT 0"),
+        ("leads_scored",   "INTEGER DEFAULT 0"),
+        ("research_queued", "INTEGER DEFAULT 0"),
+    ]:
+        await _add_col_if_missing(raw, "lead_discovery_runs", col, typedef)
+    await _add_col_if_missing(raw, "lead_research_results", "research_notes", "TEXT")
+
+    # Lead Search Automation — new tables are created by executescript(_SCHEMA_SQL)
+    # above; this block only adds columns to an already-created table on dev DBs.
+    for col, typedef in [
+        ("import_id",   "INTEGER"),
+        ("next_run_at", "TIMESTAMP"),
+    ]:
+        await _add_col_if_missing(raw, "automation_state", col, typedef)
+
+    # Sender Profiles (Checkpoint 4) — email_sender_profiles / oauth_states are
+    # created by executescript(_SCHEMA_SQL) above; these columns are added to the
+    # already-created email_campaigns table on existing DBs. Plain INTEGER (no
+    # REFERENCES) because ALTER TABLE ADD COLUMN cannot add an FK with
+    # PRAGMA foreign_keys=ON — the SET-NULL-on-delete is enforced in code.
+    await _add_col_if_missing(raw, "email_campaigns", "sender_profile_id", "INTEGER")
+    await _add_col_if_missing(raw, "email_campaigns", "reply_to", "TEXT")
+
     # Data normalisation
     # DO_NOT_CONTACT (Phase 4 opt-out) is a terminal, sticky status — must be in
     # this allow-list or a lead marked DO_NOT_CONTACT would silently revert to
@@ -706,6 +1081,39 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
         UPDATE company_profiles SET status = 'PENDING'
         WHERE status IN ('QUALIFYING', 'RESEARCHING', 'FAILED')
     """)
+
+    # Lead Search Upgrade — one-time back-fill of source_type / research_status
+    # from existing provenance. Idempotent: only touches rows where the value
+    # is still unset / can be derived. Runs cheaply on every startup.
+    await raw.execute("""
+        UPDATE leads SET source_type = 'automation'
+        WHERE source_type IS NULL AND id IN (
+            SELECT lead_id FROM lead_sources
+            WHERE run_id IN (SELECT id FROM lead_discovery_runs WHERE mode = 'AUTOMATION')
+        )
+    """)
+    await raw.execute("""
+        UPDATE leads SET source_type = 'manual'
+        WHERE id IN (
+            SELECT lead_id FROM lead_sources
+            WHERE run_id IN (SELECT id FROM lead_discovery_runs WHERE mode = 'QUICK')
+        )
+    """)
+    await raw.execute("""
+        UPDATE leads SET discovery_status =
+            CASE WHEN email IS NOT NULL OR phone IS NOT NULL OR website IS NOT NULL
+                 THEN 'FULL' ELSE 'MINIMAL' END
+        WHERE discovery_status IS NULL
+    """)
+    await raw.execute("""
+        UPDATE leads SET research_status = 'COMPLETED',
+                         last_research_session_id = (
+                             SELECT r.session_id FROM lead_research_results r
+                             WHERE r.lead_id = leads.id ORDER BY r.id DESC LIMIT 1
+                         )
+        WHERE (research_status IS NULL OR research_status = 'NOT_STARTED')
+          AND id IN (SELECT lead_id FROM lead_research_results WHERE lead_id IS NOT NULL)
+    """)
     await raw.commit()
     logger.info("Schema migrations applied")
 
@@ -723,6 +1131,9 @@ _LEAD_WRITABLE = frozenset({
     "business_name", "phone", "email", "website", "address",
     "niche", "city", "country", "rating", "reviews_count", "review_count",
     "source", "status", "channel",
+    "source_type", "research_status", "email_status", "last_research_session_id",
+    "excluded_from_research", "latitude", "longitude", "google_place_id",
+    "discovery_status", "research_submission_source",
     "score", "score_label", "score_category",
     "ai_whatsapp_msg", "ai_email_subject", "ai_email_body",
     "ai_followup_msg", "ai_follow_up_1", "ai_follow_up_2", "ai_follow_up_3",
@@ -919,6 +1330,9 @@ async def get_leads(
     date_field: str = "created_at",
     score_label: Optional[str] = None,
     enriched_only: bool = False,
+    source: Optional[str] = None,
+    source_type: Optional[str] = None,
+    research_status: Optional[str] = None,
 ) -> Dict[str, Any]:
     _SORTABLE    = {"business_name", "created_at", "sent_at", "status", "niche", "city", "score"}
     _DATE_FIELDS = {"created_at", "sent_at"}
@@ -947,6 +1361,9 @@ async def get_leads(
         conditions.append(f"score_label = {p(score_label.upper())}")
     if enriched_only:
         conditions.append("website_summary IS NOT NULL AND website_summary != ''")
+    if source:          conditions.append(f"source = {p(source.upper())}")
+    if source_type:     conditions.append(f"source_type = {p(source_type.lower())}")
+    if research_status: conditions.append(f"research_status = {p(research_status.upper())}")
 
     where  = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     offset = (page - 1) * page_size
@@ -1026,6 +1443,62 @@ async def find_duplicate_lead(
         if row:
             return dict(row)
 
+    return None
+
+
+_FUZZY_NAME_STOP = frozenset({
+    "the", "a", "an", "and", "&", "of", "for", "at",
+    "ltd", "llc", "inc", "co", "corp", "company",
+})
+
+
+def _fuzzy_norm_name(name: Optional[str], city: Optional[str]) -> str:
+    raw = f"{name or ''} {city or ''}".lower()
+    raw = re.sub(r"[^\w\s]", " ", raw)
+    return " ".join(w for w in raw.split() if w not in _FUZZY_NAME_STOP)
+
+
+async def find_duplicate_lead_fuzzy(
+    email: Optional[str],
+    phone: Optional[str],
+    website: Optional[str] = None,
+    business_name: Optional[str] = None,
+    city: Optional[str] = None,
+    threshold: float = 0.85,
+) -> Optional[Dict[str, Any]]:
+    """
+    Like find_duplicate_lead, but adds a genuinely fuzzy name+city fallback
+    (SequenceMatcher ratio >= threshold) when no exact email/phone/website/
+    name+city match is found. find_duplicate_lead's own name+city signal is
+    an EXACT match only — the real fuzzy matcher lives in
+    scrapers/__init__.py's in-batch dedup (_norm_name/_is_fuzzy_dup), which
+    can't be imported here (scrapers already imports database — importing
+    back would be circular), so the same small algorithm (stopword
+    normalization + SequenceMatcher >= 0.85) is reimplemented here.
+
+    Used only by create_or_merge_lead (the discovery layer's Quick Search
+    path). find_duplicate_lead itself — and its existing callers
+    (create_lead_deduped/create_lead_deduped_with_log, the live Campaign
+    scraping save path) — are completely unchanged.
+    """
+    existing = await find_duplicate_lead(email, phone, website, business_name, city)
+    if existing:
+        return existing
+
+    if not business_name or not city:
+        return None
+    target = _fuzzy_norm_name(business_name, city)
+    if not target:
+        return None
+
+    async with get_db() as conn:
+        candidates = await conn.fetch(
+            "SELECT * FROM leads WHERE LOWER(city) = LOWER($1) ORDER BY created_at DESC LIMIT 500", city,
+        )
+    for cand in candidates:
+        cand_key = _fuzzy_norm_name(cand.get("business_name"), city)
+        if cand_key and SequenceMatcher(None, target, cand_key).ratio() >= threshold:
+            return dict(cand)
     return None
 
 
@@ -2292,6 +2765,1077 @@ async def list_campaigns(limit: int = 20) -> List[Dict[str, Any]]:
             "SELECT * FROM campaigns ORDER BY started_at DESC LIMIT $1", limit
         )
     return [dict(r) for r in rows]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 1 — Universal Lead Discovery (Quick Search / Campaign Planner runs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_RAW_SNAPSHOT_MAX_CHARS = 2000
+
+
+async def create_discovery_run(data: Dict[str, Any]) -> int:
+    """Insert a new lead_discovery_runs row (status defaults to QUEUED); returns its id."""
+    cols = [
+        "mode", "raw_query", "niche", "city", "country", "target_count",
+        "planner_intent", "planner_confidence", "sources_planned",
+        "campaign_run_id",
+    ]
+    clean: Dict[str, Any] = {}
+    for c in cols:
+        if c in data and data[c] is not None:
+            v = data[c]
+            clean[c] = json.dumps(v) if isinstance(v, list) else v
+    if "mode" not in clean:
+        raise ValueError("create_discovery_run requires 'mode'")
+
+    col_sql  = ", ".join(clean.keys())
+    ph       = ", ".join("?" for _ in clean)
+    async with get_db() as conn:
+        run_id = await conn.fetchval(
+            f"INSERT INTO lead_discovery_runs ({col_sql}) VALUES ({ph}) RETURNING id",
+            *clean.values(),
+        )
+    return run_id
+
+
+_DISCOVERY_RUN_WRITABLE = frozenset({
+    "status", "raw_candidates", "deduplicated_count", "results_count",
+    "planner_intent", "planner_confidence", "sources_planned",
+    "error_message", "started_at", "finished_at",
+    "emails_found", "leads_scored", "research_queued",
+})
+
+
+async def update_discovery_run(run_id: int, data: Dict[str, Any]) -> bool:
+    clean: Dict[str, Any] = {}
+    for k, v in data.items():
+        if k in _DISCOVERY_RUN_WRITABLE and v is not None:
+            clean[k] = json.dumps(v) if isinstance(v, list) else v
+    if not clean:
+        return False
+    set_clause = ", ".join(f"{col} = ?" for col in clean.keys())
+    params     = list(clean.values()) + [run_id]
+    async with get_db() as conn:
+        result = await conn.execute(
+            f"UPDATE lead_discovery_runs SET {set_clause} WHERE id = ?", *params
+        )
+    return _rows_affected(result) > 0
+
+
+async def get_discovery_run(run_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM lead_discovery_runs WHERE id = $1", run_id
+        )
+    return dict(row) if row else None
+
+
+_DISCOVERY_ACTIVE_STATUSES = ("QUEUED", "RUNNING", "CANCEL_REQUESTED")
+
+
+async def get_recent_discovery_runs(mode: str, limit: int = 20) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM lead_discovery_runs WHERE mode = $1 ORDER BY id DESC LIMIT $2",
+            mode, limit,
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_research_status_counts(source_type: Optional[str] = None) -> Dict[str, int]:
+    """leads.research_status histogram, optionally scoped to a discovery origin."""
+    where, params = "", []
+    if source_type:
+        where = "WHERE source_type = ?"
+        params.append(source_type)
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            f"SELECT COALESCE(research_status, 'NOT_STARTED') AS s, COUNT(*) n FROM leads {where} GROUP BY s",
+            *params,
+        )
+    return {r["s"]: int(r["n"]) for r in rows}
+
+
+async def get_discovery_run_totals(mode: str) -> Dict[str, int]:
+    async with get_db() as conn:
+        row = await conn.fetchrow(
+            """SELECT
+                 COUNT(*)                         AS runs,
+                 COALESCE(SUM(raw_candidates), 0)  AS raw_candidates,
+                 COALESCE(SUM(results_count), 0)   AS results_count,
+                 COALESCE(SUM(deduplicated_count), 0) AS deduplicated,
+                 COALESCE(SUM(emails_found), 0)    AS emails_found,
+                 COALESCE(SUM(leads_scored), 0)    AS leads_scored,
+                 COALESCE(SUM(research_queued), 0) AS research_queued,
+                 COALESCE(SUM(status = 'FAILED'), 0) AS failed
+               FROM lead_discovery_runs WHERE mode = $1""",
+            mode,
+        )
+    return {k: int(v or 0) for k, v in dict(row).items()} if row else {}
+
+
+async def get_latest_discovery_run(
+    mode: str = "QUICK", active_only: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """The most recent discovery run for `mode` — used by the frontend to
+    reconnect to an in-flight (or just-finished) run after a page navigation
+    or refresh. `active_only` restricts to non-terminal runs."""
+    where = "mode = $1"
+    params: List[Any] = [mode]
+    if active_only:
+        placeholders = ", ".join(f"${i + 2}" for i in range(len(_DISCOVERY_ACTIVE_STATUSES)))
+        where += f" AND status IN ({placeholders})"
+        params.extend(_DISCOVERY_ACTIVE_STATUSES)
+    async with get_db() as conn:
+        row = await conn.fetchrow(
+            f"SELECT * FROM lead_discovery_runs WHERE {where} ORDER BY id DESC LIMIT 1",
+            *params,
+        )
+    return dict(row) if row else None
+
+
+async def record_lead_source(
+    lead_id: int,
+    source: str,
+    source_identifier: Optional[str] = None,
+    run_id: Optional[int] = None,
+    raw_snapshot: Optional[Dict[str, Any]] = None,
+) -> int:
+    """Insert one provenance row. Always called — even when the lead already
+    existed — so every source that ever found a lead is recorded."""
+    snapshot_text = None
+    if raw_snapshot is not None:
+        try:
+            snapshot_text = json.dumps(raw_snapshot, default=str)[:_RAW_SNAPSHOT_MAX_CHARS]
+        except (TypeError, ValueError):
+            snapshot_text = None
+    async with get_db() as conn:
+        source_id = await conn.fetchval(
+            """INSERT INTO lead_sources (lead_id, source, source_identifier, run_id, raw_snapshot)
+               VALUES ($1, $2, $3, $4, $5) RETURNING id""",
+            lead_id, source, source_identifier, run_id, snapshot_text,
+        )
+    return source_id
+
+
+async def get_lead_sources(lead_id: int) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM lead_sources WHERE lead_id = $1 ORDER BY discovered_at ASC",
+            lead_id,
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_leads_for_discovery_run(run_id: int) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            """SELECT DISTINCT l.* FROM leads l
+               JOIN lead_sources ls ON ls.lead_id = l.id
+               WHERE ls.run_id = $1
+               ORDER BY l.created_at DESC""",
+            run_id,
+        )
+    return [dict(r) for r in rows]
+
+
+async def _insert_lead_row(conn, data: Dict[str, Any]) -> int:
+    """The raw lead-row insert, factored out of create_or_merge_lead so it
+    runs inside that function's shared transaction() connection — and so
+    tests can inject a race at this exact point (simulate a concurrent
+    insert landing between the duplicate-check and this insert) without
+    reaching into the transaction machinery itself."""
+    clean = {k: _coerce(k, v) for k, v in data.items() if k in _LEAD_WRITABLE and v is not None}
+    if not clean:
+        raise ValueError("No writable fields provided")
+    cols = ", ".join(clean.keys())
+    ph = ", ".join("?" for _ in clean)
+    return await conn.fetchval(f"INSERT INTO leads ({cols}) VALUES ({ph}) RETURNING id", *clean.values())
+
+
+async def create_or_merge_lead(
+    data: Dict[str, Any],
+    source: str,
+    source_identifier: Optional[str] = None,
+    run_id: Optional[int] = None,
+) -> Tuple[int, bool, Optional[str]]:
+    """
+    Discovery-layer save: unlike create_lead_deduped (which discards a
+    duplicate candidate's extra info), this merges missing fields into the
+    existing lead and always records provenance. Existing non-null values
+    always win on conflict. Returns (lead_id, is_new, merge_reason) where
+    merge_reason is 'email' | 'phone' | 'website' | 'name_city' | None (None = new lead).
+
+    Used by the Quick Search discovery path only — Campaign-mode scraping
+    keeps using create_lead_deduped_with_log unchanged (see design spec).
+    """
+    data = _normalize_lead_fields(data)
+    email   = data.get("email")
+    phone   = data.get("phone")
+    website = data.get("website")
+    name    = data.get("business_name")
+    city    = data.get("city")
+
+    existing = await find_duplicate_lead_fuzzy(
+        email=email, phone=phone, website=website, business_name=name, city=city,
+    )
+
+    snapshot_text = None
+    try:
+        snapshot_text = json.dumps(data, default=str)[:_RAW_SNAPSHOT_MAX_CHARS]
+    except (TypeError, ValueError):
+        pass
+
+    if existing is None:
+        try:
+            # Atomic: the lead row and its provenance row commit together —
+            # a crash between them can no longer leave a lead with zero
+            # lead_sources rows, matching create_lead_deduped_with_log's
+            # existing atomicity precedent elsewhere in this file.
+            async with transaction() as conn:
+                lead_id = await _insert_lead_row(conn, data)
+                await conn.execute(
+                    """INSERT INTO lead_sources (lead_id, source, source_identifier, run_id, raw_snapshot)
+                       VALUES ($1, $2, $3, $4, $5)""",
+                    lead_id, source, source_identifier, run_id, snapshot_text,
+                )
+            return lead_id, True, None
+        except sqlite3.IntegrityError:
+            # Race: a concurrent Quick Search run (JobQueue has multiple
+            # workers) inserted the same email/phone between our lookup and
+            # our insert. Re-resolve and fall through to the merge path
+            # instead of raising — matches create_lead_deduped's existing
+            # race-safety pattern. Only email/phone have DB-level unique
+            # indexes (leads has none for website or fuzzy name+city), so
+            # this only catches races on those two signals — a narrower,
+            # rarer race on website-only/fuzzy matches remains a known
+            # limitation (see design spec's Known Limitations).
+            existing = await find_duplicate_lead_fuzzy(
+                email=email, phone=phone, website=website, business_name=name, city=city,
+            )
+            if existing is None:
+                raise
+
+    lead_id = existing["id"]
+
+    if email and existing.get("email") and email.lower() == str(existing["email"]).lower():
+        merge_reason = "email"
+    elif phone and existing.get("phone") and phone == existing.get("phone"):
+        merge_reason = "phone"
+    elif website and existing.get("website") and website.lower() == str(existing["website"]).lower():
+        merge_reason = "website"
+    else:
+        merge_reason = "name_city"
+
+    # Fill only fields the existing row is missing — existing values always
+    # win, including falsy-but-real ones (0, 0.0, False, "") which are
+    # genuine data, not absence, and must not be treated as "missing".
+    fill: Dict[str, Any] = {}
+    for col in _LEAD_WRITABLE:
+        if col in ("business_name", "status"):
+            continue  # never overwritten by a merge
+        new_val = data.get(col)
+        if new_val is not None and existing.get(col) is None:
+            fill[col] = new_val
+
+    async with transaction() as conn:
+        if fill:
+            clean = {k: _coerce(k, v) for k, v in fill.items()}
+            set_clause = ", ".join(f"{col} = ?" for col in clean.keys())
+            await conn.execute(f"UPDATE leads SET {set_clause} WHERE id = ?", *clean.values(), lead_id)
+        await conn.execute(
+            """INSERT INTO lead_sources (lead_id, source, source_identifier, run_id, raw_snapshot)
+               VALUES ($1, $2, $3, $4, $5)""",
+            lead_id, source, source_identifier, run_id, snapshot_text,
+        )
+    return lead_id, False, merge_reason
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Browser Research Agent (independent subsystem — see research_agent design spec)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_RESEARCH_SESSION_WRITABLE = frozenset({
+    "status", "current_action", "current_query", "current_business",
+    "current_source", "current_city", "research_phase",
+    "leads_found", "leads_completed", "leads_failed",
+    "businesses_researched", "businesses_skipped",
+    "processed_keys", "resume_count", "resumable",
+    "error_message", "started_at", "finished_at",
+    "mode", "seed_businesses", "seed_lead_ids",
+})
+
+
+async def set_leads_field(lead_ids: List[int], field: str, value: Any) -> int:
+    """Bulk-set one writable column on a set of leads (research handoff bookkeeping)."""
+    if field not in _LEAD_WRITABLE:
+        raise ValueError(f"{field} is not a writable lead column")
+    ids = [i for i in dict.fromkeys(lead_ids) if i]
+    if not ids:
+        return 0
+    ph = ", ".join("?" for _ in ids)
+    async with get_db() as conn:
+        result = await conn.execute(
+            f"UPDATE leads SET {field} = ? WHERE id IN ({ph})", value, *ids
+        )
+    return _rows_affected(result)
+
+
+async def set_leads_research_status(
+    lead_ids: List[int],
+    status: str,
+    *,
+    session_id: Optional[int] = None,
+    only_from: Optional[Tuple[str, ...]] = None,
+) -> int:
+    """Bulk-set leads.research_status (research handoff). `only_from` restricts
+    the transition to leads currently in one of those statuses — used so a
+    session finishing never clobbers a lead a human already re-classified."""
+    ids = [i for i in dict.fromkeys(lead_ids) if i]
+    if not ids:
+        return 0
+    sets = ["research_status = ?"]
+    params: List[Any] = [status]
+    if session_id is not None:
+        sets.append("last_research_session_id = ?")
+        params.append(session_id)
+    ph = ", ".join("?" for _ in ids)
+    where = f"id IN ({ph})"
+    params.extend(ids)
+    if only_from:
+        fp = ", ".join("?" for _ in only_from)
+        where += f" AND research_status IN ({fp})"
+        params.extend(only_from)
+    async with get_db() as conn:
+        result = await conn.execute(
+            f"UPDATE leads SET {', '.join(sets)} WHERE {where}", *params
+        )
+    return _rows_affected(result)
+
+_RESEARCH_RESULT_COLS = (
+    "city", "state", "country", "business_name", "business_phone", "business_email",
+    "business_website", "business_email_status", "management_contact_name", "management_title",
+    "management_phone", "management_phone_type", "management_email", "management_email_status",
+    "confidence", "research_status", "research_notes",
+)
+
+
+async def create_research_session(data: Dict[str, Any]) -> int:
+    required = ("niche", "location", "target_count")
+    if any(data.get(k) is None for k in required):
+        raise ValueError("create_research_session requires niche, location, target_count")
+    clean = {k: data[k] for k in ("niche", "location", "country", "target_count", "mode", "submission_source")
+             if data.get(k) is not None}
+    for jk in ("seed_businesses", "seed_lead_ids"):
+        if data.get(jk) is not None:
+            clean[jk] = json.dumps(data[jk], default=str)
+    col_sql = ", ".join(clean.keys())
+    ph = ", ".join("?" for _ in clean)
+    async with get_db() as conn:
+        session_id = await conn.fetchval(
+            f"INSERT INTO lead_research_sessions ({col_sql}) VALUES ({ph}) RETURNING id", *clean.values(),
+        )
+    return session_id
+
+
+async def update_research_session(session_id: int, data: Dict[str, Any]) -> bool:
+    clean = {k: v for k, v in data.items() if k in _RESEARCH_SESSION_WRITABLE and v is not None}
+    if not clean:
+        return False
+    set_clause = ", ".join(f"{col} = ?" for col in clean.keys())
+    params = list(clean.values()) + [session_id]
+    async with get_db() as conn:
+        result = await conn.execute(f"UPDATE lead_research_sessions SET {set_clause} WHERE id = ?", *params)
+    return _rows_affected(result) > 0
+
+
+async def get_research_session(session_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow("SELECT * FROM lead_research_sessions WHERE id = $1", session_id)
+    return dict(row) if row else None
+
+
+_RESEARCH_ACTIVE_STATUSES = ("QUEUED", "RUNNING", "CANCEL_REQUESTED")
+
+
+async def get_latest_research_session(active_only: bool = False) -> Optional[Dict[str, Any]]:
+    """The most recent research session — used by the frontend to reconnect
+    after a navigation/refresh. `active_only` restricts to non-terminal runs."""
+    if active_only:
+        placeholders = ", ".join(f"${i + 1}" for i in range(len(_RESEARCH_ACTIVE_STATUSES)))
+        sql = f"SELECT * FROM lead_research_sessions WHERE status IN ({placeholders}) ORDER BY id DESC LIMIT 1"
+        params: List[Any] = list(_RESEARCH_ACTIVE_STATUSES)
+    else:
+        sql = "SELECT * FROM lead_research_sessions ORDER BY id DESC LIMIT 1"
+        params = []
+    async with get_db() as conn:
+        row = await conn.fetchrow(sql, *params)
+    return dict(row) if row else None
+
+
+_RESEARCH_SESSION_LIST_COLS = (
+    "id", "mode", "submission_source", "status", "research_phase",
+    "niche", "location", "country", "target_count",
+    "leads_found", "leads_completed", "leads_failed", "resume_count",
+    "seed_lead_ids", "error_message", "created_at", "started_at", "finished_at",
+)
+
+
+async def list_research_sessions(
+    limit: int = 20, offset: int = 0, mode: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Research sessions, newest first — for the Research Agent page's session
+    list. `mode` filters 'discovery' (started on that page) vs 'handoff' (from
+    Lead Search / Automation)."""
+    cols = ", ".join(_RESEARCH_SESSION_LIST_COLS)
+    where, params = "", []
+    if mode:
+        where = "WHERE mode = ?"
+        params.append(mode)
+    params.extend([limit, offset])
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            f"SELECT {cols} FROM lead_research_sessions {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            *params,
+        )
+    return [dict(r) for r in rows]
+
+
+async def list_interrupted_research_sessions() -> List[Dict[str, Any]]:
+    """Sessions left non-terminal by a worker/server crash — reconciled at
+    app startup (see main.py lifespan)."""
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM lead_research_sessions WHERE status IN ('QUEUED', 'RUNNING', 'CANCEL_REQUESTED') ORDER BY id ASC"
+        )
+    return [dict(r) for r in rows]
+
+
+async def list_interrupted_discovery_runs() -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM lead_discovery_runs WHERE status IN ('QUEUED', 'RUNNING', 'CANCEL_REQUESTED') ORDER BY id ASC"
+        )
+    return [dict(r) for r in rows]
+
+
+async def list_research_results(session_id: int) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM lead_research_results WHERE session_id = $1 ORDER BY created_at ASC", session_id,
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_research_evidence_for_result(result_id: int) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM lead_research_evidence WHERE result_id = $1 ORDER BY created_at ASC", result_id,
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_research_evidence_for_results(result_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
+    """Batched form of get_research_evidence_for_result — one query for N
+    results instead of N, used by GET /api/research-agent/{id}/results
+    (polled every few seconds while a session is active)."""
+    if not result_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in result_ids)
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            f"SELECT * FROM lead_research_evidence WHERE result_id IN ({placeholders}) ORDER BY result_id, created_at ASC",
+            *result_ids,
+        )
+    grouped: Dict[int, List[Dict[str, Any]]] = {rid: [] for rid in result_ids}
+    for row in rows:
+        d = dict(row)
+        grouped.setdefault(d["result_id"], []).append(d)
+    return grouped
+
+
+async def save_research_result(
+    session_id: int,
+    result_dict: Dict[str, Any],
+    evidence_list: List[Dict[str, Any]],
+    lead_id: Optional[int] = None,
+) -> int:
+    """Atomic: the result row and all of its evidence rows commit together
+    (or neither does) — a crash mid-write can never leave a result with
+    partial/missing provenance."""
+    clean = {c: result_dict.get(c) for c in _RESEARCH_RESULT_COLS if result_dict.get(c) is not None}
+    clean["session_id"] = session_id
+    if lead_id is not None:
+        clean["lead_id"] = lead_id
+    col_sql = ", ".join(clean.keys())
+    ph = ", ".join("?" for _ in clean)
+
+    async with transaction() as conn:
+        result_id = await conn.fetchval(
+            f"INSERT INTO lead_research_results ({col_sql}) VALUES ({ph}) RETURNING id", *clean.values(),
+        )
+        for ev in evidence_list:
+            await conn.execute(
+                """INSERT INTO lead_research_evidence
+                   (result_id, field_name, source_type, source_url, snippet, confidence, status)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                result_id, ev["field_name"], ev.get("source_type"), ev.get("source_url"),
+                ev.get("snippet"), ev.get("confidence", 0), ev.get("status", "UNCONFIRMED"),
+            )
+    return result_id
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lead Search Automation (see 2026-08-30-lead-search-automation-design.md)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_AUTOMATION_STATE_WRITABLE = frozenset({
+    "status", "current_position", "today_count", "total_count", "today_date",
+    "duration_deadline", "next_run_at", "queue_total", "queue_completed",
+    "last_niche", "last_location", "last_query", "last_success_at",
+    "last_run_started_at", "last_run_finished_at", "paused_at", "import_id",
+})
+
+_AUTOMATION_QUEUE_WRITABLE = frozenset({
+    "status", "leads_found", "new_leads", "attempts", "error_message",
+    "started_at", "finished_at",
+})
+
+_AUTOMATION_LOG_CAP = 2000
+
+
+def _now_naive_iso() -> str:
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+
+
+async def get_automation_state() -> Dict[str, Any]:
+    """The single automation config/progress row (id=1). Created on first call."""
+    async with get_db() as conn:
+        row = await conn.fetchrow("SELECT * FROM automation_state WHERE id = 1")
+        if row is None:
+            await conn.execute("INSERT INTO automation_state (id, status) VALUES (1, 'IDLE')")
+            row = await conn.fetchrow("SELECT * FROM automation_state WHERE id = 1")
+    return dict(row)
+
+
+async def update_automation_state(data: Dict[str, Any]) -> bool:
+    clean = {k: v for k, v in data.items() if k in _AUTOMATION_STATE_WRITABLE and v is not None}
+    if not clean:
+        return False
+    clean["updated_at"] = _now_naive_iso()
+    set_clause = ", ".join(f"{c} = ?" for c in clean)
+    async with get_db() as conn:
+        result = await conn.execute(
+            f"UPDATE automation_state SET {set_clause} WHERE id = 1", *clean.values()
+        )
+    return _rows_affected(result) > 0
+
+
+async def bulk_insert_automation_queue(items: List[Dict[str, Any]]) -> int:
+    if not items:
+        return 0
+    async with transaction() as conn:
+        for it in items:
+            await conn.execute(
+                "INSERT INTO automation_queue (position, niche, city, state) VALUES ($1, $2, $3, $4)",
+                it["position"], it["niche"], it.get("city"), it.get("state"),
+            )
+    return len(items)
+
+
+async def get_automation_queue(
+    status: Optional[str] = None, offset: int = 0, limit: int = 100,
+) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        if status:
+            rows = await conn.fetch(
+                "SELECT * FROM automation_queue WHERE status = $1 ORDER BY position ASC LIMIT $2 OFFSET $3",
+                status, limit, offset,
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT * FROM automation_queue ORDER BY position ASC LIMIT $1 OFFSET $2",
+                limit, offset,
+            )
+    return [dict(r) for r in rows]
+
+
+async def count_automation_queue_by_status() -> Dict[str, int]:
+    async with get_db() as conn:
+        rows = await conn.fetch("SELECT status, COUNT(*) AS n FROM automation_queue GROUP BY status")
+    return {r["status"]: r["n"] for r in rows}
+
+
+async def update_automation_queue_item(item_id: int, data: Dict[str, Any]) -> bool:
+    clean = {k: v for k, v in data.items() if k in _AUTOMATION_QUEUE_WRITABLE and v is not None}
+    if not clean:
+        return False
+    set_clause = ", ".join(f"{c} = ?" for c in clean)
+    async with get_db() as conn:
+        result = await conn.execute(
+            f"UPDATE automation_queue SET {set_clause} WHERE id = ?", *clean.values(), item_id
+        )
+    return _rows_affected(result) > 0
+
+
+async def checkpoint_automation_progress(
+    item_id: int, item_data: Dict[str, Any], state_data: Dict[str, Any],
+) -> None:
+    """Atomic recovery point: the queue item and automation_state commit together
+    so a crash can never advance the position without recording the item, or
+    vice versa."""
+    item_clean = {k: v for k, v in item_data.items() if k in _AUTOMATION_QUEUE_WRITABLE and v is not None}
+    state_clean = {k: v for k, v in state_data.items() if k in _AUTOMATION_STATE_WRITABLE and v is not None}
+    state_clean["updated_at"] = _now_naive_iso()
+    async with transaction() as conn:
+        if item_clean:
+            set_i = ", ".join(f"{c} = ?" for c in item_clean)
+            await conn.execute(f"UPDATE automation_queue SET {set_i} WHERE id = ?", *item_clean.values(), item_id)
+        set_s = ", ".join(f"{c} = ?" for c in state_clean)
+        await conn.execute(f"UPDATE automation_state SET {set_s} WHERE id = 1", *state_clean.values())
+
+
+async def reset_automation_queue() -> None:
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE automation_queue SET status = 'PENDING', leads_found = 0, new_leads = 0, "
+            "attempts = 0, error_message = NULL, started_at = NULL, finished_at = NULL"
+        )
+
+
+async def append_automation_log(level: str, message: str) -> None:
+    async with get_db() as conn:
+        await conn.execute(
+            "INSERT INTO automation_log (level, message) VALUES ($1, $2)", level, (message or "")[:2000]
+        )
+        await conn.execute(
+            "DELETE FROM automation_log WHERE id <= "
+            "(SELECT MAX(id) FROM automation_log) - $1", _AUTOMATION_LOG_CAP,
+        )
+
+
+async def get_automation_log(limit: int = 100) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM automation_log ORDER BY id DESC LIMIT $1", limit
+        )
+    return [dict(r) for r in rows]
+
+
+async def create_automation_import(data: Dict[str, Any]) -> int:
+    async with get_db() as conn:
+        return await conn.fetchval(
+            "INSERT INTO automation_imports (filename, layout, n_locations, n_niches, n_combinations) "
+            "VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            data.get("filename"), data.get("layout"),
+            data.get("n_locations", 0), data.get("n_niches", 0), data.get("n_combinations", 0),
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Email Campaigns  (PopupGenix Email Campaign module — Checkpoint 3A)
+#
+# n8n orchestrates campaign preparation; AutoLead's email_sender.send_email()
+# is still the ONLY production sender. These functions are pure persistence —
+# no sending, no n8n calls, no business logic beyond the denormalised counters.
+# ─────────────────────────────────────────────────────────────────────────────
+
+EMAIL_CAMPAIGN_STATUSES     = ("DRAFT", "READY", "RUNNING", "PAUSED", "COMPLETED", "FAILED")
+EMAIL_CAMPAIGN_LEAD_STATUSES = (
+    "IMPORTED", "VALIDATED", "MISSING_EMAIL", "INVALID_EMAIL", "DUPLICATE", "READY",
+    "GENERATED", "AI_GENERATION_FAILED", "SENT", "SEND_FAILED", "SEND_BLOCKED",
+    "SKIPPED", "DO_NOT_CONTACT",
+)
+EMAIL_CAMPAIGN_RUN_STATUSES = ("PENDING", "PREPARING", "SENDING", "PAUSED", "COMPLETED", "FAILED")
+
+_EMAIL_CAMPAIGN_WRITABLE = frozenset({
+    "name", "description", "status", "test_mode", "test_recipient", "ai_enabled",
+    "from_name", "from_email",
+    "sender_profile_id", "reply_to",
+    "attachment_filename", "attachment_path", "attachment_size", "attachment_mime",
+    "config_json",
+    "total_leads", "valid_leads", "sent_count", "failed_count", "replied_count",
+    "started_at", "completed_at",
+})
+
+SENDER_PROFILE_PROVIDERS = ("smtp", "gmail")
+SENDER_PROFILE_STATUSES  = ("connected", "disconnected", "error")
+_SENDER_PROFILE_WRITABLE = frozenset({
+    "name", "provider", "transport", "email_address", "display_name", "reply_to",
+    "status", "is_default",
+    "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_password_enc",
+    "oauth_client_id", "oauth_refresh_token_enc", "oauth_access_token_enc",
+    "oauth_expires_at", "oauth_scopes",
+    "last_tested_at", "last_error",
+})
+_ECL_WRITABLE = frozenset({
+    "lead_id", "email", "first_name", "last_name", "company", "raw_json",
+    "body_source", "provided_body", "ai_subject", "ai_body",
+    "status", "status_detail", "message_id", "sent_at", "failure_reason", "idempotency_key",
+})
+_ECR_WRITABLE = frozenset({
+    "status", "n8n_trigger_ref", "batch_size", "processed_count",
+    "sent_count", "failed_count", "error", "completed_at",
+})
+
+
+def build_email_campaign_lead_key(campaign_id: int, email: Optional[str],
+                                  first_name: str = "", last_name: str = "",
+                                  company: str = "", rownum: int = 0) -> str:
+    """Stable per-campaign lead identity. Mirrors the n8n V1.1 lead_key scheme:
+      has email  -> '<campaign_id>::<lower(email)>'
+      no email   -> '<campaign_id>::noemail::<slug>::<rownum>'
+    """
+    e = (email or "").strip().lower()
+    if e:
+        return f"{campaign_id}::{e}"
+    slug = re.sub(r"[^a-z0-9]+", "-",
+                  f"{first_name}-{last_name}-{company}".lower()).strip("-") or "unknown"
+    return f"{campaign_id}::noemail::{slug}::{rownum}"
+
+
+# ── email_campaigns ──────────────────────────────────────────────────────────
+
+async def create_email_campaign(data: Dict[str, Any]) -> int:
+    async with get_db() as conn:
+        return await conn.fetchval(
+            "INSERT INTO email_campaigns "
+            "(name, description, test_mode, test_recipient, ai_enabled, from_name, from_email, "
+            " sender_profile_id, reply_to, config_json) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
+            data.get("name"), data.get("description"),
+            1 if data.get("test_mode", True) else 0,
+            data.get("test_recipient", "shahedalfahad20@gmail.com"),
+            1 if data.get("ai_enabled", True) else 0,
+            data.get("from_name"), data.get("from_email"),
+            data.get("sender_profile_id"), data.get("reply_to"),
+            json.dumps(data["config"]) if isinstance(data.get("config"), (dict, list)) else data.get("config_json"),
+        )
+
+
+async def get_email_campaign(campaign_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow("SELECT * FROM email_campaigns WHERE id = $1", campaign_id)
+    return dict(row) if row else None
+
+
+async def list_email_campaigns(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM email_campaigns ORDER BY id DESC LIMIT $1 OFFSET $2", limit, offset
+        )
+    return [dict(r) for r in rows]
+
+
+async def update_email_campaign(campaign_id: int, data: Dict[str, Any]) -> bool:
+    clean = {k: v for k, v in data.items() if k in _EMAIL_CAMPAIGN_WRITABLE and v is not None}
+    # sender_profile_id / reply_to may be explicitly cleared to NULL ("no sender")
+    for nullable in ("sender_profile_id", "reply_to"):
+        if nullable in data and data[nullable] is None and nullable in _EMAIL_CAMPAIGN_WRITABLE:
+            clean[nullable] = None
+    if "test_mode" in clean:
+        clean["test_mode"] = 1 if clean["test_mode"] in (True, 1, "1", "true", "True") else 0
+    if "ai_enabled" in clean:
+        clean["ai_enabled"] = 1 if clean["ai_enabled"] in (True, 1, "1", "true", "True") else 0
+    if not clean:
+        return False
+    clean["updated_at"] = _now_naive_iso()
+    set_clause = ", ".join(f"{c} = ?" for c in clean)
+    async with get_db() as conn:
+        result = await conn.execute(
+            f"UPDATE email_campaigns SET {set_clause} WHERE id = ?", *clean.values(), campaign_id
+        )
+    return _rows_affected(result) > 0
+
+
+async def delete_email_campaign(campaign_id: int) -> bool:
+    """Cascades to email_campaign_leads + email_campaign_runs (FK ON DELETE CASCADE)."""
+    async with get_db() as conn:
+        result = await conn.execute("DELETE FROM email_campaigns WHERE id = ?", campaign_id)
+    return _rows_affected(result) > 0
+
+
+# ── email_campaign_leads ────────────────────────────────────────────────────
+
+async def bulk_insert_email_campaign_leads(campaign_id: int, rows: List[Dict[str, Any]]) -> int:
+    """Insert campaign leads. Rows already normalised by the caller. Uses
+    INSERT OR IGNORE on (campaign_id, lead_key) so a re-import of the same file
+    does not duplicate — the caller counts DUPLICATE separately."""
+    if not rows:
+        return 0
+    inserted = 0
+    async with transaction() as conn:
+        for r in rows:
+            res = await conn.execute(
+                "INSERT OR IGNORE INTO email_campaign_leads "
+                "(campaign_id, lead_key, lead_id, email, first_name, last_name, company, "
+                " raw_json, body_source, provided_body, status, status_detail) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                campaign_id, r["lead_key"], r.get("lead_id"),
+                (r.get("email") or "").strip().lower() or None,
+                r.get("first_name"), r.get("last_name"), r.get("company"),
+                json.dumps(r["raw"]) if isinstance(r.get("raw"), (dict, list)) else r.get("raw_json"),
+                r.get("body_source", "ai"), r.get("provided_body"),
+                r.get("status", "IMPORTED"), r.get("status_detail"),
+            )
+            inserted += _rows_affected(res)
+    return inserted
+
+
+async def get_email_campaign_leads(campaign_id: int, status: Optional[str] = None,
+                                   offset: int = 0, limit: int = 200) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        if status:
+            rows = await conn.fetch(
+                "SELECT * FROM email_campaign_leads WHERE campaign_id = $1 AND status = $2 "
+                "ORDER BY id ASC LIMIT $3 OFFSET $4", campaign_id, status, limit, offset
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT * FROM email_campaign_leads WHERE campaign_id = $1 "
+                "ORDER BY id ASC LIMIT $2 OFFSET $3", campaign_id, limit, offset
+            )
+    return [dict(r) for r in rows]
+
+
+async def get_email_campaign_lead(campaign_id: int, lead_key: str) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM email_campaign_leads WHERE campaign_id = $1 AND lead_key = $2",
+            campaign_id, lead_key,
+        )
+    return dict(row) if row else None
+
+
+async def update_email_campaign_lead(campaign_id: int, lead_key: str, data: Dict[str, Any]) -> bool:
+    clean = {k: v for k, v in data.items() if k in _ECL_WRITABLE and v is not None}
+    if not clean:
+        return False
+    clean["updated_at"] = _now_naive_iso()
+    set_clause = ", ".join(f"{c} = ?" for c in clean)
+    async with get_db() as conn:
+        result = await conn.execute(
+            f"UPDATE email_campaign_leads SET {set_clause} WHERE campaign_id = ? AND lead_key = ?",
+            *clean.values(), campaign_id, lead_key,
+        )
+    return _rows_affected(result) > 0
+
+
+async def count_email_campaign_leads_by_status(campaign_id: int) -> Dict[str, int]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT status, COUNT(*) AS n FROM email_campaign_leads WHERE campaign_id = $1 GROUP BY status",
+            campaign_id,
+        )
+    return {r["status"]: r["n"] for r in rows}
+
+
+async def recount_email_campaign(campaign_id: int) -> None:
+    """Refresh the denormalised counters on the email_campaigns row from its leads."""
+    counts = await count_email_campaign_leads_by_status(campaign_id)
+    total = sum(counts.values())
+    valid = total - counts.get("MISSING_EMAIL", 0) - counts.get("INVALID_EMAIL", 0) - counts.get("DUPLICATE", 0)
+    await update_email_campaign(campaign_id, {
+        "total_leads":  total,
+        "valid_leads":  max(0, valid),
+        "sent_count":   counts.get("SENT", 0),
+        "failed_count": counts.get("SEND_FAILED", 0) + counts.get("AI_GENERATION_FAILED", 0),
+    })
+
+
+# ── email_campaign_runs (idempotent) ────────────────────────────────────────
+
+async def create_email_campaign_run(campaign_id: int, idempotency_key: str,
+                                    data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Idempotent: a repeat call with the same (campaign_id, idempotency_key)
+    returns the existing run instead of starting a new one."""
+    data = data or {}
+    async with get_db() as conn:
+        await conn.execute(
+            "INSERT OR IGNORE INTO email_campaign_runs (campaign_id, idempotency_key, status, batch_size) "
+            "VALUES (?, ?, ?, ?)",
+            campaign_id, idempotency_key, data.get("status", "PENDING"), int(data.get("batch_size", 0)),
+        )
+        row = await conn.fetchrow(
+            "SELECT * FROM email_campaign_runs WHERE campaign_id = $1 AND idempotency_key = $2",
+            campaign_id, idempotency_key,
+        )
+    return dict(row)
+
+
+async def get_email_campaign_run(run_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow("SELECT * FROM email_campaign_runs WHERE id = $1", run_id)
+    return dict(row) if row else None
+
+
+async def list_email_campaign_runs(campaign_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM email_campaign_runs WHERE campaign_id = $1 ORDER BY id DESC LIMIT $2",
+            campaign_id, limit,
+        )
+    return [dict(r) for r in rows]
+
+
+async def update_email_campaign_run(run_id: int, data: Dict[str, Any]) -> bool:
+    clean = {k: v for k, v in data.items() if k in _ECR_WRITABLE and v is not None}
+    if not clean:
+        return False
+    set_clause = ", ".join(f"{c} = ?" for c in clean)
+    async with get_db() as conn:
+        result = await conn.execute(
+            f"UPDATE email_campaign_runs SET {set_clause} WHERE id = ?", *clean.values(), run_id
+        )
+    return _rows_affected(result) > 0
+
+
+# ── email_campaign_activity (audit — never stores a secret) ─────────────────
+
+async def log_email_campaign_activity(campaign_id: int, event: str, detail: str = "",
+                                      level: str = "INFO", lead_key: Optional[str] = None) -> None:
+    async with get_db() as conn:
+        await conn.execute(
+            "INSERT INTO email_campaign_activity (campaign_id, level, event, lead_key, detail) "
+            "VALUES (?, ?, ?, ?, ?)",
+            campaign_id, level, event, lead_key, (detail or "")[:2000],
+        )
+
+
+async def get_email_campaign_activity(campaign_id: int, limit: int = 200) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM email_campaign_activity WHERE campaign_id = $1 ORDER BY id DESC LIMIT $2",
+            campaign_id, limit,
+        )
+    return [dict(r) for r in rows]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sender Profiles + OAuth state (Checkpoint 4)
+#
+# Pure persistence. The *_enc columns hold values already encrypted by the
+# caller (secrets_crypto); this layer never encrypts/decrypts and never logs a
+# secret. Single-operator app — no owner column.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def create_sender_profile(data: Dict[str, Any]) -> int:
+    cols = [k for k in data if k in _SENDER_PROFILE_WRITABLE]
+    if "name" not in cols or "provider" not in cols or "email_address" not in cols:
+        raise ValueError("sender profile requires name, provider, email_address")
+    placeholders = ", ".join("?" for _ in cols)
+    async with get_db() as conn:
+        return await conn.fetchval(
+            f"INSERT INTO email_sender_profiles ({', '.join(cols)}) VALUES ({placeholders}) RETURNING id",
+            *[data[c] for c in cols],
+        )
+
+
+async def get_sender_profile(profile_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow("SELECT * FROM email_sender_profiles WHERE id = $1", profile_id)
+    return dict(row) if row else None
+
+
+async def list_sender_profiles() -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM email_sender_profiles ORDER BY is_default DESC, id ASC"
+        )
+    return [dict(r) for r in rows]
+
+
+async def get_default_sender_profile() -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM email_sender_profiles WHERE is_default = 1 LIMIT 1"
+        )
+    return dict(row) if row else None
+
+
+async def update_sender_profile(profile_id: int, data: Dict[str, Any]) -> bool:
+    clean = {k: v for k, v in data.items() if k in _SENDER_PROFILE_WRITABLE}
+    # allow explicit NULL for the token / password / error columns (disconnect)
+    clean = {k: v for k, v in clean.items()
+             if v is not None or k in ("smtp_password_enc", "oauth_refresh_token_enc",
+                                       "oauth_access_token_enc", "oauth_expires_at", "last_error")}
+    if not clean:
+        return False
+    if "is_default" in clean:
+        clean["is_default"] = 1 if clean["is_default"] in (True, 1, "1", "true", "True") else 0
+    clean["updated_at"] = _now_naive_iso()
+    set_clause = ", ".join(f"{c} = ?" for c in clean)
+    async with get_db() as conn:
+        result = await conn.execute(
+            f"UPDATE email_sender_profiles SET {set_clause} WHERE id = ?",
+            *clean.values(), profile_id,
+        )
+    return _rows_affected(result) > 0
+
+
+async def set_default_sender_profile(profile_id: int) -> bool:
+    """Exactly one default. Clears every other profile in the same transaction."""
+    async with transaction() as conn:
+        await conn.execute("UPDATE email_sender_profiles SET is_default = 0 WHERE is_default = 1")
+        result = await conn.execute(
+            "UPDATE email_sender_profiles SET is_default = 1, updated_at = ? WHERE id = ?",
+            _now_naive_iso(), profile_id,
+        )
+    return _rows_affected(result) > 0
+
+
+async def delete_sender_profile(profile_id: int) -> bool:
+    """Deletes the profile and NULLs it out on any campaign that referenced it
+    (code-enforced SET NULL — the column carries no FK, see _run_migrations)."""
+    async with transaction() as conn:
+        await conn.execute(
+            "UPDATE email_campaigns SET sender_profile_id = NULL WHERE sender_profile_id = ?",
+            profile_id,
+        )
+        result = await conn.execute(
+            "DELETE FROM email_sender_profiles WHERE id = ?", profile_id
+        )
+    return _rows_affected(result) > 0
+
+
+async def count_campaigns_using_sender(profile_id: int) -> int:
+    async with get_db() as conn:
+        return await conn.fetchval(
+            "SELECT COUNT(*) FROM email_campaigns WHERE sender_profile_id = $1", profile_id
+        ) or 0
+
+
+# ── oauth_states (CSRF / replay protection for the Gmail connect flow) ──────
+
+async def create_oauth_state(state: str, purpose: str, ttl_seconds: int = 600) -> None:
+    from datetime import datetime, timedelta, timezone
+    exp = (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).replace(tzinfo=None).isoformat()
+    async with get_db() as conn:
+        await conn.execute("DELETE FROM oauth_states WHERE expires_at < ?", _now_naive_iso())
+        await conn.execute(
+            "INSERT INTO oauth_states (state, purpose, expires_at) VALUES (?, ?, ?)",
+            state, purpose, exp,
+        )
+
+
+async def consume_oauth_state(state: str, purpose: str) -> bool:
+    """One-time use. Returns True only if the state exists, matches the purpose,
+    is unexpired and unused — and atomically marks it used."""
+    if not state:
+        return False
+    async with transaction() as conn:
+        row = await conn.fetchrow(
+            "SELECT state, purpose, expires_at, used_at FROM oauth_states WHERE state = $1", state
+        )
+        if not row or row["purpose"] != purpose or row["used_at"] is not None:
+            return False
+        if str(row["expires_at"]) < _now_naive_iso():
+            return False
+        await conn.execute(
+            "UPDATE oauth_states SET used_at = ? WHERE state = ?", _now_naive_iso(), state
+        )
+    return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────

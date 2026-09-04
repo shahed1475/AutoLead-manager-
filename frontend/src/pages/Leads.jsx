@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useSearchParams } from 'react-router-dom'
-import { Plus, Upload, Download, Search, RefreshCw, Sparkles, Trash2, X } from 'lucide-react'
+import { useSearchParams, useNavigate } from 'react-router-dom'
+import { researchSentToast } from '../lib/researchToast'
+import { Plus, Upload, Download, Search, RefreshCw, Sparkles, Trash2, X, Bot } from 'lucide-react'
 import { leadsApi, aiApi, campaignApi, enrichApi } from '../api/client'
 import LeadTable from '../components/LeadTable'
 import CampaignControls from '../components/CampaignControls'
@@ -63,6 +64,7 @@ function csvField(v) {
 
 export default function Leads() {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const fileRef = useRef()
   const [searchParams, setSearchParams] = useSearchParams()
   const [selected, setSelected] = useState([])
@@ -88,6 +90,8 @@ export default function Leads() {
     date_from:   searchParams.get('date_from') || '',
     date_to:     searchParams.get('date_to') || '',
     score_label: searchParams.get('score_label') || '',
+    source_type:     searchParams.get('source_type') || '',
+    research_status: searchParams.get('research_status') || '',
   }
 
   function updateParams(patch) {
@@ -163,6 +167,16 @@ export default function Leads() {
     onError: (e) => toast.error(e.message),
   })
 
+  const researchMut = useMutation({
+    mutationFn: (id) => leadsApi.researchOne(id),
+    onSuccess: (res) => {
+      invalidate()
+      qc.invalidateQueries({ queryKey: ['research-sessions'] })
+      researchSentToast(res, navigate)
+    },
+    onError: (e) => toast.error(e?.response?.data?.detail || 'Could not start research'),
+  })
+
   const deleteMut = useMutation({
     mutationFn: leadsApi.delete,
     onSuccess: () => { invalidate(); toast.success('Lead deleted') },
@@ -221,6 +235,22 @@ export default function Leads() {
     invalidate()
     if (fail) toast.error(`Deleted ${ok}, ${fail} failed`)
     else toast.success(`Deleted ${ok} lead${ok === 1 ? '' : 's'}`)
+  }
+
+  const [bulkResearching, setBulkResearching] = useState(false)
+  async function handleBulkResearch() {
+    setBulkResearching(true)
+    try {
+      const res = await leadsApi.research([...selected])
+      setSelected([])
+      invalidate()
+      qc.invalidateQueries({ queryKey: ['research-sessions'] })
+      researchSentToast(res, navigate)
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Could not start research')
+    } finally {
+      setBulkResearching(false)
+    }
   }
 
   const [bulkExporting, setBulkExporting] = useState(false)
@@ -407,6 +437,30 @@ export default function Leads() {
           value={filters.date_to}
           onChange={(e) => setFilter('date_to', e.target.value)}
         />
+        <select
+          className="input text-xs h-9 w-36"
+          title="Discovery source"
+          value={filters.source_type}
+          onChange={(e) => setFilter('source_type', e.target.value)}
+        >
+          <option value="">All Sources</option>
+          <option value="automation">Automation</option>
+          <option value="manual">Manual</option>
+        </select>
+        <select
+          className="input text-xs h-9 w-40"
+          title="Research status"
+          value={filters.research_status}
+          onChange={(e) => setFilter('research_status', e.target.value)}
+        >
+          <option value="">All Research</option>
+          <option value="NOT_STARTED">Not Started</option>
+          <option value="QUEUED">Queued</option>
+          <option value="RESEARCHING">Researching</option>
+          <option value="COMPLETED">Completed</option>
+          <option value="FAILED">Failed</option>
+          <option value="EXCLUDED">Excluded</option>
+        </select>
       </div>
 
       {/* Bulk action bar — only when something is selected */}
@@ -419,6 +473,13 @@ export default function Leads() {
             className="btn-secondary text-[11px] !py-1"
           >
             {bulkExporting ? <RefreshCw size={11} className="animate-spin" /> : <Download size={11} />} Export selected
+          </button>
+          <button
+            onClick={handleBulkResearch}
+            disabled={bulkResearching}
+            className="btn-secondary text-[11px] !py-1"
+          >
+            {bulkResearching ? <RefreshCw size={11} className="animate-spin" /> : <Bot size={11} />} Send to Research Agent
           </button>
           <button
             onClick={() => setBulkDeleteConfirm(true)}
@@ -451,6 +512,7 @@ export default function Leads() {
               onResend={(id, channel) => resendMut.mutate({ id, channel })}
               onViewMessages={(lead) => setViewLead(lead)}
               onEnrich={(id) => enrichMut.mutate(id)}
+              onResearch={(id) => researchMut.mutate(id)}
               onRowClick={(lead) => setDrawerLead(lead)}
               selected={selected}
               onSelect={setSelected}

@@ -22,6 +22,10 @@ logs/
 backend/data/
 backend/data/*.db
 
+# Email Campaign uploads (lead files + campaign attachments) — never commit
+backend/data/email_campaign_uploads/
+email_campaign_uploads/
+
 # Browser automation data
 scraper-engine/browser-data/
 browser-data/
@@ -37,7 +41,8 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Claude internal
-.claude/
+# Claude internal (local-only) — but track the project skill system
+.claude/*
+!.claude/skills/
 .superpowers/
 .worktrees/

@@ -11,6 +11,7 @@ reconnects via GET /active.
 import csv
 import io
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
@@ -75,6 +76,19 @@ async def get_active_research():
     if session is None:
         session = await db.get_latest_research_session(active_only=False)
     return session
+
+
+@router.get("/sessions")
+async def list_sessions(
+    limit: int = 20, offset: int = 0, mode: Optional[str] = None,
+):
+    """All research sessions, newest first. `mode` filters
+    'discovery' | 'handoff'. Static path — must precede /{session_id}."""
+    if mode is not None and mode not in ("discovery", "handoff"):
+        raise HTTPException(status_code=422, detail="mode must be 'discovery' or 'handoff'")
+    limit = max(1, min(limit, 100))
+    rows = await db.list_research_sessions(limit=limit + 1, offset=max(0, offset), mode=mode)
+    return {"sessions": rows[:limit], "has_more": len(rows) > limit}
 
 
 @router.get("/{session_id}")

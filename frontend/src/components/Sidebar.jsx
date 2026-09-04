@@ -1,19 +1,22 @@
 import { NavLink } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  LayoutDashboard, Users, GitBranch, Send, Cpu, Settings, Inbox,
+  LayoutDashboard, Users, GitBranch, Send, Cpu, Settings, Inbox, Search, Bot, Mail,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { inboxApi } from '../api/client'
 
 const nav = [
-  { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/leads',     icon: Users,           label: 'Leads'     },
-  { to: '/pipeline',  icon: GitBranch,       label: 'Pipeline'  },
-  { to: '/campaign',  icon: Send,            label: 'Campaign'  },
-  { to: '/ai-lab',    icon: Cpu,             label: 'AI Lab'    },
-  { to: '/inbox',     icon: Inbox,           label: 'Inbox', badge: true },
-  { to: '/settings',  icon: Settings,        label: 'Settings'  },
+  { to: '/dashboard',       icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/leads',           icon: Users,           label: 'Leads'     },
+  { to: '/pipeline',        icon: GitBranch,       label: 'Pipeline'  },
+  { to: '/lead-search',     icon: Search,          label: 'Lead Search' },
+  { to: '/research-agent',  icon: Bot,             label: 'Research Agent' },
+  { to: '/campaign',        icon: Send,            label: 'Lead Search Campaign' },
+  { to: '/email-campaigns', icon: Mail,            label: 'Email Campaigns' },
+  { to: '/ai-lab',          icon: Cpu,             label: 'AI Lab'    },
+  { to: '/inbox',           icon: Inbox,           label: 'Inbox', badge: true },
+  { to: '/settings',        icon: Settings,        label: 'Settings'  },
 ]
 
 export default function Sidebar() {

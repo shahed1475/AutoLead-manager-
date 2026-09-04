@@ -14,6 +14,7 @@ from ..log_stream import emit as _ls_emit
 from ..models import CampaignSendRequest, CampaignStartRequest
 from ..rate_limit import limiter
 from ..scoring.lead_scorer import score_lead
+from ..discovery.planner import DiscoveryPlanner
 
 # Update DB after every lead so real-time counts are always accurate
 _PROGRESS_EVERY = 1
@@ -163,21 +164,91 @@ async def _run_campaign_task(
         await _set_stage("STARTING")
         _log_sync("🚀 Starting campaign...")
 
+        # ── Discovery Planner: adaptive niche-phrasing query variants ──────────
+        # Phase 1 (docs/superpowers/specs/2026-08-25-lead-discovery-planner-design.md).
+        # scrapers.run_bulk_scrape accepts exactly one niche/city pair per call —
+        # there is no multi-query parameter — so "adaptive query variants
+        # replacing a single fixed query" means looping it, bounded by both the
+        # planner's own variant cap and daily_cap (so a small cap never splits
+        # into unusably small per-variant budgets). Manual source selection is
+        # unchanged; only the niche text passed to each call varies.
+        discovery_run_id = None
+        niche_variants = [niche]
+        plan = None
+        try:
+            plan = await DiscoveryPlanner().plan(
+                query=niche, niche=niche, city=city, country=country or "", mode="CAMPAIGN",
+            )
+            if plan.query_variants:
+                niche_variants = plan.query_variants
+        except Exception as exc:
+            logger.warning(
+                "Discovery planner unavailable for campaign run %s: %s — using original niche only",
+                run_id, exc,
+            )
+
+        # Bookkeeping row is separate from the planner call above — a
+        # transient DB error here (e.g. SQLite busy) must not discard an
+        # already-successful plan's query variants.
+        if plan is not None:
+            try:
+                discovery_run_id = await db.create_discovery_run({
+                    "mode": "CAMPAIGN", "raw_query": niche, "niche": niche, "city": city,
+                    "country": country, "target_count": daily_cap,
+                    "planner_intent": plan.intent, "planner_confidence": plan.confidence,
+                    "sources_planned": sources, "campaign_run_id": run_id,
+                })
+            except Exception as exc:
+                logger.debug(
+                    "Discovery run bookkeeping row failed for campaign run %s: %s (non-fatal, variants still used)",
+                    run_id, exc, exc_info=True,
+                )
+
+        # Never split daily_cap into a per-variant budget smaller than ~5 leads.
+        niche_variants = niche_variants[: max(1, daily_cap // 5)] or [niche]
+        n_variants = len(niche_variants)
+        per_variant_cap = max(1, daily_cap // n_variants)
+
         # ── Bulk scrape: dedup + validate + email-enrich + DB save all handled ──
-        scraped_leads = await scrapers.run_bulk_scrape(
-            campaign={
-                "niche":     niche,
-                "city":      city,
-                "country":   country or "",
-                "sources":   sources,
-                "max_leads": daily_cap,
-                "headless":  headless,
-            },
-            log_callback=_log_sync,
-            stage_callback=_set_stage,
-            pause_callback=lambda: _wait_while_paused(),
-        )
+        # (per-variant call; results merged by id — same pattern the existing
+        # PENDING-leads merge below already uses, so no new dedup code needed)
+        scraped_leads: List[dict] = []
+        seen_scraped_ids: set = set()
+        for i, variant_niche in enumerate(niche_variants):
+            if await _wait_while_paused():
+                break
+            is_last = i == n_variants - 1
+            budget = max(1, daily_cap - per_variant_cap * (n_variants - 1)) if is_last else per_variant_cap
+            batch = await scrapers.run_bulk_scrape(
+                campaign={
+                    "niche":     variant_niche,
+                    "city":      city,
+                    "country":   country or "",
+                    "sources":   sources,
+                    "max_leads": budget,
+                    "headless":  headless,
+                },
+                log_callback=_log_sync,
+                # stage_callback/pause_callback only need to fire once — every
+                # variant hits the same SCRAPING stage, and re-setting it is a
+                # harmless no-op, but only the first iteration needs to drive it.
+                stage_callback=_set_stage if i == 0 else None,
+                pause_callback=lambda: _wait_while_paused(),
+            )
+            for lead in batch:
+                if lead["id"] not in seen_scraped_ids:
+                    seen_scraped_ids.add(lead["id"])
+                    scraped_leads.append(lead)
         n_from_scraper = len(scraped_leads)
+
+        if discovery_run_id:
+            try:
+                await db.update_discovery_run(discovery_run_id, {
+                    "raw_candidates": n_from_scraper, "results_count": n_from_scraper,
+                    "status": "COMPLETED", "finished_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                })
+            except Exception:
+                logger.debug("Discovery run %s status update failed (non-fatal)", discovery_run_id, exc_info=True)
 
         # ── Merge with existing PENDING leads so repeat runs aren't empty ──────
         existing_pending = await db.get_pending_leads_for_niche_city(

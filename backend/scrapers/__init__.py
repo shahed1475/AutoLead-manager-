@@ -49,11 +49,12 @@ logger = logging.getLogger(__name__)
 # Maps for that source's budget, and the live feed says so explicitly.
 
 _SOURCE_WEIGHTS: Dict[str, float] = {
-    "GOOGLE_MAPS":   0.35,
+    "GOOGLE_MAPS":   0.33,
     "GOOGLE_SEARCH": 0.10,
-    "YELP":          0.12,
-    "YELLOW_PAGES":  0.12,
+    "YELP":          0.11,
+    "YELLOW_PAGES":  0.11,
     "BING_SEARCH":   0.08,
+    "DUCKDUCKGO":    0.08,
     "HOTFROG":       0.06,
     "FOURSQUARE":    0.06,
     "TOP_LIST":      0.05,
@@ -172,6 +173,7 @@ def _validate_and_clean(
     valid:    List[dict] = []
     rejected: List[dict] = []
 
+    _ANCHORS = ("email", "phone", "website", "address", "city", "niche", "raw_url")
     for lead in leads:
         if not (lead.get("business_name") or "").strip():
             rejected.append({**lead, "_reject_reason": "missing business_name"})
@@ -183,14 +185,18 @@ def _validate_and_clean(
         if lead.get("phone") and not is_valid_phone(lead["phone"]):
             lead = {**lead, "phone": None}
 
-        if not lead.get("email") and not lead.get("phone") and not lead.get("website"):
-            rejected.append({**lead, "_reject_reason": "no email and no phone"})
+        # Keep a business with a name + any locating/identifying signal — a
+        # name + city + niche is a valid lead (spec §8/§25), just MINIMAL.
+        if not any(lead.get(k) for k in _ANCHORS):
+            rejected.append({**lead, "_reject_reason": "name only, no signal"})
             continue
 
+        has_contact = bool(lead.get("email") or lead.get("phone") or lead.get("website"))
+        lead = {**lead, "discovery_status": "FULL" if has_contact else "MINIMAL"}
         valid.append(lead)
 
     if rejected:
-        log_fn(f"   ⚠️  {len(rejected)} lead(s) rejected (no contact info)")
+        log_fn(f"   ⚠️  {len(rejected)} lead(s) rejected (no identifying info)")
     return valid, rejected
 
 
@@ -272,6 +278,7 @@ async def _dispatch_source(
     from .foursquare       import scrape               as _fsq_scrape
     from .top_list         import scrape               as _toplist_scrape
     from .generic_directory import scrape              as _gendir_scrape
+    from .duckduckgo        import scrape              as _ddg_scrape
 
     # Sources sharing the uniform "orchestrator-compatible" scrape() signature:
     # (niche, city, max_results, cfg, log_callback, country) -> List[dict]
@@ -279,6 +286,7 @@ async def _dispatch_source(
         "YELP":         ("⭐", "Yelp",               _yelp_scrape),
         "YELLOW_PAGES": ("📒", "Yellow Pages",       _yp_scrape),
         "BING_SEARCH":  ("🔎", "Bing Search",        _bing_scrape),
+        "DUCKDUCKGO":   ("🦆", "DuckDuckGo",         _ddg_scrape),
         "HOTFROG":      ("🔥", "Hotfrog",            _hotfrog_scrape),
         "FOURSQUARE":   ("📍", "Foursquare",         _fsq_scrape),
         "TOP_LIST":     ("📰", "Top List",           _toplist_scrape),
@@ -393,7 +401,7 @@ _DB_FIELDS = frozenset({
     "business_name", "phone", "email", "website", "address",
     "niche", "city", "country", "source",
     "rating", "reviews_count", "review_count",
-    "raw_url",
+    "raw_url", "discovery_status",
 })
 
 

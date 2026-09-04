@@ -446,6 +446,7 @@ async def filter_leads_for_outreach() -> List[Dict[str, Any]]:
             JOIN   scores s ON s.lead_id = l.id
             WHERE  l.score_label IN ('HOT', 'WARM')
               AND  l.status = 'SCORED'
+              AND  (l.discovery_status IS NULL OR l.discovery_status != 'MINIMAL')
             ORDER BY
               CASE l.score_label WHEN 'HOT' THEN 1 ELSE 2 END,
               s.final_score DESC

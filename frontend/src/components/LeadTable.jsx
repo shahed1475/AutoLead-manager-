@@ -3,7 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   Trash2, SkipForward, Eye, RotateCcw, CheckCircle2,
   ChevronLeft, ChevronRight,
-  Sparkles, Users,
+  Sparkles, Users, Bot,
 } from 'lucide-react'
 import clsx from 'clsx'
 import ScoreBadge from './ScoreBadge'
@@ -11,7 +11,7 @@ import { SkeletonTableRows } from './ui/Skeleton'
 import EmptyState from './ui/EmptyState'
 import SortableHeader from './ui/SortableHeader'
 import { useResizableColumns } from '../hooks/useResizableColumns'
-import { STATUS_BADGE, CHANNEL_BADGE, SOURCE_BADGE, SOURCE_LABEL } from '../lib/badges'
+import { STATUS_BADGE, CHANNEL_BADGE, SOURCE_BADGE, SOURCE_LABEL, RESEARCH_BADGE, RESEARCH_LABEL } from '../lib/badges'
 
 const TABLE_COLS = 9
 const ROW_HEIGHT = 53
@@ -34,6 +34,7 @@ export default function LeadTable({
   onMarkReplied,
   onViewMessages,
   onEnrich,
+  onResearch,
   onRowClick,
   onSelect,
   selected = [],
@@ -216,12 +217,24 @@ export default function LeadTable({
                   </td>
 
                   <td className="py-3 px-4">
-                    {lead.source
-                      ? <span className={SOURCE_BADGE[lead.source] || 'badge'}>
-                          {SOURCE_LABEL[lead.source] || lead.source}
-                        </span>
-                      : <span className="text-xs text-slate-600">—</span>
-                    }
+                    <div className="flex flex-col gap-1">
+                      {lead.source
+                        ? <span className={SOURCE_BADGE[lead.source] || 'badge'}>
+                            {SOURCE_LABEL[lead.source] || lead.source}
+                          </span>
+                        : <span className="text-xs text-slate-600">—</span>
+                      }
+                      <div className="flex items-center gap-1 text-[10px] text-slate-500">
+                        {lead.source_type && (
+                          <span className="uppercase tracking-wide">{lead.source_type}</span>
+                        )}
+                        {lead.research_status && lead.research_status !== 'NOT_STARTED' && (
+                          <span className={RESEARCH_BADGE[lead.research_status] || 'text-slate-500'}>
+                            · {RESEARCH_LABEL[lead.research_status] || lead.research_status}
+                          </span>
+                        )}
+                      </div>
+                    </div>
                   </td>
 
                   <td className="py-3 px-4 text-xs text-slate-500 whitespace-nowrap">
@@ -237,6 +250,22 @@ export default function LeadTable({
                         className="p-1.5 rounded text-slate-500 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all"
                       >
                         <Sparkles size={13} />
+                      </button>
+                      <button
+                        onClick={() => onResearch?.(lead.id)}
+                        disabled={['QUEUED', 'RESEARCHING'].includes(lead.research_status)}
+                        title={
+                          lead.research_status === 'COMPLETED' ? 'Re-research with the Research Agent'
+                          : lead.research_status === 'FAILED' ? 'Retry research'
+                          : ['QUEUED', 'RESEARCHING'].includes(lead.research_status) ? 'Research in progress'
+                          : 'Send to Research Agent'
+                        }
+                        aria-label={`Send ${lead.business_name} to the Research Agent`}
+                        className={`p-1.5 rounded hover:bg-indigo-500/10 transition-all disabled:opacity-40 ${
+                          lead.research_status === 'FAILED' ? 'text-rose-400 hover:text-rose-300' : 'text-slate-500 hover:text-indigo-400'
+                        }`}
+                      >
+                        <Bot size={13} />
                       </button>
                       <button
                         onClick={() => onViewMessages?.(lead)}

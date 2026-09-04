@@ -28,6 +28,16 @@ MAX_RESUMES = 3
 _INTERRUPTED_STATUSES = ("QUEUED", "RUNNING", "CANCEL_REQUESTED")
 
 
+def _load_json_list(raw: Any) -> list:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        return list(parsed) if isinstance(parsed, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
 def _load_processed_keys(session: Dict[str, Any]) -> set:
     raw = session.get("processed_keys")
     if not raw:
@@ -101,11 +111,23 @@ def _evidence_dicts(lead: ResearchLead) -> List[Dict[str, Any]]:
     ]
 
 
-def enqueue_session(queue, session_row: Dict[str, Any]) -> bool:
+def enqueue_session(
+    queue, session_row: Dict[str, Any],
+    seed_businesses: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
     """Put a research session on the JobQueue. Shared by POST /start,
-    POST /{id}/resume, and the startup reconciler so there is exactly one
-    place that knows how to (re)launch a session's worker."""
+    POST /{id}/resume, the startup reconciler, and the lead-handoff flow so
+    there is exactly one place that knows how to (re)launch a session's worker.
+    A mode='handoff' session carries its seed businesses on the row, so a
+    resume/reconcile re-uses them without the caller re-supplying the list."""
     session_id = session_row["id"]
+
+    seeds = seed_businesses
+    if seeds is None and session_row.get("seed_businesses"):
+        try:
+            seeds = json.loads(session_row["seed_businesses"])
+        except (json.JSONDecodeError, TypeError):
+            seeds = None
 
     async def _handler(_payload: Dict[str, Any]) -> None:
         await run_research_session_persisted(
@@ -113,6 +135,7 @@ def enqueue_session(queue, session_row: Dict[str, Any]) -> bool:
             niche=session_row["niche"],
             location=session_row["location"],
             target_count=session_row["target_count"],
+            seed_businesses=seeds,
         )
 
     return bool(queue.enqueue_nowait("RESEARCH_AGENT", {"session_id": session_id}, _handler))
@@ -170,6 +193,11 @@ async def run_research_session_persisted(
     resume_count = int(existing.get("resume_count") or 0)
     if already_processed:
         logger.info("[RESEARCH] session %s resuming — %d businesses already done", session_id, len(already_processed))
+
+    # Research handoff: the leads this session was launched for.
+    seed_lead_ids = _load_json_list(existing.get("seed_lead_ids"))
+    if seed_lead_ids:
+        await db.set_leads_research_status(seed_lead_ids, "RESEARCHING", only_from=("QUEUED",))
 
     await db.update_research_session(session_id, {
         "status": "RUNNING", "started_at": existing.get("started_at") or _now_iso(),
@@ -241,6 +269,12 @@ async def run_research_session_persisted(
             "finished_at": _now_iso(),
             "current_action": "", "current_business": "", "current_query": "", "current_source": "",
         })
+        if seed_lead_ids:
+            await db.set_leads_research_status(
+                seed_lead_ids,
+                "NOT_STARTED" if already_cancelled else "COMPLETED",
+                session_id=session_id, only_from=("QUEUED", "RESEARCHING"),
+            )
     except Exception as exc:
         logger.error("Research session %s failed: %s", session_id, exc, exc_info=True)
         # A partially-completed run can be resumed (its saved results stay);
@@ -251,5 +285,9 @@ async def run_research_session_persisted(
                 "status": "FAILED", "error_message": str(exc)[:500],
                 "resumable": resumable, "research_phase": "FAILED", "finished_at": _now_iso(),
             })
+            if seed_lead_ids:
+                await db.set_leads_research_status(
+                    seed_lead_ids, "FAILED", only_from=("QUEUED", "RESEARCHING"),
+                )
         except Exception:
             logger.error("Failed to persist FAILED status for session %s", session_id, exc_info=True)

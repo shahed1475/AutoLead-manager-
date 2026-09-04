@@ -823,6 +823,14 @@ def start_scheduler(hour: Optional[int] = None) -> AsyncIOScheduler:
         replace_existing   = True,
         misfire_grace_time = 3600,
     )
+    from .automation.scheduler_hooks import automation_tick
+    _scheduler.add_job(
+        automation_tick,
+        IntervalTrigger(minutes=2),
+        id                 = "automation_tick",
+        replace_existing   = True,
+        misfire_grace_time = 300,
+    )
     _scheduler.start()
     logger.info("Scheduler started — daily campaign at %02d:00 UTC, follow-ups every 6 h", h)
     return _scheduler

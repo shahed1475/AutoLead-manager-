@@ -16,7 +16,7 @@ from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from . import database as db
 from .config import get_settings
@@ -126,12 +126,65 @@ def _html_wrap(plain_body: str, from_name: str, from_email: str) -> str:
 # ── Core SMTP send (sync — designed to run via asyncio.to_thread) ──────────────
 
 
+def build_message(
+    to_email:    str,
+    to_name:     str,
+    subject:     str,
+    body:        str,
+    from_name:   str,
+    from_email:  str,
+    reply_to:    Optional[str] = None,
+    attachments: Optional[List[Dict[str, Any]]] = None,
+) -> MIMEMultipart:
+    """The ONE MIME builder — shared by the SMTP transport and the Gmail API
+    transport so message formatting (plain+HTML alternative, attachments,
+    headers, Reply-To) is never duplicated.
+
+    attachments (optional): list of {"filename", "content" (bytes), "mime"}.
+    """
+    html_body = _html_wrap(body, from_name, from_email)
+
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(body,      "plain", "utf-8"))
+    alt.attach(MIMEText(html_body, "html",  "utf-8"))
+
+    if attachments:
+        from email.mime.base import MIMEBase
+        from email import encoders as _encoders
+        msg = MIMEMultipart("mixed")
+        msg.attach(alt)
+        for att in attachments:
+            maintype, _, subtype = str(att.get("mime") or "application/octet-stream").partition("/")
+            part = MIMEBase(maintype or "application", subtype or "octet-stream")
+            part.set_payload(att["content"])
+            _encoders.encode_base64(part)
+            part.add_header("Content-Disposition", "attachment",
+                            filename=str(att.get("filename") or "attachment"))
+            msg.attach(part)
+    else:
+        msg = alt
+
+    msg["Subject"]  = subject
+    msg["From"]     = formataddr((from_name, from_email))
+    msg["To"]       = formataddr((to_name, to_email)) if to_name else to_email
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    msg["X-Mailer"] = "AutoLead-Engine/2.0"
+    return msg
+
+
+# Back-compat alias — earlier internal name.
+_build_message = build_message
+
+
 def _send_smtp(
     to_email:   str,
     to_name:    str,
     subject:    str,
     body:       str,
     cfg:        Dict[str, Any],
+    attachments: Optional[List[Dict[str, Any]]] = None,
+    reply_to:   Optional[str] = None,
 ) -> None:
     """
     Blocking SMTP send. Raises on any failure — callers decide how to handle it.
@@ -140,6 +193,9 @@ def _send_smtp(
       port 465 → smtplib.SMTP_SSL  (direct TLS — Gmail recommended)
       port 587  → smtplib.SMTP + STARTTLS
       any other → STARTTLS (safe default)
+
+    attachments (optional): list of {"filename", "content" (bytes), "mime"} —
+    when omitted (every existing caller) the message structure is unchanged.
     """
     if not cfg["username"] or not cfg["password"]:
         raise ValueError(
@@ -147,30 +203,31 @@ def _send_smtp(
             "Open Settings and enter your Gmail address and App Password."
         )
 
-    html_body = _html_wrap(body, cfg["from_name"], cfg["from_email"])
-
-    msg              = MIMEMultipart("alternative")
-    msg["Subject"]   = subject
-    msg["From"]      = formataddr((cfg["from_name"], cfg["from_email"]))
-    msg["To"]        = formataddr((to_name, to_email)) if to_name else to_email
-    msg["X-Mailer"]  = "AutoLead-Engine/2.0"
-    msg.attach(MIMEText(body,      "plain", "utf-8"))
-    msg.attach(MIMEText(html_body, "html",  "utf-8"))
+    msg = build_message(
+        to_email, to_name, subject, body,
+        cfg["from_name"], cfg["from_email"],
+        reply_to=reply_to, attachments=attachments,
+    )
 
     host, port = cfg["host"], cfg["port"]
     _emit("INFO", "EMAIL", f"Connecting to {host}:{port}…")
 
+    # Serialise as bytes, not str: smtplib.sendmail() ASCII-encodes a str
+    # argument and raises on any non-ASCII content (accented names, em-dashes,
+    # unicode bodies). as_bytes() emits the message 8-bit clean.
+    raw = msg.as_bytes()
+
     if port == 465:
         with smtplib.SMTP_SSL(host, port, timeout=30) as server:
             server.login(cfg["username"], cfg["password"])
-            server.sendmail(cfg["from_email"], to_email, msg.as_string())
+            server.sendmail(cfg["from_email"], to_email, raw)
     else:
         with smtplib.SMTP(host, port, timeout=30) as server:
             server.ehlo()
             server.starttls()
             server.ehlo()
             server.login(cfg["username"], cfg["password"])
-            server.sendmail(cfg["from_email"], to_email, msg.as_string())
+            server.sendmail(cfg["from_email"], to_email, raw)
 
     _emit("INFO", "EMAIL", f"Delivered → {to_email}")
 
@@ -178,7 +235,9 @@ def _send_smtp(
 # ══ PUBLIC API ══════════════════════════════════════════════════════════════════
 
 
-def send_email(to_email: str, subject: str, body: str, config: Dict[str, Any]) -> bool:
+def send_email(to_email: str, subject: str, body: str, config: Dict[str, Any],
+               attachments: Optional[List[Dict[str, Any]]] = None,
+               reply_to: Optional[str] = None) -> bool:
     """
     Send an HTML email synchronously.
     Thread-safe — intended to be called via asyncio.to_thread().
@@ -189,13 +248,16 @@ def send_email(to_email: str, subject: str, body: str, config: Dict[str, Any]) -
         body:     plain-text body (auto-wrapped in a clean HTML template)
         config:   {gmail_address, app_password[, from_name]}
                   OR {host, port, username, password, from_name, from_email}
+        attachments: optional list of {"filename", "content" (bytes), "mime"}.
+                  Omitted by every existing caller — only the Email Campaign
+                  send path uses it. When omitted, the message is unchanged.
 
     Returns:
         True on success, False on any failure (error is logged + pushed to log_stream)
     """
     cfg = _normalize_smtp_config(config)
     try:
-        _send_smtp(to_email, "", subject, body, cfg)
+        _send_smtp(to_email, "", subject, body, cfg, attachments=attachments, reply_to=reply_to)
         return True
 
     except smtplib.SMTPAuthenticationError as exc:

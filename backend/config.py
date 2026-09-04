@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     automation_start_time:       str  = "07:00"
     automation_timezone:         str  = "America/New_York"
     automation_duration_hours:   int  = 4
-    automation_per_item_target:  int  = 100
+    automation_per_item_target:  int  = 40
     automation_max_retries:      int  = 2
     followup_delay_days:  int  = 3
     auto_send_enabled:    bool = False
@@ -98,9 +98,19 @@ class Settings(BaseSettings):
     verification_max_leads_per_run:    int   = 2000
 
     # ── Lead Discovery (Phase 1 — Discovery Planner) ─────────────────────────
-    discovery_quick_max_sources:     int = 2
+    discovery_quick_max_sources:     int = 3
     discovery_quick_max_variants:    int = 2
     discovery_campaign_max_variants: int = 4
+    # Post-discovery enrichment + scoring (Lead Search Upgrade, 2026-09-04):
+    # after merge/dedup, run email_finder (website-but-no-email) then
+    # website analysis + AI enrichment + lead scoring. Shared by manual Quick
+    # Search and Lead Search Automation.
+    discovery_enrichment_enabled:    bool = True
+    # Research handoff (Lead Search Upgrade §17-20): after enrichment+scoring,
+    # 'automatic' mode queues eligible leads for the existing Research Agent.
+    research_handoff_mode:           str  = "manual"      # 'manual' | 'automatic'
+    research_handoff_min_score:      int  = 60
+    research_handoff_max_per_batch:  int  = 25
 
     # ── Browser Research Agent ───────────────────────────────────────────────
     research_agent_headless:                 bool  = False

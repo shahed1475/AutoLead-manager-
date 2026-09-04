@@ -65,6 +65,15 @@ export const leadsApi = {
     api.patch(`/leads/${id}/status`, { status }).then((r) => r.data),
   deleteAll: (status) =>
     api.delete('/leads', { params: status ? { status } : {} }).then((r) => r.data),
+  research: (leadIds, submissionSource = 'manual') =>
+    api.post('/leads/research', { lead_ids: leadIds, submission_source: submissionSource }).then((r) => r.data),
+  researchOne: (id) => api.post(`/leads/${id}/research`).then((r) => r.data),
+  researchExclude: (id, excluded) =>
+    api.post(`/leads/${id}/research-exclude`, { excluded }).then((r) => r.data),
+}
+
+export const leadSearchApi = {
+  providers: () => api.get('/lead-search/providers').then((r) => r.data),
 }
 
 export const aiApi = {
@@ -216,6 +225,7 @@ export const researchAgentApi = {
   cancel:  (sessionId) => api.post(`/research-agent/${sessionId}/cancel`).then((r) => r.data),
   resume:  (sessionId) => api.post(`/research-agent/${sessionId}/resume`).then((r) => r.data),
   active:  ()          => api.get('/research-agent/active').then((r) => r.data),
+  sessions: (params = {}) => api.get('/research-agent/sessions', { params }).then((r) => r.data),
   // Full researched dataset (business + management + evidence + statuses) as CSV.
   exportCsv: (sessionId) =>
     api.get(`/research-agent/${sessionId}/results.csv`, { responseType: 'blob' }).then((r) => r.data),
@@ -227,9 +237,11 @@ export const automationApi = {
     api.post('/automation/import/preview', formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then((r) => r.data),
   confirmImport: (payload) => api.post('/automation/import/confirm', payload).then((r) => r.data),
   status:        ()        => api.get('/automation/status').then((r) => r.data),
+  runs:          (limit)   => api.get('/automation/runs', { params: { limit } }).then((r) => r.data),
   queue:         (params)  => api.get('/automation/queue', { params }).then((r) => r.data),
   log:           (limit)   => api.get('/automation/log', { params: { limit } }).then((r) => r.data),
   saveSettings:  (payload) => api.put('/automation/settings', payload).then((r) => r.data),
+  testSearch:    ()        => api.post('/automation/test-search').then((r) => r.data),
   start:         ()        => api.post('/automation/start').then((r) => r.data),
   pause:         ()        => api.post('/automation/pause').then((r) => r.data),
   resume:        ()        => api.post('/automation/resume').then((r) => r.data),

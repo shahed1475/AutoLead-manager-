@@ -1,11 +1,14 @@
 import csv
 import io
 import logging
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import Response
+from pydantic import BaseModel
 from .. import database as db
 from ..models import Lead, LeadCreate, LeadUpdate, LeadListResponse, StatusUpdate, StageUpdate
+from ..queue_worker import get_queue
+from ..research_agent.handoff import handoff_leads
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +28,12 @@ async def list_leads(
     sort_dir:      str            = Query("desc"),
     date_from:     Optional[str]  = None,
     date_to:       Optional[str]  = None,
-    date_field:    str            = Query("created_at"),
-    score_label:   Optional[str]  = None,
-    enriched_only: bool           = False,
+    date_field:      str            = Query("created_at"),
+    score_label:     Optional[str]  = None,
+    enriched_only:   bool           = False,
+    source:          Optional[str]  = None,
+    source_type:     Optional[str]  = None,
+    research_status: Optional[str]  = None,
 ):
     return await db.get_leads(
         page=page, page_size=page_size,
@@ -36,6 +42,7 @@ async def list_leads(
         sort_by=sort_by, sort_dir=sort_dir,
         date_from=date_from, date_to=date_to, date_field=date_field,
         score_label=score_label, enriched_only=enriched_only,
+        source=source, source_type=source_type, research_status=research_status,
     )
 
 
@@ -111,7 +118,54 @@ async def import_csv(file: UploadFile = File(...)):
     return {"created": created, "errors": errors}
 
 
+# ── Research handoff ──────────────────────────────────────────────────────
+
+_VALID_SUBMISSION_SOURCES = {"manual", "lead_search_automation", "manual_from_automation"}
+
+
+class BulkResearchRequest(BaseModel):
+    lead_ids: List[int]
+    submission_source: Optional[str] = "manual"
+    priority: Optional[str] = None
+
+
+class ResearchExcludeRequest(BaseModel):
+    excluded: bool = True
+
+
+async def _handoff(lead_ids: List[int], submission_source: Optional[str], priority: Optional[str]) -> dict:
+    src = submission_source if submission_source in _VALID_SUBMISSION_SOURCES else "manual"
+    queue = get_queue()
+    if queue is None:
+        raise HTTPException(status_code=503, detail="Research queue is not available")
+    result = await handoff_leads(queue, lead_ids, submission_source=src, priority=priority)
+    if result["session_id"] is None and result["queued"] == 0 and not result["skipped"]:
+        raise HTTPException(status_code=422, detail="No leads to send")
+    return result
+
+
+@router.post("/research")
+async def bulk_research(payload: BulkResearchRequest):
+    """Send the selected leads to the existing Browser Research Agent."""
+    return await _handoff(payload.lead_ids, payload.submission_source, payload.priority)
+
+
 # ── Parameterised routes ───────────────────────────────────────────────────
+
+@router.post("/{lead_id}/research")
+async def research_one(lead_id: int):
+    if not await db.get_lead_by_id(lead_id):
+        raise HTTPException(404, "Lead not found")
+    return await _handoff([lead_id], "manual", None)
+
+
+@router.post("/{lead_id}/research-exclude", response_model=Lead)
+async def research_exclude(lead_id: int, payload: ResearchExcludeRequest):
+    updated = await db.update_lead(lead_id, {"excluded_from_research": 1 if payload.excluded else 0})
+    if not updated:
+        raise HTTPException(404, "Lead not found")
+    return await db.get_lead_by_id(lead_id)
+
 
 @router.get("/{lead_id}", response_model=Lead)
 async def get_lead(lead_id: int):

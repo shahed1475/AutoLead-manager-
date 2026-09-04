@@ -146,6 +146,16 @@ class Lead(LeadBase):
     verified_email:  int             = 0
     has_social_links: int            = 0
 
+    # Lead Search Upgrade — discovery provenance + research handoff
+    source_type:              Optional[str] = None   # 'automation' | 'manual'
+    research_status:          str           = "NOT_STARTED"
+    email_status:             Optional[str] = None
+    last_research_session_id: Optional[int] = None
+    excluded_from_research:   int           = 0
+    latitude:                 Optional[float] = None
+    longitude:                Optional[float] = None
+    google_place_id:          Optional[str] = None
+
     # Legacy AI message columns (moving to messages table in Upgrade 1)
     ai_whatsapp_msg:   Optional[str] = None
     ai_email_subject:  Optional[str] = None
@@ -359,6 +369,36 @@ class ScraperRequest(BaseModel):
     @classmethod
     def cap_results(cls, v: int) -> int:
         return min(v, 100)
+
+
+class LeadSearchRequest(BaseModel):
+    """Quick Search (Phase 1 Discovery Planner) — see routers/discovery.py."""
+    query:        str
+    niche:        Optional[str] = None
+    city:         str
+    country:      Optional[str] = None
+    target_count: int = 20
+
+    @field_validator("target_count")
+    @classmethod
+    def cap_target_count(cls, v: int) -> int:
+        return max(1, min(v, 100))
+
+
+class ResearchAgentStartRequest(BaseModel):
+    """Browser Research Agent — see backend/research_agent/ and
+    docs/superpowers/specs/2026-08-25-browser-research-agent-design.md."""
+    niche:        str
+    location:     Optional[str] = None   # city, state/region, "Worldwide" — free text
+    country:      Optional[str] = None
+    state:        Optional[str] = None
+    city:         Optional[str] = None
+    target_count: int = 20
+
+    @field_validator("target_count")
+    @classmethod
+    def cap_target_count(cls, v: int) -> int:
+        return max(1, min(v, 500))
 
 
 class AIGenerateRequest(BaseModel):

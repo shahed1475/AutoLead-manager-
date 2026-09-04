@@ -6,13 +6,18 @@ import Topbar from './components/Topbar'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import { PageSkeleton } from './components/ui/Skeleton'
 
-const Dashboard = lazy(() => import('./pages/Dashboard'))
-const Leads     = lazy(() => import('./pages/Leads'))
-const Pipeline  = lazy(() => import('./pages/Pipeline'))
-const Campaign  = lazy(() => import('./pages/Campaign'))
-const AILab     = lazy(() => import('./pages/AILab'))
-const Inbox     = lazy(() => import('./pages/Inbox'))
-const Settings  = lazy(() => import('./pages/Settings'))
+const Dashboard  = lazy(() => import('./pages/Dashboard'))
+const Leads      = lazy(() => import('./pages/Leads'))
+const Pipeline   = lazy(() => import('./pages/Pipeline'))
+const LeadSearch    = lazy(() => import('./pages/LeadSearch'))
+const LeadSearchAutomation = lazy(() => import('./pages/LeadSearchAutomation'))
+const LeadSearchManual     = lazy(() => import('./pages/LeadSearchManual'))
+const ResearchAgent = lazy(() => import('./pages/ResearchAgent'))
+const Campaign      = lazy(() => import('./pages/Campaign'))
+const EmailCampaigns = lazy(() => import('./pages/EmailCampaigns'))
+const AILab      = lazy(() => import('./pages/AILab'))
+const Inbox      = lazy(() => import('./pages/Inbox'))
+const Settings   = lazy(() => import('./pages/Settings'))
 // ActivityLogs is added in Group G once backend log filtering/export exists.
 
 function RoutedContent() {
@@ -27,7 +32,12 @@ function RoutedContent() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/leads"     element={<Leads />} />
           <Route path="/pipeline"  element={<Pipeline />} />
+          <Route path="/lead-search" element={<LeadSearch />} />
+          <Route path="/lead-search/automation" element={<LeadSearchAutomation />} />
+          <Route path="/lead-search/manual" element={<LeadSearchManual />} />
+          <Route path="/research-agent" element={<ResearchAgent />} />
           <Route path="/campaign"  element={<Campaign />} />
+          <Route path="/email-campaigns" element={<EmailCampaigns />} />
           <Route path="/ai-lab"    element={<AILab />} />
           <Route path="/inbox"     element={<Inbox />} />
           <Route path="/settings"  element={<Settings />} />
