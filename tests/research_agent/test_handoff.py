@@ -150,7 +150,7 @@ async def test_seed_leads_finish_as_completed(clean_db, monkeypatch):
         return dict(_CFG)
 
     monkeypatch.setattr(session_mod, "run_research_session", fake_run)
-    monkeypatch.setattr(session_mod, "get_research_config", lambda: _cfg())
+    monkeypatch.setattr(session_mod, "get_research_config", lambda depth=None: _cfg())
 
     await session_mod.run_research_session_persisted(
         sid, "dental clinic", "Portland, ME", 1,

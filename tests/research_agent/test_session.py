@@ -31,7 +31,7 @@ async def test_persisted_session_saves_results_and_merges_into_leads(clean_db, m
         return {"leads": [completed_lead], "failed_count": 0, "skipped_count": 0, "geo_tasks": [], "processed_keys": []}
 
     monkeypatch.setattr(session_mod, "run_research_session", fake_run_research_session)
-    monkeypatch.setattr(session_mod, "get_research_config", lambda: _fake_cfg())
+    monkeypatch.setattr(session_mod, "get_research_config", lambda depth=None: _fake_cfg())
 
     await session_mod.run_research_session_persisted(session_id, "dental clinics", "Abbeville, USA", 2)
 
@@ -62,7 +62,7 @@ async def test_persisted_session_does_not_merge_failed_leads_into_leads_table(cl
         return {"leads": [failed_lead], "failed_count": 0, "skipped_count": 0, "geo_tasks": [], "processed_keys": []}
 
     monkeypatch.setattr(session_mod, "run_research_session", fake_run_research_session)
-    monkeypatch.setattr(session_mod, "get_research_config", lambda: _fake_cfg())
+    monkeypatch.setattr(session_mod, "get_research_config", lambda depth=None: _fake_cfg())
 
     await session_mod.run_research_session_persisted(session_id, "dental clinics", "Abbeville, USA", 1)
 
@@ -82,7 +82,7 @@ async def test_persisted_session_exception_marks_failed_not_stuck_running(clean_
         raise RuntimeError("browser crashed")
 
     monkeypatch.setattr(session_mod, "run_research_session", broken_run_research_session)
-    monkeypatch.setattr(session_mod, "get_research_config", lambda: _fake_cfg())
+    monkeypatch.setattr(session_mod, "get_research_config", lambda depth=None: _fake_cfg())
 
     await session_mod.run_research_session_persisted(session_id, "dental clinics", "Abbeville, USA", 1)
 
@@ -107,7 +107,7 @@ async def test_save_to_leads_false_never_touches_main_leads_table(clean_db, monk
     cfg_no_merge["research_agent_save_to_leads"] = False
 
     monkeypatch.setattr(session_mod, "run_research_session", fake_run_research_session)
-    monkeypatch.setattr(session_mod, "get_research_config", lambda: _async_return(cfg_no_merge))
+    monkeypatch.setattr(session_mod, "get_research_config", lambda depth=None: _async_return(cfg_no_merge))
 
     await session_mod.run_research_session_persisted(session_id, "dental clinics", "Abbeville, USA", 1)
 
@@ -133,7 +133,7 @@ async def test_failed_session_is_marked_resumable(clean_db, monkeypatch):
         raise RuntimeError("browser exploded")
 
     monkeypatch.setattr(session_mod, "run_research_session", boom)
-    monkeypatch.setattr(session_mod, "get_research_config", lambda: _fake_cfg())
+    monkeypatch.setattr(session_mod, "get_research_config", lambda depth=None: _fake_cfg())
 
     await session_mod.run_research_session_persisted(session_id, "dental", "Akron", 5)
 
@@ -162,7 +162,7 @@ async def test_resume_passes_stored_processed_keys_as_already_processed(clean_db
                 "processed_keys": list(already_processed or ())}
 
     monkeypatch.setattr(session_mod, "run_research_session", capture)
-    monkeypatch.setattr(session_mod, "get_research_config", lambda: _fake_cfg())
+    monkeypatch.setattr(session_mod, "get_research_config", lambda depth=None: _fake_cfg())
 
     await session_mod.run_research_session_persisted(session_id, "dental", "Akron", 5)
 
@@ -202,3 +202,55 @@ async def test_reconcile_gives_up_after_max_resumes(clean_db, monkeypatch):
     s = await db.get_research_session(session_id)
     assert s["status"] == "FAILED"
     assert s["resumable"] == 1
+
+
+# ── Research depth parameter threading ──────────────────────────────────────
+
+async def test_research_depth_param_is_threaded_into_get_research_config(clean_db, monkeypatch):
+    db = clean_db
+    sid = await db.create_research_session({"niche": "dental clinic", "location": "Abbeville, LA", "target_count": 1})
+
+    captured = {}
+
+    async def fake_get_research_config(depth=None):
+        captured["depth"] = depth
+        return {
+            "research_agent_save_to_leads": False, "research_agent_headless": True,
+            "research_agent_page_timeout_ms": 20000, "research_agent_pacing_profile": "fast",
+            "research_agent_max_geographic_units": 1,
+        }
+
+    async def fake_run_research_session(**kwargs):
+        return {"leads": [], "failed_count": 0, "skipped_count": 0, "geo_tasks": [], "processed_keys": []}
+
+    monkeypatch.setattr(session_mod, "get_research_config", fake_get_research_config)
+    monkeypatch.setattr(session_mod, "run_research_session", fake_run_research_session)
+
+    await session_mod.run_research_session_persisted(
+        sid, "dental clinic", "Abbeville, LA", 1, research_depth="deep",
+    )
+    assert captured["depth"] == "deep"
+
+
+async def test_research_depth_defaults_to_none_when_not_passed(clean_db, monkeypatch):
+    db = clean_db
+    sid = await db.create_research_session({"niche": "dental clinic", "location": "Abbeville, LA", "target_count": 1})
+
+    captured = {}
+
+    async def fake_get_research_config(depth=None):
+        captured["depth"] = depth
+        return {
+            "research_agent_save_to_leads": False, "research_agent_headless": True,
+            "research_agent_page_timeout_ms": 20000, "research_agent_pacing_profile": "fast",
+            "research_agent_max_geographic_units": 1,
+        }
+
+    async def fake_run_research_session(**kwargs):
+        return {"leads": [], "failed_count": 0, "skipped_count": 0, "geo_tasks": [], "processed_keys": []}
+
+    monkeypatch.setattr(session_mod, "get_research_config", fake_get_research_config)
+    monkeypatch.setattr(session_mod, "run_research_session", fake_run_research_session)
+
+    await session_mod.run_research_session_persisted(sid, "dental clinic", "Abbeville, LA", 1)
+    assert captured["depth"] is None   # get_research_config resolves the global setting itself

@@ -180,12 +180,17 @@ async def run_research_session_persisted(
     location: str,
     target_count: int,
     seed_businesses: Optional[List[Dict[str, Any]]] = None,
+    research_depth: Optional[str] = None,
 ) -> None:
     """JobQueue handler body. Never raises out — any unhandled exception is
     caught and persisted as status=FAILED so the session row is always left
     in a terminal, queryable state (matches Phase 1's quick_search.py
-    precedent for the same failure-visibility reason)."""
-    cfg = await get_research_config()
+    precedent for the same failure-visibility reason).
+
+    `research_depth` selects the quick/standard/deep/max preset for this
+    run (see config.py::DEPTH_PRESETS); when not given, get_research_config
+    falls back to the stored research_agent_research_depth app_setting."""
+    cfg = await get_research_config(depth=research_depth)
     save_to_leads = cfg["research_agent_save_to_leads"]
 
     existing = await db.get_research_session(session_id) or {}
