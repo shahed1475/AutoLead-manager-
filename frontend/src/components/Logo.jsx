@@ -1,8 +1,8 @@
-// HCM brand mark: an H monogram whose crossbar rises left to right — the
+// HOM brand mark: an H monogram whose crossbar rises left to right — the
 // initial and a growth line in one stroke system. One geometry, rendered as
 // full logo, icon-only, and day/night variants (colours come from theme
 // tokens). Static SVG copies live in public/brand/.
-export const BRAND = { name: 'HCM', tagline: 'Sales Growth Engine' }
+export const BRAND = { name: 'HOM', tagline: 'Sales Growth Engine' }
 
 const STROKES = ['M10.5 8.5 V23.5', 'M21.5 8.5 V23.5', 'M10.5 19 L21.5 13']
 

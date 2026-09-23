@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ══════════════════════════════════════════════════════════════════════════════
-#  HCM · Sales Growth Engine — one-click server (Linux)
+#  HOM · Sales Growth Engine — one-click server (Linux)
 #
 #    ./start.sh              start the app + a public link you can share
 #    ./start.sh local        start the app on this computer only (no link)
 #    ./start.sh stop         stop the app and the public link
 #    ./start.sh status       show what is running and the current link
 #    ./start.sh link         print (and copy) the current share link
-#    ./start.sh install-button   add the HCM button to the desktop + app menu
+#    ./start.sh install-button   add the HOM button to the desktop + app menu
 #
 #  The app runs in Docker on this machine (it needs the local AI model, the
 #  research browser and WhatsApp desktop). The public link is a Cloudflare
@@ -52,13 +52,13 @@ fail() { printf '  %s✗ %s%s\n' "$R" "$*" "$X"; }
 step() { printf '\n  %s%s%s\n' "$B" "$*" "$X"; }
 
 banner() {
-  printf '\n  %sHCM%s  %sSales Growth Engine%s\n' "$B" "$X" "$DIM" "$X"
+  printf '\n  %sHOM%s  %sSales Growth Engine%s\n' "$B" "$X" "$DIM" "$X"
 }
 
 # Keep the launcher window open until the user has read the result.
 finish() {
   local code="${1:-0}"
-  if [[ "${HCM_FROM_LAUNCHER:-}" == "1" && -t 0 ]]; then
+  if [[ "${HOM_FROM_LAUNCHER:-}" == "1" && -t 0 ]]; then
     printf '\n  %sPress Enter to close this window.%s' "$DIM" "$X"
     read -r _ || true
   fi
@@ -105,7 +105,7 @@ copy_to_clipboard() {
 
 notify() {
   command -v notify-send >/dev/null 2>&1 && \
-    notify-send -a "HCM" -i "$ROOT/frontend/public/brand/hcm-mark.svg" "$1" "$2" 2>/dev/null || true
+    notify-send -a "HOM" -i "$ROOT/frontend/public/brand/hom-mark.svg" "$1" "$2" 2>/dev/null || true
 }
 
 # ── Steps ─────────────────────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ check_ai() {
 }
 
 start_app() {
-  if app_up && curl -fsS -o /dev/null --max-time 3 "$LOCAL_URL" 2>/dev/null && [[ "${HCM_REBUILD:-}" != "1" ]]; then
+  if app_up && curl -fsS -o /dev/null --max-time 3 "$LOCAL_URL" 2>/dev/null && [[ "${HOM_REBUILD:-}" != "1" ]]; then
     ok "App is already running"
     return
   fi
@@ -183,7 +183,7 @@ ensure_password() {
   done
   local body code
   # JSON-encode via Python so any character in the password is safe.
-  body=$(HCM_PW="$pw" python3 -c 'import json,os; print(json.dumps({"password": os.environ["HCM_PW"]}))')
+  body=$(HOM_PW="$pw" python3 -c 'import json,os; print(json.dumps({"password": os.environ["HOM_PW"]}))')
   code=$(curl -sS -o "$RUN_DIR/auth.out" -w '%{http_code}' --max-time 10 \
     -H 'Content-Type: application/json' --data-binary @- "$API/auth/set-password" <<<"$body")
   unset pw pw2 body
@@ -282,7 +282,7 @@ stop_tunnel() {
 }
 
 open_browser() {
-  [[ "${HCM_NO_BROWSER:-}" == "1" ]] && return
+  [[ "${HOM_NO_BROWSER:-}" == "1" ]] && return
   command -v xdg-open >/dev/null 2>&1 && (xdg-open "$LOCAL_URL" >/dev/null 2>&1 &)
 }
 
@@ -290,14 +290,14 @@ summary() {
   local link=""
   [[ -s "$LINK_FILE" ]] && link="$(cat "$LINK_FILE")"
   printf '\n  %s──────────────────────────────────────────────────────────%s\n' "$DIM" "$X"
-  printf '  %sHCM is running%s\n\n' "$B" "$X"
+  printf '  %sHOM is running%s\n\n' "$B" "$X"
   printf '  On this computer   %s%s%s\n' "$C" "$LOCAL_URL" "$X"
   if [[ -n "$link" ]]; then
     printf '  Share this link    %s%s%s\n' "$C$B" "$link" "$X"
     if copy_to_clipboard "$link"; then printf '  %s(copied to your clipboard)%s\n' "$DIM" "$X"; fi
     [[ -f "$TUNNEL_ENV" ]] || printf '\n  %sThis link changes each time the link is reopened.%s\n' "$DIM" "$X"
   fi
-  printf '\n  %sStop everything:%s  ./start.sh stop   %s(or right-click the HCM button → Stop)%s\n' "$DIM" "$X" "$DIM" "$X"
+  printf '\n  %sStop everything:%s  ./start.sh stop   %s(or right-click the HOM button → Stop)%s\n' "$DIM" "$X" "$DIM" "$X"
   printf '  %s──────────────────────────────────────────────────────────%s\n' "$DIM" "$X"
 }
 
@@ -305,16 +305,16 @@ install_button() {
   local apps="$HOME/.local/share/applications" desk
   desk="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
   mkdir -p "$apps"
-  local file="$apps/hcm-sales-growth-engine.desktop"
+  local file="$apps/hom-sales-growth-engine.desktop"
   cat >"$file" <<EOF
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=HCM
+Name=HOM
 GenericName=Sales Growth Engine
-Comment=Start HCM and get a link to share
-Exec=env HCM_FROM_LAUNCHER=1 "$ROOT/start.sh" start
-Icon=$ROOT/frontend/public/brand/hcm-mark.svg
+Comment=Start HOM and get a link to share
+Exec=env HOM_FROM_LAUNCHER=1 "$ROOT/start.sh" start
+Icon=$ROOT/frontend/public/brand/hom-mark.svg
 Terminal=true
 Categories=Office;
 Keywords=leads;sales;crm;
@@ -323,28 +323,28 @@ Actions=local;status;link;stop;
 
 [Desktop Action local]
 Name=Start on this computer only
-Exec=env HCM_FROM_LAUNCHER=1 "$ROOT/start.sh" local
+Exec=env HOM_FROM_LAUNCHER=1 "$ROOT/start.sh" local
 
 [Desktop Action status]
 Name=Status
-Exec=env HCM_FROM_LAUNCHER=1 "$ROOT/start.sh" status
+Exec=env HOM_FROM_LAUNCHER=1 "$ROOT/start.sh" status
 
 [Desktop Action link]
 Name=Copy share link
-Exec=env HCM_FROM_LAUNCHER=1 "$ROOT/start.sh" link
+Exec=env HOM_FROM_LAUNCHER=1 "$ROOT/start.sh" link
 
 [Desktop Action stop]
-Name=Stop HCM
-Exec=env HCM_FROM_LAUNCHER=1 "$ROOT/start.sh" stop
+Name=Stop HOM
+Exec=env HOM_FROM_LAUNCHER=1 "$ROOT/start.sh" stop
 EOF
   chmod +x "$file"
   if [[ -d "$desk" ]]; then
-    cp "$file" "$desk/HCM.desktop"
-    chmod +x "$desk/HCM.desktop"
-    command -v gio >/dev/null 2>&1 && gio set "$desk/HCM.desktop" metadata::trusted true 2>/dev/null || true
+    cp "$file" "$desk/HOM.desktop"
+    chmod +x "$desk/HOM.desktop"
+    command -v gio >/dev/null 2>&1 && gio set "$desk/HOM.desktop" metadata::trusted true 2>/dev/null || true
   fi
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$apps" 2>/dev/null || true
-  ok "HCM button added to the app menu${desk:+ and the desktop ($desk)}"
+  ok "HOM button added to the app menu${desk:+ and the desktop ($desk)}"
 }
 
 # ── Commands ──────────────────────────────────────────────────────────────────
@@ -358,7 +358,7 @@ cmd_start() {
   if [[ "$share" == "yes" ]]; then
     if ensure_password; then
       if start_tunnel; then
-        notify "HCM is online" "$(cat "$LINK_FILE")"
+        notify "HOM is online" "$(cat "$LINK_FILE")"
       else
         warn "The app works on this computer, but the share link isn't available right now."
       fi

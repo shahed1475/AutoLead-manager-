@@ -88,7 +88,7 @@ The script will:
 
 ### Linux (server + share link)
 
-Click the **HCM** button on the desktop, or run:
+Click the **HOM** button on the desktop, or run:
 
 ```bash
 ./start.sh            # start the app and open a link you can share

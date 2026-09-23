@@ -1,12 +1,12 @@
-# Running HCM as a server and sharing it
+# Running HOM as a server and sharing it
 
-HCM runs on this Linux machine (it needs the local AI model, the research
+HOM runs on this Linux machine (it needs the local AI model, the research
 browser and WhatsApp desktop) and is shared through a Cloudflare Tunnel: an
 HTTPS link, no router changes, and your IP address stays private.
 
 ## Everyday use
 
-Click the **HCM** button on the desktop (or in the app menu), or run:
+Click the **HOM** button on the desktop (or in the app menu), or run:
 
 | Command | What it does |
 |---|---|
@@ -18,7 +18,7 @@ Click the **HCM** button on the desktop (or in the app menu), or run:
 | `./start.sh install-button` | (Re)create the desktop / app-menu button |
 
 Right-click the button for Stop, Status, Copy share link and Start on this
-computer only. After you pull new code, start with `HCM_REBUILD=1 ./start.sh`
+computer only. After you pull new code, start with `HOM_REBUILD=1 ./start.sh`
 so the app is rebuilt. Developer mode (venv + Vite dev server) is
 `scripts/dev.sh`.
 
