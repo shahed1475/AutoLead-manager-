@@ -46,3 +46,8 @@ Thumbs.db
 !.claude/skills/
 .superpowers/
 .worktrees/
+
+# One-click server runtime state (share link, tunnel pid, logs)
+.run/
+# Permanent-link tunnel token — secret, never commit
+deploy/tunnel.env

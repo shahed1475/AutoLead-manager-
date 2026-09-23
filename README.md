@@ -86,21 +86,19 @@ The script will:
 5. Launch the React frontend on **http://localhost:5173**.
 6. Open your browser automatically.
 
-### Mac / Linux
+### Linux (server + share link)
 
-Make the script executable once:
-
-```bash
-chmod +x start.sh
-```
-
-Then launch:
+Click the **HCM** button on the desktop, or run:
 
 ```bash
-./start.sh
+./start.sh            # start the app and open a link you can share
+./start.sh stop       # stop everything
 ```
 
-Press **Ctrl+C** to stop all services cleanly.
+The first start asks you to create a password; no link opens without one.
+See [docs/SHARING.md](docs/SHARING.md) for every command, security notes and
+how to get a permanent link on your own domain. Developer mode (venv + Vite
+dev server) is `scripts/dev.sh`.
 
 ### Using the Dashboard
 
