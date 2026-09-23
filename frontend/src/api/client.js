@@ -65,9 +65,13 @@ export const leadsApi = {
     api.patch(`/leads/${id}/status`, { status }).then((r) => r.data),
   deleteAll: (status) =>
     api.delete('/leads', { params: status ? { status } : {} }).then((r) => r.data),
-  research: (leadIds, submissionSource = 'manual') =>
-    api.post('/leads/research', { lead_ids: leadIds, submission_source: submissionSource }).then((r) => r.data),
-  researchOne: (id) => api.post(`/leads/${id}/research`).then((r) => r.data),
+  research: (leadIds, submissionSource = 'manual', targetTitles = null) =>
+    api.post('/leads/research', {
+      lead_ids: leadIds, submission_source: submissionSource,
+      ...(targetTitles?.length ? { target_titles: targetTitles } : {}),
+    }).then((r) => r.data),
+  researchOne: (id, targetTitles = null) =>
+    api.post(`/leads/${id}/research`, targetTitles?.length ? { target_titles: targetTitles } : undefined).then((r) => r.data),
   researchExclude: (id, excluded) =>
     api.post(`/leads/${id}/research-exclude`, { excluded }).then((r) => r.data),
 }
@@ -226,6 +230,7 @@ export const researchAgentApi = {
   resume:  (sessionId) => api.post(`/research-agent/${sessionId}/resume`).then((r) => r.data),
   active:  ()          => api.get('/research-agent/active').then((r) => r.data),
   sessions: (params = {}) => api.get('/research-agent/sessions', { params }).then((r) => r.data),
+  titles:  (niche = '') => api.get('/research-agent/titles', { params: { niche } }).then((r) => r.data),
   // Full researched dataset (business + management + evidence + statuses) as CSV.
   exportCsv: (sessionId) =>
     api.get(`/research-agent/${sessionId}/results.csv`, { responseType: 'blob' }).then((r) => r.data),

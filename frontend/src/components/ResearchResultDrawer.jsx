@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import {
   X, Building2, User, Mail, Phone, Globe, MapPin, FileSearch,
-  ShieldCheck, ShieldAlert, ShieldQuestion, Link2,
+  ShieldCheck, ShieldAlert, ShieldQuestion, Link2, Users, Star,
 } from 'lucide-react'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { SLabel } from './ui/DrawerPrimitives'
@@ -63,6 +63,38 @@ function EvidenceRow({ e }) {
   )
 }
 
+function DecisionMakerRow({ d }) {
+  return (
+    <li className="rounded-lg border border-slate-800 bg-slate-900/40 p-2.5 space-y-1">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm text-slate-200 flex items-center gap-1.5">
+            {d.name}
+            {!!d.is_primary && (
+              <span className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase text-amber-300">
+                <Star size={9} /> Primary
+              </span>
+            )}
+          </p>
+          <p className="text-xs text-slate-400">{d.title || '—'}</p>
+        </div>
+        {d.matched_title && (
+          <span className="shrink-0 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-300">
+            Matches “{d.matched_title}”
+          </span>
+        )}
+      </div>
+      {d.source_url && (
+        <a href={d.source_url} target="_blank" rel="noreferrer"
+          className="flex items-center gap-1 text-[11px] text-brand-400 hover:text-brand-300 truncate">
+          <Link2 size={10} className="shrink-0" />
+          <span className="truncate">{d.source_url}</span>
+        </a>
+      )}
+    </li>
+  )
+}
+
 export default function ResearchResultDrawer({ result, onClose }) {
   const ref = useFocusTrap(!!result)
 
@@ -77,6 +109,7 @@ export default function ResearchResultDrawer({ result, onClose }) {
 
   const loc = [result.city, result.state, result.country].filter(Boolean).join(', ')
   const evidence = result.evidence || []
+  const decisionMakers = result.decision_makers || []
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={onClose}>
@@ -137,6 +170,19 @@ export default function ResearchResultDrawer({ result, onClose }) {
             </p>
           )}
         </section>
+
+        {/* Decision makers */}
+        {decisionMakers.length > 0 && (
+          <section className="space-y-2">
+            <SLabel icon={Users}>Decision makers ({decisionMakers.length})</SLabel>
+            <p className="text-[11px] text-slate-500">
+              Everyone named with a role on the business's public pages. Emails aren't guessed.
+            </p>
+            <ul className="space-y-2">
+              {decisionMakers.map((d) => <DecisionMakerRow key={d.id ?? d.name} d={d} />)}
+            </ul>
+          </section>
+        )}
 
         {/* Research */}
         <section className="space-y-2">

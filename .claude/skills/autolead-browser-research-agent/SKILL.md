@@ -44,6 +44,14 @@ New in the working tree (uncommitted as of 2026-08-30), spec: `docs/superpowers/
 
 **Explicitly NOT in this subsystem (spec §29):** website scoring, AI lead qualification, any outreach/message generation, WhatsApp/email sending, CRM stage changes, LinkedIn scraping, anti-bot evasion, model fine-tuning.
 
+## Decision makers (multiple per lead, custom titles — added 2026-09-23)
+
+- `ResearchLead.decision_makers: List[DecisionMaker]` — every named person + role found, capped by `research_agent_max_decision_makers` (default 5). Persisted in `lead_research_decision_makers` (FK `result_id` CASCADE), returned as `decision_makers` on `GET /{id}/results`, flattened into the CSV's `decision_makers` column.
+- Target titles: `POST /start` (and the leads `/research` handoff) accept `target_titles`; stored as JSON on `lead_research_sessions.target_titles` so resume/reconcile keep them. `models.resolve_target_titles` = sanitised custom list, else `management_titles_for_niche`. `GET /titles?niche=` feeds the UI's title picker.
+- Extraction: `extraction.find_role_sentences(extra_titles=...)` → `llm.extract_decision_makers` → **kept only if the name and every title word appear in the page text** (`agent._extract_decision_makers`). Then `evidence.record_decision_maker` (dedups by name-token subset, so "Jonathan" + "Jonathan Windham" is one person) — never append to `decision_makers` directly.
+- The **primary** (highest-priority matched title, earliest wins ties) is mirrored into `management_contact_name/title` via `record_finding`, so existing readers are unchanged. `validate_no_fabrication` also checks every decision maker has a `decision_maker` FOUND evidence row.
+- Known limit: a person listed on the site is kept even when the listing is a joke (e.g. a pets page with "Director of Rodent Relations") — the source URL is shown so a human can judge.
+
 ## The loop (what "research a business" means)
 
 ```

@@ -54,6 +54,8 @@ def finalize_status(lead: ResearchLead) -> ResearchLead:
         parts.append(f"Fields found: {', '.join(found_fields)}.")
     if missing_required:
         parts.append(f"Missing required: {', '.join(missing_required)}.")
+    if lead.decision_makers:
+        parts.append("Decision makers: " + "; ".join(f"{d.name} ({d.title})" for d in lead.decision_makers) + ".")
     if not lead.management_contact_name:
         parts.append("No named owner/manager was publicly listed — not inferred.")
     if source_urls:
@@ -75,6 +77,11 @@ def validate_no_fabrication(lead: ResearchLead) -> List[str]:
         value = getattr(lead, f, None)
         if value and not any(e.field_name == f and e.status == "FOUND" for e in lead.evidence):
             violations.append(f"{f}={value!r} has no supporting FOUND evidence")
+    for d in lead.decision_makers:
+        prefix = f"{d.name} — "
+        if not any(e.field_name == "decision_maker" and e.status == "FOUND"
+                   and (e.snippet or "").startswith(prefix) for e in lead.evidence):
+            violations.append(f"decision_maker={d.name!r} has no supporting FOUND evidence")
     return violations
 
 

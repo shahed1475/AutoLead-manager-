@@ -38,7 +38,8 @@ from .models import (
     AgentAction,
     ResearchEvidence,
     ResearchLead,
-    management_titles_for_niche,
+    resolve_target_titles,
+    sanitize_target_titles,
 )
 from .planner import GeoTask, expand_geography
 from ..validators import clean_email, clean_phone
@@ -74,6 +75,17 @@ _ROLE_WORDS_ONLY = frozenset({
     "our", "owner", "founder", "president", "manager", "director", "office",
     "practice", "principal", "lead", "partner", "attorney", "mr", "mrs", "ms",
 })
+
+
+_TITLE_FILLER = frozenset({"and", "of", "the", "a", "an", "at", "for", "to"})
+
+
+def _normalize_text(value: str) -> str:
+    """Lowercase, "&" -> "and", punctuation to single spaces, padded — so
+    "does this name/title appear on the page" is a plain substring check."""
+    v = (value or "").lower().replace("&", " and ")
+    v = re.sub(r"[^a-z0-9]+", " ", v)
+    return " " + re.sub(r"\s+", " ", v).strip() + " "
 
 
 def _is_role_word_only(value: str) -> bool:
@@ -115,10 +127,27 @@ def candidate_key(hint: Dict[str, Any]) -> str:
 class ResearchAgent:
     """One instance per research session. Owns the BrowserController."""
 
-    def __init__(self, browser: BrowserController, cfg: Dict[str, Any], niche: str) -> None:
+    def __init__(self, browser: BrowserController, cfg: Dict[str, Any], niche: str,
+                 target_titles: Optional[List[str]] = None) -> None:
         self.browser = browser
         self.cfg = cfg
         self.niche = niche
+        # Custom titles (user-supplied) take priority over the niche defaults.
+        self.custom_titles = bool(sanitize_target_titles(target_titles))
+        self.target_titles = resolve_target_titles(niche, target_titles)
+        self.max_decision_makers = max(1, int(cfg.get("research_agent_max_decision_makers", 5) or 5))
+
+    # ── Decision-maker coverage ───────────────────────────────────────────
+
+    def _unmatched_titles(self, lead: ResearchLead) -> List[str]:
+        matched = {d.matched_title for d in lead.decision_makers if d.matched_title}
+        return [t for t in self.target_titles if t not in matched]
+
+    def _decision_makers_satisfied(self, lead: ResearchLead) -> bool:
+        """Enough people found: the per-lead cap is hit, or every target
+        title is covered by someone."""
+        return (len(lead.decision_makers) >= self.max_decision_makers
+                or not self._unmatched_titles(lead))
 
     # ── Discovery (used only when no seed businesses are supplied) ────────
 
@@ -205,7 +234,15 @@ class ResearchAgent:
             if validation.is_research_sufficient(lead) and lead.actions_taken > 0:
                 current_page_read = bool(last_opened_url and last_opened_url in pages_read)
                 paths_exhausted = lead.pages_visited >= 2 and not relevant_links and current_page_read
-                if lead.management_contact_name or management_search_attempted or paths_exhausted:
+                # With at least one person found, keep going only while a
+                # known Contact/About/Team link might list more (cheap,
+                # deterministic) — or, for custom titles, until one of them
+                # is matched or a title search has been tried.
+                custom_unmet = self.custom_titles and len(self._unmatched_titles(lead)) == len(self.target_titles)
+                enough_people = bool(lead.decision_makers) and (
+                    self._decision_makers_satisfied(lead) or not relevant_links
+                ) and not custom_unmet
+                if enough_people or management_search_attempted or paths_exhausted:
                     break
 
             # Researcher-discipline: when the next step is obvious (open the
@@ -281,7 +318,7 @@ class ResearchAgent:
                 if action.params.get("query", "").find(lead.business_name or "\0") != -1:
                     management_search_attempted = management_search_attempted or any(
                         t.lower() in action.params.get("query", "").lower()
-                        for t in management_titles_for_niche(self.niche)
+                        for t in self.target_titles
                     )
             if action.action in ("open_url", "open_new_tab"):
                 lead.pages_visited += 1
@@ -347,7 +384,7 @@ class ResearchAgent:
 
         # R3 — current page read, management / business email still missing,
         # and a Contact/About/Team page is known: follow it.
-        needs_more = (not lead.management_contact_name) or (
+        needs_more = (not self._decision_makers_satisfied(lead)) or (
             not lead.business_email and lead.business_email_status != STATUS_SECURE_WEB_FORM
         )
         if (needs_more and relevant_links and lead.pages_visited < max_pages
@@ -367,10 +404,11 @@ class ResearchAgent:
             return AgentAction(action="google_search", params={"query": query}, reason="fallback: find website")
         if lead.business_website and lead.pages_visited == 0:
             return AgentAction(action="open_url", params={"url": lead.business_website}, reason="fallback: open business website")
-        if lead.pages_visited > 0 and not lead.management_contact_name and not force_no_search and lead.searches_taken < max_searches:
-            titles = management_titles_for_niche(self.niche)
-            query = f'"{lead.business_name}" {titles[0]}'
-            return AgentAction(action="google_search", params={"query": query}, reason="fallback: find management contact")
+        unmatched = self._unmatched_titles(lead)
+        wants_people = not lead.decision_makers or (self.custom_titles and len(unmatched) == len(self.target_titles))
+        if lead.pages_visited > 0 and wants_people and unmatched and not force_no_search and lead.searches_taken < max_searches:
+            query = f'"{lead.business_name}" {unmatched[0]}'
+            return AgentAction(action="google_search", params={"query": query}, reason="fallback: find decision maker")
         return AgentAction(action="finish_research", reason="fallback: no further productive action")
 
     async def _process_result(self, lead: ResearchLead, action: AgentAction, result,
@@ -508,37 +546,51 @@ class ResearchAgent:
             if not lead.management_email:
                 lead.management_email_status = STATUS_SECURE_WEB_FORM
 
-        missing = [f for f in ("management_contact_name", "management_title") if not getattr(lead, f)]
-        if missing:
-            role_sentences = extraction.find_role_sentences(text)
-            if role_sentences:
-                extracted = await llm_mod.extract_fields(
-                    "\n".join(role_sentences), missing, business_name=lead.business_name,
-                )
-                # ONLY name/title from the LLM — genuinely language-dependent.
-                # Email/phone are deterministic-regex-only (extraction.py): a
-                # regex that already ran over this page is more trustworthy
-                # than an 8B asked to "find" a contact, which invites a guess.
-                name = extracted.get("management_contact_name")
-                if name and _is_role_word_only(name):
-                    # "Dentist Dr.", "The Team", "Owner" — a title/role, not a
-                    # person. Recording it as a name is worse than leaving it
-                    # NOT_FOUND (the title is still captured separately).
-                    extracted.pop("management_contact_name", None)
-                for field_name in ("management_contact_name", "management_title"):
-                    if field_name in extracted and not getattr(lead, field_name):
-                        evidence_mod.record_finding(
-                            lead, field_name, extracted[field_name], source_type="ai_extraction",
-                            source_url=url, snippet=role_sentences[0][:200], confidence=0.65,
-                        )
-                if lead.management_contact_name and not lead.management_phone and lead.business_phone:
-                    lead.management_phone = lead.business_phone
-                    lead.management_phone_type = "BUSINESS"
-                    evidence_mod.record_finding(
-                        lead, "management_phone", lead.business_phone, source_type="inference",
-                        source_url=url, snippet="No direct line found; using the business's main phone.",
-                        confidence=0.4, status=STATUS_FOUND,
-                    )
+        if not self._decision_makers_satisfied(lead):
+            await self._extract_decision_makers(lead, text, url)
+
+        if lead.management_contact_name and not lead.management_phone and lead.business_phone:
+            lead.management_phone = lead.business_phone
+            lead.management_phone_type = "BUSINESS"
+            evidence_mod.record_finding(
+                lead, "management_phone", lead.business_phone, source_type="inference",
+                source_url=url, snippet="No direct line found; using the business's main phone.",
+                confidence=0.4, status=STATUS_FOUND,
+            )
+
+    async def _extract_decision_makers(self, lead: ResearchLead, text: str, url: Optional[str]) -> None:
+        """Pull every named person + role off the page. The LLM only reads
+        pre-filtered role sentences, and each person it returns is kept ONLY
+        if the name and the title both appear in the page text — a model
+        that invents a plausible person is caught here, deterministically."""
+        role_sentences = extraction.find_role_sentences(
+            text, max_sentences=15, extra_titles=self.target_titles,
+        )
+        if not role_sentences:
+            return
+        people = await llm_mod.extract_decision_makers(
+            "\n".join(role_sentences), list(self.target_titles), business_name=lead.business_name,
+        )
+        page_norm = _normalize_text(text)
+        page_words = set(page_norm.split())
+        for person in people or []:
+            name = (person.get("name") or "").strip()
+            title = (person.get("title") or "").strip()
+            if not name or not title or _is_role_word_only(name):
+                continue  # "Dentist Dr.", "The Team" — a role, not a person
+            if "@" in name or re.search(r"\d{3}", name):
+                continue  # an email/phone is never a name
+            if _normalize_text(name) not in page_norm:
+                continue  # name not on the page -> invented
+            title_words = [w for w in _normalize_text(title).split() if w not in _TITLE_FILLER]
+            if not title_words or not all(w in page_words for w in title_words):
+                continue  # title not on the page -> invented
+            snippet = next((rs for rs in role_sentences if name.lower() in rs.lower()), role_sentences[0])
+            evidence_mod.record_decision_maker(
+                lead, name, title, self.target_titles, source_type="ai_extraction",
+                source_url=url, snippet=snippet[:200], confidence=0.65,
+                max_count=self.max_decision_makers,
+            )
 
     def _apply_deterministic_extraction(
         self, lead: ResearchLead, text: str, source_type: str, source_url: Optional[str],
@@ -563,8 +615,12 @@ class ResearchAgent:
     def _build_state_summary(self, lead: ResearchLead, current_page_read: bool = False) -> str:
         missing = lead.missing_required_fields()
         optional_missing = [f for f in ("management_contact_name", "management_title", "business_email") if not getattr(lead, f)]
+        unmatched = self._unmatched_titles(lead)
         return (
             f"Niche: {self.niche}\n"
+            f"Target titles: {', '.join(self.target_titles)}\n"
+            f"Decision makers found: {len(lead.decision_makers)} of up to {self.max_decision_makers}; "
+            f"titles still unmatched: {', '.join(unmatched) or 'none'}\n"
             f"Business name: {lead.business_name or 'unknown'}\n"
             f"Known: website={lead.business_website or 'none'}, phone={lead.business_phone or 'none'}, "
             f"email={lead.business_email or 'none'}, management_contact={lead.management_contact_name or 'none'}\n"
@@ -589,6 +645,7 @@ async def run_research_session(
     is_cancelled: Optional[Any] = None,
     already_processed: Optional[set] = None,
     discovery_fallback: Optional[Any] = None,
+    target_titles: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Public entry point. Runs discovery (unless seed_businesses given) then
@@ -652,7 +709,7 @@ async def run_research_session(
         headless=resolved_cfg["research_agent_headless"],
         page_timeout_ms=resolved_cfg["research_agent_page_timeout_ms"],
     ) as browser:
-        agent = ResearchAgent(browser, resolved_cfg, niche)
+        agent = ResearchAgent(browser, resolved_cfg, niche, target_titles=target_titles)
 
         for geo in geo_tasks:
             if len(leads) >= target_count:

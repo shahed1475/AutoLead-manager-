@@ -123,6 +123,7 @@ class Settings(BaseSettings):
     research_agent_max_geographic_units:      int   = 5
     research_agent_page_timeout_ms:           int   = 20000
     research_agent_save_to_leads:             bool  = True
+    research_agent_max_decision_makers:       int   = 5
 
     model_config = {
         "env_file":          str(BASE_DIR / ".env"),

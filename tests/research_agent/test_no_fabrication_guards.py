@@ -83,9 +83,9 @@ async def test_role_word_only_name_is_rejected(monkeypatch):
         return AgentAction(action="extract_page_text", params={})
     monkeypatch.setattr(agent_mod.llm_mod, "decide_next_action", only_extract)
 
-    async def returns_a_title_as_a_name(text, missing, business_name=None, cfg=None):
-        return {"management_contact_name": "Dentist Dr.", "management_title": "Dentist"}
-    monkeypatch.setattr(agent_mod.llm_mod, "extract_fields", returns_a_title_as_a_name)
+    async def returns_a_title_as_a_name(text, target_titles, business_name=None, cfg=None):
+        return [{"name": "Dentist Dr.", "title": "Dentist"}]
+    monkeypatch.setattr(agent_mod.llm_mod, "extract_decision_makers", returns_a_title_as_a_name)
 
     PAGE = "Welcome. Our Dentist Dr. is here to help. Book online."
     browser = ScriptedBrowser(lambda a: ok(a.action, url="https://acme.test", text=PAGE, links=[], headings=[])
@@ -103,13 +103,13 @@ async def test_llm_extractor_email_phone_are_ignored(monkeypatch):
         return AgentAction(action="extract_page_text", params={})
     monkeypatch.setattr(agent_mod.llm_mod, "decide_next_action", only_extract)
 
-    async def hallucinating_extract_fields(text, missing, business_name=None, cfg=None):
-        return {
-            "management_contact_name": "Dr. Real Name",   # OK — language-dependent
-            "business_email": "guessed@pattern.com",       # must be ignored
-            "business_phone": "+1 000 000 0000",           # must be ignored
-        }
-    monkeypatch.setattr(agent_mod.llm_mod, "extract_fields", hallucinating_extract_fields)
+    async def hallucinating_extract_fields(text, target_titles, business_name=None, cfg=None):
+        return [{
+            "name": "Dr. Real Name", "title": "Lead Dentist",  # OK — language-dependent
+            "business_email": "guessed@pattern.com",           # must be ignored
+            "business_phone": "+1 000 000 0000",               # must be ignored
+        }]
+    monkeypatch.setattr(agent_mod.llm_mod, "extract_decision_makers", hallucinating_extract_fields)
 
     PAGE = "Our practice. Dr. Real Name is our lead dentist. Welcome."
     browser = ScriptedBrowser(lambda a: ok(a.action, url="https://acme.test", text=PAGE, links=[], headings=[])

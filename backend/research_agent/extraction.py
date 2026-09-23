@@ -9,7 +9,7 @@ language understanding — see llm.py::extract_fields).
 from __future__ import annotations
 
 import re
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from ..scrapers.email_finder import _EMAIL_RE, _PHONE_RE
 from ..validators import clean_email, clean_phone, is_valid_email, is_valid_phone
@@ -24,7 +24,8 @@ _ROLE_HINT = re.compile(
     r"principal\s+dentist|lead\s+dentist|dentist|doctor|"
     r"practice\s+owner|practice\s+manager|office\s+manager|clinic\s+manager|"
     r"operations\s+manager|general\s+manager|clinical\s+director|director|"
-    r"administrator|managing\s+partner|partner|attorney|broker|chef)\b",
+    r"administrator|managing\s+partner|partner|attorney|broker|chef|"
+    r"chief\s+\w+\s+officer|vice\s+president|head\s+of|proprietor|principal)\b",
     re.I,
 )
 
@@ -90,15 +91,39 @@ def is_relevant_nav_link(anchor_text: str) -> bool:
     return bool(_TEAM_PAGE_HINTS.search(anchor_text or ""))
 
 
-def find_role_sentences(text: str, max_sentences: int = 8) -> List[str]:
+def _extra_title_pattern(extra_titles: Iterable[str]) -> Optional[re.Pattern]:
+    parts = [re.escape(t.strip()).replace(r"\ ", r"\s+") for t in extra_titles or () if t and t.strip()]
+    if not parts:
+        return None
+    return re.compile(r"\b(" + "|".join(parts) + r")\b", re.I)
+
+
+def find_role_sentences(text: str, max_sentences: int = 8,
+                        extra_titles: Iterable[str] = ()) -> List[str]:
     """Cheap pre-filter: sentences that mention a role-like word, so the LLM's
     field-extraction prompt only needs a handful of candidate lines instead
-    of a whole page of text."""
+    of a whole page of text. `extra_titles` (the user's custom target titles)
+    extend the built-in role vocabulary. On team pages laid out as cards —
+    a name on one line, the role on the next — the short line just above a
+    role line is kept with it, so the name isn't lost."""
     if not text:
         return []
-    sentences = re.split(r"(?<=[.!?\n])\s+", text)
-    hits = [s.strip() for s in sentences if _ROLE_HINT.search(s) and len(s.strip()) < 300]
-    return hits[:max_sentences]
+    extra = _extra_title_pattern(extra_titles)
+    segments = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", text)]
+    hits: List[str] = []
+    for i, seg in enumerate(segments):
+        if not seg or len(seg) >= 300:
+            continue
+        if not (_ROLE_HINT.search(seg) or (extra and extra.search(seg))):
+            continue
+        prev = segments[i - 1] if i > 0 else ""
+        if (prev and len(prev) <= 60 and len(seg) <= 80
+                and not _ROLE_HINT.search(prev) and not (extra and extra.search(prev))):
+            seg = f"{prev} — {seg}"
+        hits.append(seg)
+        if len(hits) >= max_sentences:
+            break
+    return hits
 
 
 def has_secure_contact_form(text: str, links: Optional[List[Dict[str, str]]] = None) -> bool:

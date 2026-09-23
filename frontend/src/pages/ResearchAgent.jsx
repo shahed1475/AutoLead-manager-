@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bot, Loader2, Mail, Phone, Globe, User, XCircle, StopCircle, Download, RotateCcw, Send } from 'lucide-react'
+import { Bot, Loader2, Mail, Phone, Globe, User, Users, XCircle, StopCircle, Download, RotateCcw, Send } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { researchAgentApi } from '../api/client'
 import { SkeletonTableRows } from '../components/ui/Skeleton'
 import EmptyState from '../components/ui/EmptyState'
 import ErrorState from '../components/ui/ErrorState'
 import ResearchResultDrawer from '../components/ResearchResultDrawer'
+import TargetTitlesInput from '../components/TargetTitlesInput'
 
 const ACTIVE_STATUSES = new Set(['QUEUED', 'RUNNING', 'CANCEL_REQUESTED'])
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
@@ -49,7 +50,7 @@ function ResultsTable({ results, onRowClick }) {
               <th className="px-4 py-2.5">Location</th>
               <th className="px-4 py-2.5">Contact</th>
               <th className="px-4 py-2.5">Website</th>
-              <th className="px-4 py-2.5">Management</th>
+              <th className="px-4 py-2.5">Decision makers</th>
               <th className="px-4 py-2.5">Confidence</th>
               <th className="px-4 py-2.5">Status</th>
             </tr>
@@ -89,6 +90,11 @@ function ResultsTable({ results, onRowClick }) {
                       {r.management_title && <div className="text-slate-500">{r.management_title}</div>}
                       {r.management_phone && <div className="text-slate-500">{r.management_phone} {r.management_phone_type === 'BUSINESS' && '(business line)'}</div>}
                       {r.management_email && <div className="text-slate-500">{r.management_email}</div>}
+                      {(r.decision_makers?.length || 0) > 1 && (
+                        <div className="flex items-center gap-1 text-brand-400">
+                          <Users size={11} /> +{r.decision_makers.length - 1} more
+                        </div>
+                      )}
                     </div>
                   ) : <span className="text-slate-600 italic">Not found</span>}
                 </td>
@@ -105,6 +111,10 @@ function ResultsTable({ results, onRowClick }) {
       </div>
     </div>
   )
+}
+
+function parseTitles(raw) {
+  try { const v = JSON.parse(raw || '[]'); return Array.isArray(v) ? v : [] } catch { return [] }
 }
 
 function Stat({ label, value }) {
@@ -215,6 +225,7 @@ export default function ResearchAgent() {
   const [location, setLocation] = useState('')
   const [country, setCountry] = useState('')
   const [targetCount, setTargetCount] = useState(10)
+  const [targetTitles, setTargetTitles] = useState([])
   const [sessionId, setSessionId] = useState(() => urlSession || loadStoredId())
   const [detail, setDetail] = useState(null)
 
@@ -248,6 +259,7 @@ export default function ResearchAgent() {
   const startMutation = useMutation({
     mutationFn: () => researchAgentApi.start({
       niche, location, country, target_count: Number(targetCount) || 10,
+      target_titles: targetTitles.length ? targetTitles : null,
     }),
     onSuccess: (data) => {
       selectSession(data.session_id)
@@ -351,6 +363,7 @@ export default function ResearchAgent() {
               className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 focus:border-brand-500 focus:outline-none" />
           </label>
         </div>
+        <TargetTitlesInput titles={targetTitles} onChange={setTargetTitles} niche={niche} disabled={isActive} />
         <div className="flex items-end gap-4 flex-wrap">
           <label className="block">
             <span className="text-xs font-medium text-slate-400">Target leads</span>
@@ -406,6 +419,12 @@ export default function ResearchAgent() {
           <Stat label="Completed / Failed" value={`${session.leads_completed ?? 0} / ${session.leads_failed ?? 0}`} />
           <Stat label="Elapsed" value={isActive ? elapsed(session.started_at) : null} />
           {session.resume_count > 0 && <Stat label="Resumed" value={`${session.resume_count}×`} />}
+          {parseTitles(session.target_titles).length > 0 && (
+            <div className="col-span-2">
+              <p className="text-[10px] uppercase tracking-widest text-slate-500">Target titles</p>
+              <p className="text-slate-200 font-medium text-xs leading-relaxed">{parseTitles(session.target_titles).join(' · ')}</p>
+            </div>
+          )}
           {isActive && session.mode !== 'handoff' && session.current_query && (
             <div className="col-span-full flex items-center gap-2 text-xs text-slate-500">
               <Loader2 size={12} className="animate-spin" /> Searching: "{session.current_query}"

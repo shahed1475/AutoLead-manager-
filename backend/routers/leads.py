@@ -127,18 +127,25 @@ class BulkResearchRequest(BaseModel):
     lead_ids: List[int]
     submission_source: Optional[str] = "manual"
     priority: Optional[str] = None
+    target_titles: Optional[List[str]] = None   # decision-maker titles to hunt for
+
+
+class ResearchOneRequest(BaseModel):
+    target_titles: Optional[List[str]] = None   # decision-maker titles to hunt for
 
 
 class ResearchExcludeRequest(BaseModel):
     excluded: bool = True
 
 
-async def _handoff(lead_ids: List[int], submission_source: Optional[str], priority: Optional[str]) -> dict:
+async def _handoff(lead_ids: List[int], submission_source: Optional[str], priority: Optional[str],
+                   target_titles: Optional[List[str]] = None) -> dict:
     src = submission_source if submission_source in _VALID_SUBMISSION_SOURCES else "manual"
     queue = get_queue()
     if queue is None:
         raise HTTPException(status_code=503, detail="Research queue is not available")
-    result = await handoff_leads(queue, lead_ids, submission_source=src, priority=priority)
+    result = await handoff_leads(queue, lead_ids, submission_source=src, priority=priority,
+                                 target_titles=target_titles)
     if result["session_id"] is None and result["queued"] == 0 and not result["skipped"]:
         raise HTTPException(status_code=422, detail="No leads to send")
     return result
@@ -147,16 +154,17 @@ async def _handoff(lead_ids: List[int], submission_source: Optional[str], priori
 @router.post("/research")
 async def bulk_research(payload: BulkResearchRequest):
     """Send the selected leads to the existing Browser Research Agent."""
-    return await _handoff(payload.lead_ids, payload.submission_source, payload.priority)
+    return await _handoff(payload.lead_ids, payload.submission_source, payload.priority,
+                          payload.target_titles)
 
 
 # ── Parameterised routes ───────────────────────────────────────────────────
 
 @router.post("/{lead_id}/research")
-async def research_one(lead_id: int):
+async def research_one(lead_id: int, payload: Optional[ResearchOneRequest] = None):
     if not await db.get_lead_by_id(lead_id):
         raise HTTPException(404, "Lead not found")
-    return await _handoff([lead_id], "manual", None)
+    return await _handoff([lead_id], "manual", None, payload.target_titles if payload else None)
 
 
 @router.post("/{lead_id}/research-exclude", response_model=Lead)

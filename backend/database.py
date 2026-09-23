@@ -611,6 +611,7 @@ CREATE TABLE IF NOT EXISTS lead_research_sessions (
     processed_keys        TEXT,
     resume_count          INTEGER DEFAULT 0,
     resumable             INTEGER DEFAULT 0,
+    target_titles         TEXT,
     error_message         TEXT,
     started_at            TIMESTAMP,
     finished_at           TIMESTAMP,
@@ -655,6 +656,24 @@ CREATE TABLE IF NOT EXISTS lead_research_evidence (
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_research_evidence_result ON lead_research_evidence (result_id);
+
+-- Every named decision maker found for a research result (name + title seen
+-- on a real page). The primary one is also mirrored into the result's
+-- management_contact_name/title columns for existing readers.
+CREATE TABLE IF NOT EXISTS lead_research_decision_makers (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    result_id     INTEGER NOT NULL REFERENCES lead_research_results(id) ON DELETE CASCADE,
+    name          TEXT NOT NULL,
+    title         TEXT,
+    matched_title TEXT,
+    source_url    TEXT,
+    snippet       TEXT,
+    confidence    REAL DEFAULT 0,
+    status        TEXT DEFAULT 'FOUND',
+    is_primary    INTEGER DEFAULT 0,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_research_dm_result ON lead_research_decision_makers (result_id);
 
 -- ── Lead Search Automation (Phase 1 — single config + single queue) ──────────
 -- See docs/superpowers/specs/2026-08-30-lead-search-automation-design.md
@@ -1035,6 +1054,7 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
         ("seed_businesses", "TEXT"),
         ("seed_lead_ids",   "TEXT"),
         ("submission_source", "TEXT"),
+        ("target_titles",   "TEXT"),
     ]:
         await _add_col_if_missing(raw, "lead_research_sessions", col, typedef)
     for col, typedef in [
@@ -3063,7 +3083,7 @@ _RESEARCH_SESSION_WRITABLE = frozenset({
     "businesses_researched", "businesses_skipped",
     "processed_keys", "resume_count", "resumable",
     "error_message", "started_at", "finished_at",
-    "mode", "seed_businesses", "seed_lead_ids",
+    "mode", "seed_businesses", "seed_lead_ids", "target_titles",
 })
 
 
@@ -3127,7 +3147,7 @@ async def create_research_session(data: Dict[str, Any]) -> int:
         raise ValueError("create_research_session requires niche, location, target_count")
     clean = {k: data[k] for k in ("niche", "location", "country", "target_count", "mode", "submission_source")
              if data.get(k) is not None}
-    for jk in ("seed_businesses", "seed_lead_ids"):
+    for jk in ("seed_businesses", "seed_lead_ids", "target_titles"):
         if data.get(jk) is not None:
             clean[jk] = json.dumps(data[jk], default=str)
     col_sql = ", ".join(clean.keys())
@@ -3178,7 +3198,7 @@ _RESEARCH_SESSION_LIST_COLS = (
     "id", "mode", "submission_source", "status", "research_phase",
     "niche", "location", "country", "target_count",
     "leads_found", "leads_completed", "leads_failed", "resume_count",
-    "seed_lead_ids", "error_message", "created_at", "started_at", "finished_at",
+    "seed_lead_ids", "target_titles", "error_message", "created_at", "started_at", "finished_at",
 )
 
 
@@ -3255,11 +3275,30 @@ async def get_research_evidence_for_results(result_ids: List[int]) -> Dict[int, 
     return grouped
 
 
+async def get_research_decision_makers_for_results(result_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
+    """Decision makers for many results in one query, primary first."""
+    if not result_ids:
+        return {}
+    placeholders = ", ".join("?" for _ in result_ids)
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            f"SELECT * FROM lead_research_decision_makers WHERE result_id IN ({placeholders}) "
+            f"ORDER BY result_id, is_primary DESC, id ASC",
+            *result_ids,
+        )
+    grouped: Dict[int, List[Dict[str, Any]]] = {rid: [] for rid in result_ids}
+    for row in rows:
+        d = dict(row)
+        grouped.setdefault(d["result_id"], []).append(d)
+    return grouped
+
+
 async def save_research_result(
     session_id: int,
     result_dict: Dict[str, Any],
     evidence_list: List[Dict[str, Any]],
     lead_id: Optional[int] = None,
+    decision_makers: Optional[List[Dict[str, Any]]] = None,
 ) -> int:
     """Atomic: the result row and all of its evidence rows commit together
     (or neither does) — a crash mid-write can never leave a result with
@@ -3282,6 +3321,15 @@ async def save_research_result(
                    VALUES ($1, $2, $3, $4, $5, $6, $7)""",
                 result_id, ev["field_name"], ev.get("source_type"), ev.get("source_url"),
                 ev.get("snippet"), ev.get("confidence", 0), ev.get("status", "UNCONFIRMED"),
+            )
+        for dm in decision_makers or []:
+            await conn.execute(
+                """INSERT INTO lead_research_decision_makers
+                   (result_id, name, title, matched_title, source_url, snippet, confidence, status, is_primary)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                result_id, dm["name"], dm.get("title"), dm.get("matched_title"), dm.get("source_url"),
+                dm.get("snippet"), dm.get("confidence", 0), dm.get("status", "FOUND"),
+                1 if dm.get("is_primary") else 0,
             )
     return result_id
 

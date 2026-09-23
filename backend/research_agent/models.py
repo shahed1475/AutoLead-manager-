@@ -7,7 +7,8 @@ state (Pydantic request models for the API layer live in backend/models.py).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, Iterable, List, Optional
 
 # ── Field-level evidence status ─────────────────────────────────────────────
 STATUS_FOUND = "FOUND"
@@ -68,6 +69,92 @@ def management_titles_for_niche(niche: str) -> tuple:
     return DEFAULT_MANAGEMENT_TITLES
 
 
+# ── Custom decision-maker titles ────────────────────────────────────────────
+# A user-supplied title list ("Head of Marketing", "HR Director") overrides the
+# niche defaults above. Titles reach the action-decision prompt, so they are
+# sanitised to short plain role phrases — never free-form instructions.
+MAX_TARGET_TITLES = 10
+_MAX_TITLE_LEN = 60
+_TITLE_ALLOWED_RE = re.compile(r"[^A-Za-z0-9 &/.,'+-]")
+
+
+def sanitize_target_titles(titles: Optional[Iterable[Any]]) -> List[str]:
+    """Clean a user-supplied title list: strip odd characters, collapse
+    whitespace, drop empties/duplicates (case-insensitive), cap count/length."""
+    out: List[str] = []
+    seen: set = set()
+    for raw in titles or ():
+        if not isinstance(raw, str):
+            continue
+        t = _TITLE_ALLOWED_RE.sub("", raw)
+        t = re.sub(r"\s+", " ", t).strip(" ,.-/")[:_MAX_TITLE_LEN].strip()
+        if len(t) < 2 or t.lower() in seen:
+            continue
+        seen.add(t.lower())
+        out.append(t)
+        if len(out) >= MAX_TARGET_TITLES:
+            break
+    return out
+
+
+def resolve_target_titles(niche: str, custom_titles: Optional[Iterable[Any]] = None) -> tuple:
+    """The titles the agent hunts for, in priority order: the user's custom
+    list when given, else the niche defaults."""
+    custom = sanitize_target_titles(custom_titles)
+    return tuple(custom) if custom else management_titles_for_niche(niche)
+
+
+# Common abbreviations, so a target of "CEO" matches "Chief Executive Officer"
+# on a page and vice versa.
+_TITLE_ALIASES = {
+    "ceo": "chief executive officer", "cto": "chief technology officer",
+    "coo": "chief operating officer", "cfo": "chief financial officer",
+    "cmo": "chief marketing officer", "cio": "chief information officer",
+    "cro": "chief revenue officer", "cpo": "chief product officer",
+    "vp": "vice president", "gm": "general manager", "md": "managing director",
+    "hr": "human resources",
+}
+
+
+def _title_tokens(title: str) -> List[str]:
+    t = re.sub(r"[^a-z0-9 ]", " ", (title or "").lower())
+    toks: List[str] = []
+    for tok in t.split():
+        toks.extend(_TITLE_ALIASES.get(tok, tok).split())
+    return toks
+
+
+def match_target_title(title: Optional[str], target_titles: Iterable[str]) -> Optional[str]:
+    """The first target title (priority order) whose words all appear in
+    `title` — "Owner" matches "Practice Owner", "CEO" matches "Founder &
+    Chief Executive Officer". Deterministic; None when nothing matches."""
+    have = set(_title_tokens(title or ""))
+    if not have:
+        return None
+    for target in target_titles:
+        want = _title_tokens(target)
+        if want and all(w in have for w in want):
+            return target
+    return None
+
+
+@dataclass
+class DecisionMaker:
+    """One named person with a role at the business. Only ever created from
+    text on a real page (name and title both appear verbatim in it) — see
+    agent._process_page_text. `matched_title` is the target title it
+    satisfies, if any; `is_primary` marks the one mirrored into the lead's
+    management_contact_name/title."""
+    name: str
+    title: str
+    matched_title: Optional[str] = None
+    source_url: Optional[str] = None
+    snippet: Optional[str] = None
+    confidence: float = 0.0
+    status: str = STATUS_FOUND
+    is_primary: bool = False
+
+
 @dataclass
 class ResearchEvidence:
     field_name: str
@@ -106,6 +193,7 @@ class ResearchLead:
     research_status: str = RESEARCH_PENDING
     research_notes: Optional[str] = None
     evidence: List[ResearchEvidence] = field(default_factory=list)
+    decision_makers: List[DecisionMaker] = field(default_factory=list)
 
     # Internal loop bookkeeping — not exported.
     actions_taken: int = 0
@@ -134,6 +222,7 @@ class ResearchLead:
             "Management_Title": self.management_title or "",
             "Management_Phone": self.management_phone or "",
             "Management_Email": self.management_email or "",
+            "Decision_Makers": "; ".join(f"{d.name} ({d.title})" for d in self.decision_makers),
             "Confidence": round(self.confidence, 2),
             "Research_Status": self.research_status,
             "Evidence_URLs": "; ".join(

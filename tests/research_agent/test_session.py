@@ -26,7 +26,7 @@ async def test_persisted_session_saves_results_and_merges_into_leads(clean_db, m
         research_status=RESEARCH_COMPLETE, confidence=0.8,
     )
 
-    async def fake_run_research_session(niche, location, target_count, seed_businesses=None, cfg=None, on_lead_complete=None, on_action=None, on_progress=None, is_cancelled=None, already_processed=None, discovery_fallback=None):
+    async def fake_run_research_session(niche, location, target_count, seed_businesses=None, cfg=None, on_lead_complete=None, on_action=None, on_progress=None, is_cancelled=None, already_processed=None, discovery_fallback=None, target_titles=None):
         await on_lead_complete(completed_lead)
         return {"leads": [completed_lead], "failed_count": 0, "skipped_count": 0, "geo_tasks": [], "processed_keys": []}
 
@@ -57,7 +57,7 @@ async def test_persisted_session_does_not_merge_failed_leads_into_leads_table(cl
 
     failed_lead = ResearchLead(business_name="Nothing Found Co", research_status=RESEARCH_FAILED, confidence=0.0)
 
-    async def fake_run_research_session(niche, location, target_count, seed_businesses=None, cfg=None, on_lead_complete=None, on_action=None, on_progress=None, is_cancelled=None, already_processed=None, discovery_fallback=None):
+    async def fake_run_research_session(niche, location, target_count, seed_businesses=None, cfg=None, on_lead_complete=None, on_action=None, on_progress=None, is_cancelled=None, already_processed=None, discovery_fallback=None, target_titles=None):
         await on_lead_complete(failed_lead)
         return {"leads": [failed_lead], "failed_count": 0, "skipped_count": 0, "geo_tasks": [], "processed_keys": []}
 
@@ -99,7 +99,7 @@ async def test_save_to_leads_false_never_touches_main_leads_table(clean_db, monk
         research_status=RESEARCH_COMPLETE, confidence=0.8,
     )
 
-    async def fake_run_research_session(niche, location, target_count, seed_businesses=None, cfg=None, on_lead_complete=None, on_action=None, on_progress=None, is_cancelled=None, already_processed=None, discovery_fallback=None):
+    async def fake_run_research_session(niche, location, target_count, seed_businesses=None, cfg=None, on_lead_complete=None, on_action=None, on_progress=None, is_cancelled=None, already_processed=None, discovery_fallback=None, target_titles=None):
         await on_lead_complete(completed_lead)
         return {"leads": [completed_lead], "failed_count": 0, "skipped_count": 0, "geo_tasks": [], "processed_keys": []}
 
@@ -156,7 +156,7 @@ async def test_resume_passes_stored_processed_keys_as_already_processed(clean_db
 
     async def capture(niche, location, target_count, seed_businesses=None, cfg=None,
                       on_lead_complete=None, on_action=None, on_progress=None,
-                      is_cancelled=None, already_processed=None, discovery_fallback=None):
+                      is_cancelled=None, already_processed=None, discovery_fallback=None, target_titles=None):
         seen["already_processed"] = set(already_processed or ())
         return {"leads": [], "failed_count": 0, "skipped_count": 2, "geo_tasks": [],
                 "processed_keys": list(already_processed or ())}

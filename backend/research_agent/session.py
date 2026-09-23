@@ -129,6 +129,8 @@ def enqueue_session(
         except (json.JSONDecodeError, TypeError):
             seeds = None
 
+    target_titles = _load_json_list(session_row.get("target_titles")) or None
+
     async def _handler(_payload: Dict[str, Any]) -> None:
         await run_research_session_persisted(
             session_id=session_id,
@@ -136,6 +138,7 @@ def enqueue_session(
             location=session_row["location"],
             target_count=session_row["target_count"],
             seed_businesses=seeds,
+            target_titles=target_titles,
         )
 
     return bool(queue.enqueue_nowait("RESEARCH_AGENT", {"session_id": session_id}, _handler))
@@ -180,6 +183,7 @@ async def run_research_session_persisted(
     location: str,
     target_count: int,
     seed_businesses: Optional[List[Dict[str, Any]]] = None,
+    target_titles: Optional[List[str]] = None,
 ) -> None:
     """JobQueue handler body. Never raises out — any unhandled exception is
     caught and persisted as status=FAILED so the session row is always left
@@ -240,6 +244,7 @@ async def run_research_session_persisted(
 
         await db.save_research_result(
             session_id, dataclasses.asdict(lead), _evidence_dicts(lead), lead_id=lead_id,
+            decision_makers=[dataclasses.asdict(d) for d in lead.decision_makers],
         )
 
         session = await db.get_research_session(session_id) or {}
@@ -258,6 +263,7 @@ async def run_research_session_persisted(
             on_progress=on_progress, is_cancelled=is_cancelled,
             already_processed=already_processed,
             discovery_fallback=_scraper_discovery_fallback,
+            target_titles=target_titles,
         )
         session = await db.get_research_session(session_id) or {}
         already_cancelled = session.get("status") in ("CANCELLED", "CANCEL_REQUESTED")

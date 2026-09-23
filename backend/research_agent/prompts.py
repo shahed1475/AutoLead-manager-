@@ -31,7 +31,7 @@ Rules:
 - Choose the action most likely to find a MISSING required field.
 - If you just opened a page and "Current page read yet" is "no", use extract_page_text — reading the page is how information is found.
 - Use find_links only to locate a Contact / About / Team / Staff page, then open_url that page and extract_page_text it.
-- To find an owner or manager, open the About/Team page or search '"Business Name" City owner' / 'practice manager'.
+- To find decision makers, open the About/Team/Leadership page or search '"Business Name" City <target title>' using a title from "Target titles".
 - Never invent information — only decide what to look at next.
 - If required fields are already found, or you have tried enough without success, use finish_research.
 - Respond with ONLY the JSON object, no prose, no markdown fences.
@@ -50,8 +50,26 @@ Text:
 
 Return ONLY strict JSON with any of these keys you can find explicitly stated (omit keys you cannot find — do NOT write "unknown" or make one up):
 {{
-  "management_contact_name": "full name of an owner/manager/lead dentist if explicitly stated, else omit",
+  "management_contact_name": "full name of an owner/manager/leader if explicitly stated, else omit",
   "management_title": "their exact title/role as written, else omit"
 }}
 Do not return email addresses or phone numbers — those are extracted separately.
+"""
+
+DECISION_MAKERS_EXTRACTION_PROMPT = """List the people named in this text together with their job title or role. Extract ONLY what is EXPLICITLY written. Do not guess, infer, or complete names.
+
+Business (if known): {business_name}
+Roles of most interest: {target_titles}
+
+Text:
+{text}
+
+Return ONLY strict JSON:
+{{"people": [{{"name": "full name exactly as written", "title": "their title/role exactly as written"}}]}}
+Rules:
+- Include a person only if BOTH their name and their title/role are written in the text.
+- A role on its own ("The Owner", "Our Dentist") is not a name — skip it.
+- Include people with any leadership or management role, not only the roles of most interest.
+- No email addresses or phone numbers.
+- If nobody qualifies, return {{"people": []}}.
 """

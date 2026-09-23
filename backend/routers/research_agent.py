@@ -19,6 +19,12 @@ from .. import database as db
 from ..models import ResearchAgentStartRequest
 from ..queue_worker import get_queue
 from ..rate_limit import limiter
+from ..research_agent.models import (
+    MAX_TARGET_TITLES,
+    NICHE_MANAGEMENT_TITLES,
+    management_titles_for_niche,
+    sanitize_target_titles,
+)
 from ..research_agent.session import MAX_RESUMES, enqueue_session
 
 logger = logging.getLogger(__name__)
@@ -51,6 +57,7 @@ async def start_research(request: Request, payload: ResearchAgentStartRequest):
     session_id = await db.create_research_session({
         "niche": payload.niche, "location": location,
         "country": payload.country, "target_count": payload.target_count,
+        "target_titles": sanitize_target_titles(payload.target_titles) or None,
     })
 
     queue = get_queue()
@@ -76,6 +83,26 @@ async def get_active_research():
     if session is None:
         session = await db.get_latest_research_session(active_only=False)
     return session
+
+
+@router.get("/titles")
+async def suggest_titles(niche: str = ""):
+    """Default decision-maker titles for a niche (what the agent hunts for
+    when no custom titles are given), plus every title from the built-in
+    niche lists as suggestions. Static path — must precede /{session_id}."""
+    defaults = list(management_titles_for_niche(niche))
+    common = ["Owner", "Founder", "CEO", "President", "Managing Director", "General Manager",
+              "Head of Marketing", "Marketing Director", "Head of Sales", "Operations Manager",
+              "HR Director", "CFO", "CMO", "CTO", "COO", "Vice President"]
+    niche_titles = sorted({t for titles in NICHE_MANAGEMENT_TITLES.values() for t in titles})
+    # Most relevant first: this niche's defaults, then common leadership roles.
+    suggestions = list(dict.fromkeys(defaults + common + niche_titles))
+    return {
+        "niche": niche,
+        "default_titles": defaults,
+        "suggestions": suggestions,
+        "max_titles": MAX_TARGET_TITLES,
+    }
 
 
 @router.get("/sessions")
@@ -105,9 +132,12 @@ async def get_research_results(session_id: int):
     if not session:
         raise HTTPException(status_code=404, detail="Research session not found")
     results = await db.list_research_results(session_id)
-    evidence_by_result = await db.get_research_evidence_for_results([r["id"] for r in results])
+    ids = [r["id"] for r in results]
+    evidence_by_result = await db.get_research_evidence_for_results(ids)
+    dms_by_result = await db.get_research_decision_makers_for_results(ids)
     for r in results:
         r["evidence"] = evidence_by_result.get(r["id"], [])
+        r["decision_makers"] = dms_by_result.get(r["id"], [])
     return {"session_id": session_id, "status": session["status"], "results_count": len(results), "results": results}
 
 
@@ -116,7 +146,7 @@ _CSV_COLUMNS = [
     "business_website", "business_email_status",
     "management_contact_name", "management_title", "management_phone", "management_phone_type",
     "management_email", "management_email_status",
-    "confidence", "research_status", "research_notes", "lead_id", "evidence_urls",
+    "decision_makers", "confidence", "research_status", "research_notes", "lead_id", "evidence_urls",
 ]
 
 
@@ -126,7 +156,9 @@ async def export_research_results_csv(session_id: int):
     if not session:
         raise HTTPException(status_code=404, detail="Research session not found")
     results = await db.list_research_results(session_id)
-    evidence_by_result = await db.get_research_evidence_for_results([r["id"] for r in results])
+    ids = [r["id"] for r in results]
+    evidence_by_result = await db.get_research_evidence_for_results(ids)
+    dms_by_result = await db.get_research_decision_makers_for_results(ids)
 
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=_CSV_COLUMNS, extrasaction="ignore")
@@ -135,6 +167,10 @@ async def export_research_results_csv(session_id: int):
         row = dict(r)
         ev = evidence_by_result.get(r["id"], [])
         row["evidence_urls"] = "; ".join(sorted({e["source_url"] for e in ev if e.get("source_url")}))
+        row["decision_makers"] = "; ".join(
+            f"{d['name']} ({d['title']})" if d.get("title") else d["name"]
+            for d in dms_by_result.get(r["id"], [])
+        )
         writer.writerow(row)
 
     return Response(

@@ -162,3 +162,38 @@ async def test_seed_leads_finish_as_completed(clean_db, monkeypatch):
     assert row["research_status"] == "COMPLETED"          # flipped at session finish
     assert row["last_research_session_id"] == sid
 
+
+
+# ── Custom decision-maker titles from the Leads page ─────────────────────
+
+async def _post(path, body=None):
+    from httpx import ASGITransport, AsyncClient
+    from backend.main import app
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        return await client.post(path, json=body) if body is not None else await client.post(path)
+
+
+async def test_bulk_research_route_stores_target_titles(clean_db, monkeypatch):
+    from backend.routers import leads as leads_router
+    monkeypatch.setattr(leads_router, "get_queue", lambda: _FakeQueue())
+    a, b = await _lead(), await _lead(business_name="Clinic Y", website="https://clinicy.com", phone="5551234001")
+    resp = await _post("/api/leads/research", {"lead_ids": [a, b], "target_titles": ["Head of Marketing", "CEO"]})
+    assert resp.status_code == 200
+    session = await db.get_research_session(resp.json()["session_id"])
+    assert json.loads(session["target_titles"]) == ["Head of Marketing", "CEO"]
+
+
+async def test_single_lead_research_route_accepts_titles_and_still_works_without_body(clean_db, monkeypatch):
+    from backend.routers import leads as leads_router
+    monkeypatch.setattr(leads_router, "get_queue", lambda: _FakeQueue())
+    a = await _lead()
+    resp = await _post(f"/api/leads/{a}/research", {"target_titles": ["Owner"]})
+    assert resp.status_code == 200
+    session = await db.get_research_session(resp.json()["session_id"])
+    assert json.loads(session["target_titles"]) == ["Owner"]
+
+    b = await _lead(business_name="Clinic Z", website="https://clinicz.com", phone="5551234002")
+    resp = await _post(f"/api/leads/{b}/research")   # older callers send no body
+    assert resp.status_code == 200
+    session = await db.get_research_session(resp.json()["session_id"])
+    assert session["target_titles"] is None

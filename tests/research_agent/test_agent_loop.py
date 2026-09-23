@@ -47,8 +47,8 @@ def _scripted_llm(actions):
     return _decide
 
 
-async def _no_management_extraction(text, missing_fields, business_name=None, cfg=None):
-    return {}
+async def _no_management_extraction(text, target_titles, business_name=None, cfg=None):
+    return []
 
 
 # ── 1. OBSERVE -> DECIDE -> ACT -> VALIDATE, multiple iterations, correct finish ──
@@ -69,9 +69,9 @@ async def test_full_loop_extracts_all_fields_and_finishes(monkeypatch):
     ]
     monkeypatch.setattr(agent_mod.llm_mod, "decide_next_action", _scripted_llm(actions))
 
-    async def fake_extract_fields(text, missing_fields, business_name=None, cfg=None):
-        return {"management_contact_name": "Emma Papp", "management_title": "Office Manager"}
-    monkeypatch.setattr(agent_mod.llm_mod, "extract_fields", fake_extract_fields)
+    async def fake_extract_people(text, target_titles, business_name=None, cfg=None):
+        return [{"name": "Emma Papp", "title": "Office Manager"}]
+    monkeypatch.setattr(agent_mod.llm_mod, "extract_decision_makers", fake_extract_people)
 
     a = agent_mod.ResearchAgent(browser, _cfg(), "dental clinics")
     lead = await a.research_business({"business_name": "Acme Family Dental", "city": "Abbeville", "state": "LA", "country": "USA"})
@@ -110,9 +110,9 @@ async def test_loop_reads_the_page_even_when_llm_only_asks_for_find_links(monkey
         return AgentAction(action="find_links", params={})
     monkeypatch.setattr(agent_mod.llm_mod, "decide_next_action", only_find_links)
 
-    async def fake_extract_fields(text, missing_fields, business_name=None, cfg=None):
-        return {"management_contact_name": "Emma Papp", "management_title": "Office Manager"}
-    monkeypatch.setattr(agent_mod.llm_mod, "extract_fields", fake_extract_fields)
+    async def fake_extract_people(text, target_titles, business_name=None, cfg=None):
+        return [{"name": "Emma Papp", "title": "Office Manager"}]
+    monkeypatch.setattr(agent_mod.llm_mod, "extract_decision_makers", fake_extract_people)
 
     def _script(action):
         if action.action == "open_url":
@@ -151,11 +151,11 @@ async def test_loop_opens_a_relevant_page_when_management_still_missing(monkeypa
         return AgentAction(action="find_links", params={})
     monkeypatch.setattr(agent_mod.llm_mod, "decide_next_action", only_find_links)
 
-    async def extract_from_team_only(text, missing_fields, business_name=None, cfg=None):
+    async def extract_from_team_only(text, target_titles, business_name=None, cfg=None):
         if "Practice Manager" in text:
-            return {"management_contact_name": "Sara Cole", "management_title": "Practice Manager"}
-        return {}
-    monkeypatch.setattr(agent_mod.llm_mod, "extract_fields", extract_from_team_only)
+            return [{"name": "Sara Cole", "title": "Practice Manager"}]
+        return []
+    monkeypatch.setattr(agent_mod.llm_mod, "extract_decision_makers", extract_from_team_only)
 
     HOME = "Abbeville Family Dental. Call (337) 893-2614. About Us | Our Team | Contact"
     TEAM = "Our Team. Sara Cole is the Practice Manager and has run the office for 8 years."
@@ -203,7 +203,7 @@ async def test_optional_fields_marked_not_found_after_search_when_nothing_is_fou
     async def only_extract(state_summary, cfg=None):
         return AgentAction(action="extract_page_text", params={})
     monkeypatch.setattr(agent_mod.llm_mod, "decide_next_action", only_extract)
-    monkeypatch.setattr(agent_mod.llm_mod, "extract_fields", _no_management_extraction)
+    monkeypatch.setattr(agent_mod.llm_mod, "extract_decision_makers", _no_management_extraction)
 
     BARE = "Abbeville Family Dental. 123 Main St. Phone (337) 893-2614. Open Mon-Fri."
 
@@ -241,7 +241,7 @@ async def test_forced_actions_skip_the_llm_call(monkeypatch):
         llm_calls["n"] += 1
         return AgentAction(action="finish_research", reason="llm was asked")
     monkeypatch.setattr(agent_mod.llm_mod, "decide_next_action", counting_decide)
-    monkeypatch.setattr(agent_mod.llm_mod, "extract_fields", _no_management_extraction)
+    monkeypatch.setattr(agent_mod.llm_mod, "extract_decision_makers", _no_management_extraction)
 
     def _script(action):
         if action.action == "open_url":
@@ -320,7 +320,7 @@ async def test_max_pages_per_lead_stops_navigation_but_keeps_extracting(monkeypa
     async def always_open(state_summary, cfg=None):
         return AgentAction(action="open_url", params={"url": "https://x.test"})
     monkeypatch.setattr(agent_mod.llm_mod, "decide_next_action", always_open)
-    monkeypatch.setattr(agent_mod.llm_mod, "extract_fields", _no_management_extraction)
+    monkeypatch.setattr(agent_mod.llm_mod, "extract_decision_makers", _no_management_extraction)
 
     browser = ScriptedBrowser(lambda action: ok(action.action, url="https://x.test", title="X", text=""))
     cfg = _cfg(max_actions_per_lead=6, max_pages_per_lead=2)
@@ -380,7 +380,7 @@ async def test_fallback_planner_makes_progress_when_llm_always_fails(monkeypatch
     async def always_fail(state_summary, cfg=None):
         return AgentAction(action="_llm_failed", reason="ollama unreachable")
     monkeypatch.setattr(agent_mod.llm_mod, "decide_next_action", always_fail)
-    monkeypatch.setattr(agent_mod.llm_mod, "extract_fields", _no_management_extraction)
+    monkeypatch.setattr(agent_mod.llm_mod, "extract_decision_makers", _no_management_extraction)
 
     browser = ScriptedBrowser({
         "google_search": [ok("google_search", results=[

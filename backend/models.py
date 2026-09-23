@@ -394,11 +394,19 @@ class ResearchAgentStartRequest(BaseModel):
     state:        Optional[str] = None
     city:         Optional[str] = None
     target_count: int = 20
+    # Decision-maker titles to hunt for ("Head of Marketing", "HR Director").
+    # Empty -> the niche's default titles. Sanitised by the research agent.
+    target_titles: Optional[List[str]] = None
 
     @field_validator("target_count")
     @classmethod
     def cap_target_count(cls, v: int) -> int:
         return max(1, min(v, 500))
+
+    @field_validator("target_titles")
+    @classmethod
+    def cap_target_titles(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        return v[:20] if v else v
 
 
 class AIGenerateRequest(BaseModel):

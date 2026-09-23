@@ -16,7 +16,12 @@ from typing import Any, Dict, List, Optional
 
 from ..ai_brain import _call_llm_raw, _ollama_cfg
 from .models import VALID_ACTIONS, AgentAction
-from .prompts import ACTION_DECISION_PROMPT, ACTION_TOOL_DESCRIPTIONS, FIELD_EXTRACTION_PROMPT
+from .prompts import (
+    ACTION_DECISION_PROMPT,
+    ACTION_TOOL_DESCRIPTIONS,
+    DECISION_MAKERS_EXTRACTION_PROMPT,
+    FIELD_EXTRACTION_PROMPT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +38,11 @@ def _parse_json_object(text: str) -> Optional[Dict[str, Any]]:
             candidates.append(m.group(1).strip())
     for m in re.finditer(r"\{[\s\S]+?\}", text, re.DOTALL):
         candidates.append(m.group(0))
+    # Greedy span last — the only strategy that recovers a nested object
+    # (e.g. {"people": [{...}, {...}]}) wrapped in stray prose.
+    greedy = re.search(r"\{[\s\S]*\}", text)
+    if greedy:
+        candidates.append(greedy.group(0))
     for cand in candidates:
         try:
             data = json.loads(cand)
@@ -119,3 +129,72 @@ async def extract_fields(
         for k, v in data.items()
         if v is not None and str(v).strip().lower() not in junk
     }
+
+
+def _find_people_list(raw: str) -> Any:
+    """The `people` list from the model output. Tries the whole text, fenced
+    blocks, then the outermost brace/bracket span — outermost first, so an
+    inner {"name": ...} object is never mistaken for the answer."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    candidates = [text]
+    for m in re.finditer(r"```(?:json)?\s*([\s\S]+?)\s*```", text):
+        candidates.append(m.group(1).strip())
+    for pattern in (r"\{[\s\S]*\}", r"\[[\s\S]*\]"):
+        m = re.search(pattern, text)
+        if m:
+            candidates.append(m.group(0))
+    for cand in candidates:
+        try:
+            data = json.loads(cand)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("people"), list):
+            return data["people"]
+        if isinstance(data, list):
+            return data
+    return None
+
+
+async def extract_decision_makers(
+    text: str,
+    target_titles: List[str],
+    business_name: Optional[str] = None,
+    cfg: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, str]]:
+    """
+    Ask the LLM for every {name, title} pair explicitly written in `text`
+    (pre-filtered role sentences, never a whole page). Returns [] on any
+    failure. The caller must still check each name/title against the page
+    text before trusting it — an 8B model can invent a plausible person.
+    """
+    if not text:
+        return []
+    try:
+        resolved_cfg = cfg or await _ollama_cfg()
+        prompt = DECISION_MAKERS_EXTRACTION_PROMPT.format(
+            business_name=business_name or "(unknown)",
+            target_titles=", ".join(target_titles) or "any leadership role",
+            text=text[:4000],
+        )
+        raw = await _call_llm_raw(prompt, resolved_cfg, temperature=0.1, num_predict=500)
+    except Exception as exc:
+        logger.warning("extract_decision_makers: LLM call failed: %s", exc)
+        return []
+
+    people = _find_people_list(raw)
+    if not isinstance(people, list):
+        return []
+
+    junk = {"unknown", "n/a", "null", "none", ""}
+    out: List[Dict[str, str]] = []
+    for p in people:
+        if not isinstance(p, dict):
+            continue
+        name = str(p.get("name") or "").strip()
+        title = str(p.get("title") or "").strip()
+        if name.lower() in junk or title.lower() in junk:
+            continue
+        out.append({"name": name[:120], "title": title[:120]})
+    return out

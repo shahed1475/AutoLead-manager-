@@ -9,6 +9,7 @@ import CampaignControls from '../components/CampaignControls'
 import ViewMessagesModal from '../components/ViewMessagesModal'
 import EnrichmentDrawer from '../components/EnrichmentDrawer'
 import ErrorState from '../components/ui/ErrorState'
+import ResearchTitlesDialog from '../components/ResearchTitlesDialog'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import toast from 'react-hot-toast'
@@ -167,15 +168,30 @@ export default function Leads() {
     onError: (e) => toast.error(e.message),
   })
 
+  // Research: both the row action and the bulk button open the titles
+  // dialog first; `researchTarget` is { ids, bulk } for the pending send.
+  const [researchTarget, setResearchTarget] = useState(null)
   const researchMut = useMutation({
-    mutationFn: (id) => leadsApi.researchOne(id),
-    onSuccess: (res) => {
+    mutationFn: ({ ids, bulk, titles }) => (bulk
+      ? leadsApi.research(ids, 'manual', titles)
+      : leadsApi.researchOne(ids[0], titles)),
+    onSuccess: (res, { bulk }) => {
+      if (bulk) setSelected([])
+      setResearchTarget(null)
       invalidate()
       qc.invalidateQueries({ queryKey: ['research-sessions'] })
       researchSentToast(res, navigate)
     },
     onError: (e) => toast.error(e?.response?.data?.detail || 'Could not start research'),
   })
+  function researchNiche(ids) {
+    // Same rule the backend uses to name the session: the most common niche.
+    const counts = {}
+    for (const l of data?.items ?? []) {
+      if (ids.includes(l.id) && l.niche) counts[l.niche] = (counts[l.niche] || 0) + 1
+    }
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || ''
+  }
 
   const deleteMut = useMutation({
     mutationFn: leadsApi.delete,
@@ -237,21 +253,6 @@ export default function Leads() {
     else toast.success(`Deleted ${ok} lead${ok === 1 ? '' : 's'}`)
   }
 
-  const [bulkResearching, setBulkResearching] = useState(false)
-  async function handleBulkResearch() {
-    setBulkResearching(true)
-    try {
-      const res = await leadsApi.research([...selected])
-      setSelected([])
-      invalidate()
-      qc.invalidateQueries({ queryKey: ['research-sessions'] })
-      researchSentToast(res, navigate)
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || 'Could not start research')
-    } finally {
-      setBulkResearching(false)
-    }
-  }
 
   const [bulkExporting, setBulkExporting] = useState(false)
   async function handleExportSelected() {
@@ -475,11 +476,11 @@ export default function Leads() {
             {bulkExporting ? <RefreshCw size={11} className="animate-spin" /> : <Download size={11} />} Export selected
           </button>
           <button
-            onClick={handleBulkResearch}
-            disabled={bulkResearching}
+            onClick={() => setResearchTarget({ ids: [...selected], bulk: true })}
+            disabled={researchMut.isPending}
             className="btn-secondary text-[11px] !py-1"
           >
-            {bulkResearching ? <RefreshCw size={11} className="animate-spin" /> : <Bot size={11} />} Send to Research Agent
+            {researchMut.isPending ? <RefreshCw size={11} className="animate-spin" /> : <Bot size={11} />} Send to Research Agent
           </button>
           <button
             onClick={() => setBulkDeleteConfirm(true)}
@@ -512,7 +513,7 @@ export default function Leads() {
               onResend={(id, channel) => resendMut.mutate({ id, channel })}
               onViewMessages={(lead) => setViewLead(lead)}
               onEnrich={(id) => enrichMut.mutate(id)}
-              onResearch={(id) => researchMut.mutate(id)}
+              onResearch={(id) => setResearchTarget({ ids: [id], bulk: false })}
               onRowClick={(lead) => setDrawerLead(lead)}
               selected={selected}
               onSelect={setSelected}
@@ -595,6 +596,15 @@ export default function Leads() {
           </div>
         </div>
       )}
+
+      <ResearchTitlesDialog
+        open={!!researchTarget}
+        leadCount={researchTarget?.ids.length || 0}
+        niche={researchTarget ? researchNiche(researchTarget.ids) : ''}
+        pending={researchMut.isPending}
+        onCancel={() => setResearchTarget(null)}
+        onConfirm={(titles) => researchMut.mutate({ ...researchTarget, titles })}
+      />
 
       {/* Bulk delete confirm */}
       {bulkDeleteConfirm && (

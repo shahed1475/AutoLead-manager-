@@ -13,6 +13,7 @@ from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from .. import database as db
+from .models import sanitize_target_titles
 from .session import enqueue_session
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,7 @@ def _derive_location(leads: List[Dict[str, Any]]) -> str:
 async def handoff_leads(
     queue, lead_ids: List[int], *,
     submission_source: str = "manual", priority: Optional[str] = None,
+    target_titles: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Queue a research session for the given leads. Returns
     {session_id, queued, skipped}. Idempotent: leads already QUEUED/RESEARCHING
@@ -90,6 +92,7 @@ async def handoff_leads(
         "submission_source": submission_source,
         "seed_businesses": seeds,
         "seed_lead_ids": seed_lead_ids,
+        "target_titles": sanitize_target_titles(target_titles) or None,
     })
     await db.set_leads_research_status(seed_lead_ids, "QUEUED", session_id=session_id)
     try:
