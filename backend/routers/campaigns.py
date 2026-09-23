@@ -11,7 +11,7 @@ from ..enrichment.website_analyzer import analyze_website
 from ..intelligence import intelligence_enabled, run_pending_research
 from ..followup_engine import schedule_followups_for_lead as _schedule_fu
 from ..log_stream import emit as _ls_emit
-from ..models import CampaignSendRequest, CampaignStartRequest
+from ..models import CampaignSendRequest, CampaignStartRequest, LeadSource
 from ..rate_limit import limiter
 from ..scoring.lead_scorer import score_lead
 from ..discovery.planner import DiscoveryPlanner
@@ -461,6 +461,24 @@ async def _run_campaign_task(
         _run_state["current_lead"]   = None
 
 
+# Used when the planner is unavailable or suggests nothing a campaign can run.
+_DEFAULT_CAMPAIGN_SOURCES = ["GOOGLE_MAPS", "GOOGLE_SEARCH"]
+
+
+async def _auto_sources(niche: str, city: str, country: str = "") -> List[str]:
+    """Pick campaign sources for a niche with the Discovery Planner (CAMPAIGN
+    mode), keeping only sources the campaign scraper supports. Never raises:
+    any planner failure falls back to the long-standing default pair."""
+    valid = {s.value for s in LeadSource}
+    try:
+        plan = await DiscoveryPlanner().plan(niche, niche, city, country or "", mode="CAMPAIGN")
+        picked = [s for s in dict.fromkeys(plan.recommended_sources or []) if s in valid]
+    except Exception:
+        logger.warning("Planner could not pick campaign sources — using defaults", exc_info=True)
+        picked = []
+    return picked or list(_DEFAULT_CAMPAIGN_SOURCES)
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.post("/start")
@@ -469,7 +487,10 @@ async def start_campaign(request: Request, payload: CampaignStartRequest, backgr
     if _run_state["running"]:
         raise HTTPException(409, "A campaign is already running")
 
-    sources_list = [s.value for s in payload.sources]
+    sources_list = (
+        [s.value for s in payload.sources] if payload.sources
+        else await _auto_sources(payload.niche, payload.city, payload.country or "")
+    )
 
     # Build per-source cap dict for the scraper
     source_caps: Dict[str, int] = {}

@@ -31,6 +31,7 @@ from .routers import discovery as discovery_router
 from .routers import research_agent as research_agent_router
 from .routers import automation as automation_router
 from .routers import lead_search as lead_search_router
+from .routers import lead_runs as lead_runs_router
 from .routers import email_campaigns as email_campaigns_router
 from .routers import email_senders as email_senders_router
 from .routers.campaigns import get_campaign_state
@@ -90,6 +91,13 @@ async def lifespan(app: FastAPI):
         from datetime import datetime, timezone
         from . import database as _db
         from .research_agent.session import reconcile_interrupted_sessions
+        from .lead_runs.runner import reconcile_interrupted_runs
+        try:
+            n = await reconcile_interrupted_runs(queue)
+            if n:
+                logger.info("Startup: re-queued %d interrupted Find leads run(s)", n)
+        except Exception as exc:
+            logger.warning("Startup lead-run reconcile failed: %s", exc)
         try:
             n = await reconcile_interrupted_sessions(queue)
             if n:
@@ -155,6 +163,7 @@ app.include_router(discovery_router.router, dependencies=_authed)
 app.include_router(research_agent_router.router, dependencies=_authed)
 app.include_router(automation_router.router, dependencies=_authed)
 app.include_router(lead_search_router.router, dependencies=_authed)
+app.include_router(lead_runs_router.router, dependencies=_authed)
 app.include_router(email_campaigns_router.router, dependencies=_authed)  # feature-flagged (email_campaigns_enabled, default OFF)
 app.include_router(email_senders_router.router)  # per-route session/flag deps (Gmail OAuth callback must stay public)
 

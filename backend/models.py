@@ -430,7 +430,9 @@ class CampaignStartRequest(BaseModel):
     country:           Optional[str]   = None
     channel:           LeadChannel
     daily_cap:         int              = 20
-    sources:           List[LeadSource] = [LeadSource.GOOGLE_MAPS]
+    # Omitted/empty -> the Discovery Planner picks sources for the niche
+    # (see routers/campaigns.py::_auto_sources). The UI no longer asks.
+    sources:           Optional[List[LeadSource]] = None
     headless:          bool             = False
     hot_warm_only:     bool             = True
     google_maps_cap:   Optional[int]   = None

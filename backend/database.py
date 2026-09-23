@@ -675,6 +675,37 @@ CREATE TABLE IF NOT EXISTS lead_research_decision_makers (
 );
 CREATE INDEX IF NOT EXISTS idx_research_dm_result ON lead_research_decision_makers (result_id);
 
+-- Find leads runs: one user request that chains the steps they picked —
+-- collect (always) -> deep research (optional) -> draft outreach (optional) —
+-- over the same set of leads. Drafts only: a run never sends (sending stays
+-- the human-approved AI Lab path). JSON lists are stored as TEXT.
+CREATE TABLE IF NOT EXISTS lead_runs (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    niche                TEXT NOT NULL,
+    location             TEXT NOT NULL,
+    target_count         INTEGER NOT NULL,
+    steps                TEXT NOT NULL,
+    channel              TEXT DEFAULT 'EMAIL',
+    target_titles        TEXT,
+    hot_warm_only        INTEGER DEFAULT 1,
+    status               TEXT DEFAULT 'QUEUED',
+    stage                TEXT,
+    discovery_run_id     INTEGER,
+    research_session_id  INTEGER,
+    lead_ids             TEXT,
+    leads_found          INTEGER DEFAULT 0,
+    leads_researched     INTEGER DEFAULT 0,
+    drafts_written       INTEGER DEFAULT 0,
+    drafts_skipped       INTEGER DEFAULT 0,
+    current_item         TEXT,
+    error_message        TEXT,
+    resume_count         INTEGER DEFAULT 0,
+    created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at           TIMESTAMP,
+    finished_at          TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_lead_runs_status ON lead_runs (status);
+
 -- ── Lead Search Automation (Phase 1 — single config + single queue) ──────────
 -- See docs/superpowers/specs/2026-08-30-lead-search-automation-design.md
 -- Discovery-only: collects deduplicated leads, never sends outreach.
@@ -1368,7 +1399,13 @@ async def get_leads(
         return "?"
 
     conditions: List[str] = []
-    if status:       conditions.append(f"status = {p(status.upper())}")
+    if status:
+        # "A,B,C" filters to any of several statuses (AI Lab's pre-send group).
+        wanted = [s.strip().upper() for s in status.split(",") if s.strip()]
+        if len(wanted) == 1:
+            conditions.append(f"status = {p(wanted[0])}")
+        elif wanted:
+            conditions.append(f"status IN ({', '.join(p(s) for s in wanted)})")
     if channel:      conditions.append(f"channel = {p(channel.upper())}")
     if niche:        conditions.append(f"niche LIKE {p(f'%{niche}%')}")
     if city:         conditions.append(f"city LIKE {p(f'%{city}%')}")
@@ -3291,6 +3328,75 @@ async def get_research_decision_makers_for_results(result_ids: List[int]) -> Dic
         d = dict(row)
         grouped.setdefault(d["result_id"], []).append(d)
     return grouped
+
+
+_LEAD_RUN_WRITABLE = frozenset({
+    "status", "stage", "discovery_run_id", "research_session_id", "lead_ids",
+    "leads_found", "leads_researched", "drafts_written", "drafts_skipped",
+    "current_item", "error_message", "resume_count", "started_at", "finished_at",
+})
+_LEAD_RUN_JSON = ("steps", "target_titles", "lead_ids")
+
+
+def _lead_run_row(row) -> Optional[Dict[str, Any]]:
+    if not row:
+        return None
+    d = dict(row)
+    for k in _LEAD_RUN_JSON:
+        try:
+            d[k] = json.loads(d[k]) if d.get(k) else ([] if k != "target_titles" else None)
+        except (json.JSONDecodeError, TypeError):
+            d[k] = [] if k != "target_titles" else None
+    return d
+
+
+async def create_lead_run(data: Dict[str, Any]) -> int:
+    clean = {
+        "niche": data["niche"], "location": data["location"], "target_count": int(data["target_count"]),
+        "steps": json.dumps(list(data["steps"])), "channel": data.get("channel") or "EMAIL",
+        "target_titles": json.dumps(data["target_titles"]) if data.get("target_titles") else None,
+        "hot_warm_only": 1 if data.get("hot_warm_only", True) else 0,
+    }
+    clean = {k: v for k, v in clean.items() if v is not None}
+    col_sql = ", ".join(clean.keys())
+    ph = ", ".join("?" for _ in clean)
+    async with get_db() as conn:
+        return await conn.fetchval(
+            f"INSERT INTO lead_runs ({col_sql}) VALUES ({ph}) RETURNING id", *clean.values(),
+        )
+
+
+async def update_lead_run(run_id: int, data: Dict[str, Any]) -> bool:
+    clean = {k: (json.dumps(v) if k == "lead_ids" else v)
+             for k, v in data.items() if k in _LEAD_RUN_WRITABLE and v is not None}
+    if not clean:
+        return False
+    set_clause = ", ".join(f"{c} = ?" for c in clean)
+    async with get_db() as conn:
+        result = await conn.execute(
+            f"UPDATE lead_runs SET {set_clause} WHERE id = ?", *clean.values(), run_id,
+        )
+    return _rows_affected(result) > 0
+
+
+async def get_lead_run(run_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow("SELECT * FROM lead_runs WHERE id = $1", run_id)
+    return _lead_run_row(row)
+
+
+async def list_lead_runs(limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch("SELECT * FROM lead_runs ORDER BY id DESC LIMIT ? OFFSET ?", limit, offset)
+    return [_lead_run_row(r) for r in rows]
+
+
+async def list_interrupted_lead_runs() -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM lead_runs WHERE status IN ('QUEUED', 'RUNNING', 'CANCEL_REQUESTED') ORDER BY id ASC"
+        )
+    return [_lead_run_row(r) for r in rows]
 
 
 async def save_research_result(
