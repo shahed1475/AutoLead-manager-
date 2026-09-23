@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>HOM · Can't connect</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<style>
+  :root { --bg:#F6F5F1; --fg:#1D1C19; --muted:#6B675F; --primary:#2F6A51; --card:#FFFFFF; --border:#E1DED6; color-scheme: light; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#121211; --fg:#EDECE8; --muted:#97948B; --primary:#4A8C6D; --card:#1F1E1C; --border:#2E2D2A; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100dvh; display:grid; place-items:center; background:var(--bg); color:var(--fg);
+         font:15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+         padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom)); }
+  main { max-width: 380px; text-align: center; }
+  h1 { font-size: 22px; letter-spacing: -0.02em; margin: 24px 0 8px; }
+  p { color: var(--muted); margin: 0 0 12px; }
+  ul { text-align:left; color:var(--muted); background:var(--card); border:1px solid var(--border);
+       border-radius:12px; padding:14px 16px 14px 34px; margin:20px 0; }
+  li + li { margin-top: 6px; }
+  button { font: inherit; font-weight: 600; color:#fff; background:var(--primary); border:0; border-radius:10px;
+           height:44px; padding:0 22px; cursor:pointer; }
+  button:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+</style>
+</head>
+<body>
+<main>
+  <svg width="56" height="56" viewBox="0 0 32 32" aria-hidden="true">
+    <rect width="32" height="32" rx="8.5" fill="#2F6A51"/>
+    <path d="M10.5 8.5 V23.5" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round"/>
+    <path d="M21.5 8.5 V23.5" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round"/>
+    <path d="M10.5 19 L21.5 13" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round"/>
+  </svg>
+  <h1>Can't reach HOM right now</h1>
+  <p>HOM runs on its owner's computer, and that computer can't be reached at the moment.</p>
+  <ul>
+    <li>Check that this phone or computer is online.</li>
+    <li>The HOM computer may be off, asleep, or offline.</li>
+    <li>If you use a share link, it may have changed. Ask for the new one.</li>
+  </ul>
+  <button type="button" onclick="location.reload()">Try again</button>
+</main>
+</body>
+</html>

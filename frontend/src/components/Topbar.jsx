@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useLocation } from 'react-router-dom'
 import { Clock, Activity, Sun, Moon, Menu } from 'lucide-react'
 import { useTheme } from '../lib/theme'
+import { LogoMark } from './Logo'
 import { engineApi } from '../api/client'
 import clsx from 'clsx'
 
@@ -80,10 +81,10 @@ export default function Topbar({ onMenu }) {
     : null
 
   return (
-    <header className="h-14 shrink-0 flex items-center gap-3 px-4 lg:px-8 bg-background/85 backdrop-blur-md border-b border-border-subtle z-10">
-      <button onClick={onMenu} className="btn-ghost h-8 w-8 px-0 lg:hidden" aria-label="Open menu">
-        <Menu size={18} />
-      </button>
+    <header className="shrink-0 pt-safe bg-background/85 backdrop-blur-md border-b border-border-subtle z-10">
+      <div className="h-14 flex items-center gap-3 px-4 lg:px-8">
+      {/* Phones: the menu lives in the bottom bar (More); show the brand here. */}
+      <LogoMark size={26} className="lg:hidden shrink-0" />
       <p className="text-subheading truncate">{pageTitle}</p>
 
       <div className="flex-1" />
@@ -105,6 +106,7 @@ export default function Topbar({ onMenu }) {
       <span className="hidden md:block w-px h-4 bg-border" />
       <EngineStatus status={engineStatus} />
       <ThemeToggle />
+      </div>
     </header>
   )
 }

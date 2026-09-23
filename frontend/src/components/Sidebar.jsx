@@ -7,6 +7,7 @@ import {
 import clsx from 'clsx'
 import { inboxApi } from '../api/client'
 import Logo from './Logo'
+import InstallApp from './InstallApp'
 
 // Grouped by what the user is doing, not by how the backend is built.
 const groups = [
@@ -81,7 +82,7 @@ export default function Sidebar({ open, onClose }) {
           open ? 'translate-x-0 shadow-lg' : '-translate-x-full lg:translate-x-0'
         )}
       >
-        <div className="flex items-center justify-between h-14 px-4">
+        <div className="flex items-center justify-between h-14 px-4 mt-[env(safe-area-inset-top,0px)] lg:mt-0">
           <Logo size={26} />
           <button onClick={onClose} className="btn-ghost h-8 w-8 px-0 lg:hidden" aria-label="Close menu">
             <X size={16} />
@@ -99,7 +100,8 @@ export default function Sidebar({ open, onClose }) {
           ))}
         </nav>
 
-        <div className="px-3 py-3 border-t border-border-subtle">
+        <div className="px-3 py-3 border-t border-border-subtle space-y-0.5 pb-[calc(0.75rem+env(safe-area-inset-bottom,0px))] lg:pb-3">
+          <InstallApp />
           <NavItem to="/settings" icon={Settings} label="Settings" />
         </div>
       </aside>

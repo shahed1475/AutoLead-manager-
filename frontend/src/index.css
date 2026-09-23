@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300..800&display=swap');
+/* Inter (fallback UI font) is loaded non-blocking from index.html. */
 @import './theme.css';
 @tailwind base;
 @tailwind components;
@@ -40,6 +40,18 @@
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
   }
+
+  /* Phones: 16px text fields stop iOS Safari zooming in on focus. */
+  @media (max-width: 767px) {
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea { font-size: 16px; }
+  }
+
+  /* No stray tap flash on touch; keep text selection where it matters. */
+  html { -webkit-tap-highlight-color: transparent; }
+
+  /* Pop-ups and drawers are often direct children of a "space-y-*" page;
+     that spacing must never push a position:fixed layer off the screen top. */
+  [class*="space-y-"] > .fixed { margin-top: 0 !important; }
 }
 
 @layer components {
@@ -75,6 +87,11 @@
     --tw-ring-color: rgb(var(--ring));
     --tw-ring-offset-color: rgb(var(--background));
   }
+  /* Touchscreens: tap targets at least 40px tall. */
+  @media (pointer: coarse) {
+    .btn { min-height: 2.5rem; }
+  }
+
   .btn-primary   { @apply btn bg-primary text-primary-foreground shadow-sm hover:bg-primary-hover; }
   .btn-secondary { @apply btn bg-surface-elevated text-foreground border border-border shadow-sm hover:bg-secondary; }
   .btn-ghost     { @apply btn text-muted-foreground hover:text-foreground hover:bg-secondary; }
@@ -110,6 +127,13 @@
 @layer utilities {
   .tabular { font-variant-numeric: tabular-nums; }
 
+  /* "backwards" (not "both"): after the fade the wrapper must keep no
+     transform, or it becomes the containing block of every position:fixed
+     drawer/dialog inside the page. */
   @keyframes page-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-  .animate-page-in { animation: page-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+  .animate-page-in { animation: page-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1) backwards; }
+
+  /* Safe areas (notch / home indicator) for the installed phone app. */
+  .pt-safe { padding-top: env(safe-area-inset-top, 0px); }
+  .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
 }

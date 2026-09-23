@@ -118,7 +118,7 @@ export default function EnrichmentDrawer({ lead, onClose, onEnrich, onViewMessag
     <>
       {/* Backdrop */}
       <div
-        className={`fixed inset-0 z-40 bg-black/30 backdrop-blur-[1px] transition-opacity duration-300 ${
+        className={`fixed inset-0 !m-0 z-40 bg-black/30 backdrop-blur-[1px] transition-opacity duration-300 ${
           isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
         }`}
         onClick={onClose}
@@ -130,10 +130,10 @@ export default function EnrichmentDrawer({ lead, onClose, onEnrich, onViewMessag
         role="dialog"
         aria-modal="true"
         aria-labelledby="enrichment-drawer-title"
-        className={`fixed top-0 right-0 h-full w-[380px] bg-slate-900 border-l border-slate-700/60
+        className={`fixed top-0 right-0 !m-0 h-full w-full sm:w-[380px] bg-slate-900 border-l border-slate-700/60 pt-safe pb-safe
                     shadow-2xl z-50 flex flex-col overflow-hidden
-                    transition-transform duration-300 ease-out
-                    ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}
+                    transition-[transform,visibility] duration-300 ease-out
+                    ${isOpen ? 'translate-x-0' : 'translate-x-full invisible'}`}
       >
         {/* ── Header ─────────────────────────────────────────────────────── */}
         <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-slate-800 shrink-0">

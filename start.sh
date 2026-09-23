@@ -93,12 +93,17 @@ tunnel_alive() {
 }
 
 copy_to_clipboard() {
-  local text="$1"
-  if command -v qdbus >/dev/null 2>&1 && qdbus org.kde.klipper >/dev/null 2>&1; then
-    qdbus org.kde.klipper /klipper setClipboardContents "$text" >/dev/null 2>&1 && return 0
-  fi
+  local text="$1" q
+  # KDE's clipboard first (qdbus is qdbus6 on Plasma 6).
+  for q in qdbus6 qdbus-qt6 qdbus; do
+    if command -v "$q" >/dev/null 2>&1 && "$q" org.kde.klipper >/dev/null 2>&1; then
+      "$q" org.kde.klipper /klipper setClipboardContents "$text" >/dev/null 2>&1 && return 0
+    fi
+  done
+  # xclip/wl-copy stay running to own the clipboard: never let them hold this
+  # script's output open (a caller reading it would wait forever).
   for tool in "wl-copy" "xclip -selection clipboard" "xsel --clipboard --input"; do
-    command -v "${tool%% *}" >/dev/null 2>&1 && { printf '%s' "$text" | $tool 2>/dev/null && return 0; }
+    command -v "${tool%% *}" >/dev/null 2>&1 && { printf '%s' "$text" | $tool >/dev/null 2>&1 && return 0; }
   done
   return 1
 }
@@ -143,9 +148,14 @@ start_app() {
   fi
   say "Starting the app (the first start builds it and can take a few minutes)…"
   if ! "${COMPOSE[@]}" up -d --build >"$RUN_DIR/docker.log" 2>&1; then
-    fail "The app could not start. Details: $RUN_DIR/docker.log"
-    tail -n 15 "$RUN_DIR/docker.log" | sed 's/^/      /'
-    finish 1
+    # Rebuilding needs the internet (Docker Hub). Without it, start the
+    # version already built on this computer rather than not starting at all.
+    warn "Couldn't rebuild (is the internet down?) — starting the last built version."
+    if ! "${COMPOSE[@]}" up -d >>"$RUN_DIR/docker.log" 2>&1; then
+      fail "The app could not start. Details: $RUN_DIR/docker.log"
+      tail -n 15 "$RUN_DIR/docker.log" | sed 's/^/      /'
+      finish 1
+    fi
   fi
   if ! wait_http "$API/health" 180 || ! wait_http "$LOCAL_URL" 60; then
     fail "The app started but isn't answering. Details: $RUN_DIR/docker.log"

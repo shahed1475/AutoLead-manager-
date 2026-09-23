@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  DndContext, DragOverlay, closestCorners, PointerSensor, useSensor, useSensors,
+  DndContext, DragOverlay, closestCorners, MouseSensor, TouchSensor, useSensor, useSensors,
   useDroppable, useDraggable,
 } from '@dnd-kit/core'
 import { GitBranch, Mail, MessageCircle } from 'lucide-react'
@@ -74,7 +74,7 @@ function Column({ column, leads }) {
   return (
     <div
       ref={setNodeRef}
-      className={`flex-1 min-w-[220px] rounded-xl border p-2.5 space-y-2 transition-colors ${
+      className={`flex-1 min-w-[78vw] sm:min-w-[220px] snap-start rounded-xl border p-2.5 space-y-2 transition-colors ${
         isOver ? 'border-brand-500/50 bg-brand-600/5' : 'border-slate-800 bg-slate-900/30'
       }`}
     >
@@ -92,7 +92,12 @@ function Column({ column, leads }) {
 export default function Pipeline() {
   const queryClient = useQueryClient()
   const [activeLead, setActiveLead] = useState(null)
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
+  // Mouse: drag after a small move. Touch: press and hold, so a swipe still
+  // scrolls the board instead of grabbing a card.
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 6 } }),
+  )
 
   const { data: board = {}, isLoading } = useQuery({
     queryKey: ['pipeline-board'],
@@ -126,7 +131,7 @@ export default function Pipeline() {
   }
 
   return (
-    <div className="p-6 space-y-4">
+    <div className="px-4 py-5 sm:p-6 space-y-4">
       <div className="flex items-center gap-2">
         <GitBranch size={18} className="text-brand-400" />
         <h1 className="text-lg font-bold text-slate-100">Pipeline</h1>
@@ -141,7 +146,7 @@ export default function Pipeline() {
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
         >
-          <div className="flex gap-3 overflow-x-auto pb-4">
+          <div className="flex gap-3 overflow-x-auto pb-4 snap-x snap-mandatory sm:snap-none -mx-4 px-4 sm:mx-0 sm:px-0 scroll-px-4">
             {COLUMNS.map((column) => (
               <Column key={column.key} column={column} leads={board[column.key] || []} />
             ))}

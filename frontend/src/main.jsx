@@ -1,3 +1,4 @@
+import { registerServiceWorker } from './lib/install'   // first: catches the early install prompt
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from '@tanstack/react-query'
@@ -30,6 +31,8 @@ const queryClient = new QueryClient({
     },
   }),
 })
+
+registerServiceWorker()
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

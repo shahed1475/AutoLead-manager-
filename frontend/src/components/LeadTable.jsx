@@ -21,6 +21,53 @@ const DEFAULT_WIDTHS = {
   score: 100, status: 130, channel: 110, source: 110, sent: 110,
 }
 
+// Phones: one card per lead with its actions always visible (there is no
+// hover on a touchscreen). Tablets and up keep the table below.
+function MobileLeadCards({ items, selected, toggleOne, onRowClick, handlers }) {
+  const { onEnrich, onResearch, onViewMessages, onResend, onMarkReplied, onSkip, onDelete } = handlers
+  const act = 'grid place-items-center w-9 h-9 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary disabled:opacity-30'
+  return (
+    <ul className="md:hidden divide-y divide-border-subtle">
+      {items.map((lead) => {
+        const busy = ['QUEUED', 'RESEARCHING'].includes(lead.research_status)
+        return (
+          <li key={lead.id} className={clsx('px-4 py-3', selected.includes(lead.id) && 'bg-primary/5')}>
+            <div className="flex items-start gap-3">
+              <input type="checkbox" checked={selected.includes(lead.id)} onChange={() => toggleOne(lead.id)}
+                aria-label={`Select ${lead.business_name}`}
+                className="mt-1 w-4 h-4 rounded accent-[rgb(var(--primary))] shrink-0" />
+              <button type="button" onClick={() => onRowClick?.(lead)} className="flex-1 min-w-0 text-left">
+                <p className="font-medium text-foreground truncate">{lead.business_name}</p>
+                <p className="text-meta truncate">{[lead.niche, lead.city].filter(Boolean).join(' · ') || '—'}</p>
+                <p className="text-meta truncate">{lead.email || lead.phone || 'No contact found'}</p>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <ScoreBadge score={lead.score} label={lead.score_label} />
+                  <span className={STATUS_BADGE[lead.status] || 'badge'}>{lead.status}</span>
+                  {lead.channel && <span className={CHANNEL_BADGE[lead.channel] || 'badge'}>{lead.channel}</span>}
+                  {lead.research_status && lead.research_status !== 'NOT_STARTED' && (
+                    <span className={clsx('text-2xs', RESEARCH_BADGE[lead.research_status] || 'text-muted-foreground')}>
+                      {RESEARCH_LABEL[lead.research_status] || lead.research_status}
+                    </span>
+                  )}
+                </div>
+              </button>
+            </div>
+            <div className="mt-1.5 pl-7 flex items-center gap-0.5">
+              <button className={act} onClick={() => onResearch?.(lead.id)} disabled={busy} aria-label={`Research ${lead.business_name}`} title="Research"><Bot size={16} /></button>
+              <button className={act} onClick={() => onEnrich?.(lead.id)} aria-label={`Enrich ${lead.business_name}`} title="Enrich with AI"><Sparkles size={16} /></button>
+              <button className={act} onClick={() => onViewMessages?.(lead)} aria-label={`Messages for ${lead.business_name}`} title="Messages"><Eye size={16} /></button>
+              <button className={act} onClick={() => onResend?.(lead.id, lead.channel || 'EMAIL')} aria-label={`Re-send to ${lead.business_name}`} title="Re-send"><RotateCcw size={16} /></button>
+              <button className={act} onClick={() => onMarkReplied?.(lead.id)} aria-label={`Mark ${lead.business_name} as replied`} title="Mark replied"><CheckCircle2 size={16} /></button>
+              <button className={act} onClick={() => onSkip?.(lead.id)} aria-label={`Skip ${lead.business_name}`} title="Skip"><SkipForward size={16} /></button>
+              <button className={clsx(act, 'ml-auto hover:text-error')} onClick={() => onDelete?.(lead.id)} aria-label={`Delete ${lead.business_name}`} title="Delete"><Trash2 size={16} /></button>
+            </div>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
 function fmtDate(ts) {
   if (!ts) return '—'
   return new Date(ts).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: '2-digit' })
@@ -113,7 +160,9 @@ export default function LeadTable({
 
   return (
     <div className="flex flex-col h-full">
-      <div ref={scrollRef} className="overflow-auto flex-1">
+      <MobileLeadCards items={items} selected={selected} toggleOne={toggleOne} onRowClick={onRowClick}
+        handlers={{ onEnrich, onResearch, onViewMessages, onResend, onMarkReplied, onSkip, onDelete }} />
+      <div ref={scrollRef} className="hidden md:block overflow-auto flex-1">
         <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
           <thead className="sticky top-0 z-10 bg-slate-900">
             <tr className="border-b border-slate-700/50">
@@ -242,7 +291,7 @@ export default function LeadTable({
                   </td>
 
                   <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex items-center gap-1 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="flex items-center gap-1 justify-end opacity-0 group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
                       <button
                         onClick={() => onEnrich?.(lead.id)}
                         title="Enrich with AI"

@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { researchSentToast } from '../lib/researchToast'
-import { Plus, Upload, Download, Search, RefreshCw, Sparkles, Trash2, X, Bot } from 'lucide-react'
+import { Plus, Upload, Download, Search, RefreshCw, Sparkles, Trash2, X, Bot, SlidersHorizontal } from 'lucide-react'
 import { leadsApi, aiApi, campaignApi, enrichApi } from '../api/client'
 import LeadTable from '../components/LeadTable'
 import CampaignControls from '../components/CampaignControls'
@@ -70,6 +70,7 @@ export default function Leads() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [selected, setSelected] = useState([])
   const [showAdd, setShowAdd] = useState(false)
+  const [filtersOpen, setFiltersOpen] = useState(false)   // phones: filters fold away
   const [viewLead, setViewLead] = useState(null)
   const [drawerLead, setDrawerLead] = useState(null)
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false)
@@ -299,14 +300,14 @@ export default function Leads() {
   }, [showAdd])
 
   return (
-    <div className="p-6 space-y-4 h-full flex flex-col">
+    <div className="px-4 py-5 sm:p-6 space-y-4 lg:h-full flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-slate-100">Leads</h1>
           <p className="text-sm text-slate-500 mt-0.5">{data?.total ?? 0} total records</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => refetch()} className="btn-secondary text-xs">
             <RefreshCw size={13} className={clsx(isFetching && 'animate-spin')} /> Refresh
           </button>
@@ -338,8 +339,8 @@ export default function Leads() {
         </div>
       </div>
 
-      {/* Status + Score filter bar */}
-      <div className="flex items-center gap-2 flex-wrap">
+      {/* Status + Score filter bar — one swipeable row on phones */}
+      <div className="flex items-center gap-2 overflow-x-auto md:flex-wrap md:overflow-visible -mx-4 px-4 md:mx-0 md:px-0 pb-1 md:pb-0 [&>*]:shrink-0">
         {STATUSES.slice(1).map((s) => {
           const cls = STATUS_BTN[s]
           const isActive = filters.status === s
@@ -398,6 +399,17 @@ export default function Leads() {
             onChange={(e) => setSearchInput(e.target.value)}
           />
         </div>
+        {(() => {
+          const active = ['status', 'channel', 'niche', 'city', 'date_from', 'date_to', 'source_type', 'research_status']
+            .filter((k) => filters[k]).length
+          return (
+            <button type="button" onClick={() => setFiltersOpen((v) => !v)} aria-expanded={filtersOpen}
+              className="md:hidden btn-secondary text-xs h-9">
+              <SlidersHorizontal size={13} /> Filters{active ? ` (${active})` : ''}
+            </button>
+          )
+        })()}
+        <div className={filtersOpen ? 'contents' : 'hidden md:contents'}>
         <select
           className="input text-xs h-9 w-36"
           value={filters.status}
@@ -462,6 +474,7 @@ export default function Leads() {
           <option value="FAILED">Failed</option>
           <option value="EXCLUDED">Excluded</option>
         </select>
+        </div>
       </div>
 
       {/* Bulk action bar — only when something is selected */}
@@ -499,8 +512,8 @@ export default function Leads() {
       )}
 
       {/* Main content */}
-      <div className="flex gap-4 flex-1 min-h-0">
-        <div className="card flex-1 overflow-hidden flex flex-col">
+      <div className="flex flex-col lg:flex-row gap-4 lg:flex-1 lg:min-h-0">
+        <div className="card lg:flex-1 overflow-hidden flex flex-col">
           {isError ? (
             <ErrorState message="Couldn't load leads." onRetry={refetch} retrying={isFetching} />
           ) : (
@@ -529,7 +542,7 @@ export default function Leads() {
           )}
         </div>
 
-        <div className="w-64 shrink-0">
+        <div className="lg:w-64 lg:shrink-0">
           <CampaignControls
             selectedIds={selected}
             onComplete={() => {

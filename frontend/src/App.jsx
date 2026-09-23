@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import AuthGate from './components/AuthGate'
 import Sidebar from './components/Sidebar'
 import Topbar from './components/Topbar'
+import BottomNav from './components/BottomNav'
 import ErrorBoundary from './components/ui/ErrorBoundary'
 import { PageSkeleton } from './components/ui/Skeleton'
 
@@ -56,13 +57,15 @@ export default function App() {
   return (
     <AuthGate>
       <BrowserRouter>
-        <div className="app-shell flex h-screen overflow-hidden">
+        <div className="app-shell flex h-[100dvh] overflow-hidden">
           <Sidebar open={navOpen} onClose={() => setNavOpen(false)} />
           <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
             <Topbar onMenu={() => setNavOpen(true)} />
-            <main className="flex-1 overflow-y-auto">
+            {/* On phones, leave room for the bottom tab bar (and the home indicator). */}
+            <main className="flex-1 overflow-y-auto overscroll-contain pb-[calc(4rem+env(safe-area-inset-bottom,0px))] lg:pb-0">
               <RoutedContent />
             </main>
+            <BottomNav onMore={() => setNavOpen(true)} />
           </div>
         </div>
       </BrowserRouter>

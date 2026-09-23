@@ -22,9 +22,35 @@ computer only. After you pull new code, start with `HOM_REBUILD=1 ./start.sh`
 so the app is rebuilt. Developer mode (venv + Vite dev server) is
 `scripts/dev.sh`.
 
+If the internet is down, `./start.sh` can't rebuild and starts the version
+already built on this computer instead.
+
 The app itself keeps running in Docker after the window closes and comes back
 after a reboot. The share link also keeps running until `./start.sh stop` or a
 reboot; after a reboot, click the button again for a new link.
+
+## Use HOM on a phone or as a desktop app
+
+HOM is an installable app (a PWA): the same app on every device, with its own
+icon, full screen, and no browser bar. Open the link (or, on this computer,
+http://localhost:5173), log in, then:
+
+| Device | How to install |
+|---|---|
+| Android phone (Chrome) | Tap **More → Install app** in HOM, or Chrome's menu → *Install app* |
+| iPhone / iPad (Safari) | Tap **More → Install app** in HOM for the steps: Share → *Add to Home Screen* → Add |
+| Computer (Chrome / Edge) | Click **Install app** in HOM's sidebar, or the install icon in the address bar |
+
+On phones HOM has a bottom tab bar (Overview, Find, Leads, Inbox, More).
+Nothing personal is stored on the device: leads, messages and settings always
+come live from this computer. If it can't be reached, the app shows a
+"Can't reach HOM right now" page instead of an error.
+
+An installed app is tied to its link. The free instant link changes every time
+it is reopened, so a phone app installed from an old link stops working — open
+the new link and install again, or set up a permanent link (below) so installs
+keep working. On this computer, install from http://localhost:5173 — that
+address never changes.
 
 ## Security
 

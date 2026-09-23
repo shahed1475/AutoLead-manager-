@@ -817,7 +817,7 @@ export default function AILab() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="p-6 h-full flex flex-col gap-4 overflow-hidden">
+    <div className="px-4 py-5 sm:p-6 lg:h-full flex flex-col gap-4 lg:overflow-hidden">
 
       {/* ── Page header ──────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between shrink-0 flex-wrap gap-3">
@@ -847,7 +847,7 @@ export default function AILab() {
       </div>
 
       {/* ── Main layout ──────────────────────────────────────────────────── */}
-      <div className="flex gap-5 flex-1 min-h-0">
+      <div className="flex flex-col lg:flex-row gap-5 lg:flex-1 lg:min-h-0">
 
         {/* ══════ LEFT — Lead Queue ══════ */}
         <div className="flex-1 flex flex-col gap-3 min-h-0 min-w-0">
@@ -956,7 +956,7 @@ export default function AILab() {
         </div>
 
         {/* ══════ RIGHT — Tools Sidebar ══════ */}
-        <div className="w-80 shrink-0 flex flex-col gap-4 overflow-y-auto">
+        <div className="lg:w-80 lg:shrink-0 flex flex-col gap-4 lg:overflow-y-auto">
           <TestAIPanel ollamaConnected={ollamaOk} />
           <DNAEditor />
         </div>

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import {
+import { ChevronLeft,
   Mail, RefreshCw, MessageSquare, TrendingUp, Users,
   Calendar, Send, Archive, ChevronRight, Inbox as InboxIcon,
   Clock, ExternalLink, BarChart3, Sparkles, Check, X,
@@ -465,15 +465,15 @@ export default function Inbox() {
   }
 
   return (
-    <div className="p-6 flex flex-col h-full gap-4 overflow-hidden">
+    <div className="px-4 py-5 sm:p-6 flex flex-col lg:h-full gap-4 lg:overflow-hidden">
 
       {/* ── Header ─────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between shrink-0">
+      <div className="flex flex-wrap items-start justify-between gap-3 shrink-0">
         <div>
           <h1 className="text-xl font-bold text-slate-100">Reply Inbox</h1>
           <p className="text-xs text-slate-500 mt-0.5">AI-classified email replies from your leads</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => refetch()}
             className="btn-secondary text-xs"
@@ -495,7 +495,7 @@ export default function Inbox() {
       <PendingDraftsPanel />
 
       {/* ── Stats bar ──────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-4 gap-3 shrink-0">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 shrink-0">
         <StatCard
           variant="compact"
           icon={InboxIcon}
@@ -532,10 +532,10 @@ export default function Inbox() {
       </div>
 
       {/* ── Split panel ────────────────────────────────────────────────── */}
-      <div className="flex gap-4 flex-1 min-h-0">
+      <div className="flex flex-col lg:flex-row gap-4 lg:flex-1 lg:min-h-0">
 
-        {/* Left — reply list */}
-        <div className="w-[340px] shrink-0 flex flex-col gap-3 min-h-0">
+        {/* Left — reply list (phones: hidden while a thread is open) */}
+        <div className={`${activeItem ? 'hidden lg:flex' : 'flex'} lg:w-[340px] lg:shrink-0 flex-col gap-3 lg:min-h-0`}>
 
           {/* Intent filter tabs */}
           <div className="flex items-center gap-1.5 flex-wrap shrink-0">
@@ -603,9 +603,17 @@ export default function Inbox() {
           )}
         </div>
 
-        {/* Right — thread detail */}
-        <div className="flex-1 card overflow-hidden">
-          <ThreadPanel item={activeItem} onProcess={handleProcess} />
+        {/* Right — thread detail (phones: full width, with a way back) */}
+        <div className={`${activeItem ? 'flex' : 'hidden lg:flex'} flex-col lg:flex-1 gap-2 lg:min-h-0`}>
+          {activeItem && (
+            <button type="button" onClick={() => setSelectedId(null)}
+              className="lg:hidden -ml-1 inline-flex items-center gap-0.5 text-sm text-muted-foreground hover:text-foreground self-start">
+              <ChevronLeft size={16} /> All replies
+            </button>
+          )}
+          <div className="flex-1 card overflow-hidden">
+            <ThreadPanel item={activeItem} onProcess={handleProcess} />
+          </div>
         </div>
       </div>
     </div>
