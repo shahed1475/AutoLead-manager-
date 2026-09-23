@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model:    str = "llama3.1:8b"
     ollama_timeout:  int = 120
+    # Concurrent Ollama generations allowed (1 = safe for small GPUs; see ai_brain.ollama_slot)
+    ollama_max_parallel: int = 1
 
     # ── SMTP ─────────────────────────────────────────────────────────────────
     smtp_host:       str = "smtp.gmail.com"

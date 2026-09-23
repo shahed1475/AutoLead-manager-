@@ -486,7 +486,7 @@ def _email_score(email: str, site_domain: str) -> int:
 
     # Tier 0: hard disqualify spam prefixes
     if local in _DEPRIORITIZED_PREFIXES or any(
-        local.startswith(p) for p in ("noreply", "no-reply", "donotreply", "bounce")
+        local.startswith(p) for p in ("noreply", "no-reply", "donotreply", "bounce", "abuse")
     ):
         return -1000
 
@@ -529,6 +529,17 @@ def _pick_primary_email(emails: List[str], site_domain: str) -> Optional[str]:
 
 # ── WHOIS bonus ───────────────────────────────────────────────────────────────
 
+def _is_same_site(email_domain: str, site_domain: str) -> bool:
+    """True when the email's domain is the site's domain, a parent, or a subdomain of it."""
+    def norm(d: str) -> str:
+        d = (d or "").lower().split(":")[0].strip(".")
+        return d[4:] if d.startswith("www.") else d
+    e, s = norm(email_domain), norm(site_domain)
+    if not e or not s:
+        return False
+    return e == s or e.endswith("." + s) or s.endswith("." + e)
+
+
 def _whois_email(domain: str, log_fn: Callable[[str], None]) -> Optional[str]:
     """
     Attempt a WHOIS lookup for the registrant email.
@@ -564,6 +575,13 @@ def _whois_email(domain: str, log_fn: Callable[[str], None]) -> Optional[str]:
             # Filter privacy-proxy addresses
             e_lower = e.lower()
             if any(token in e_lower for token in _WHOIS_PRIVACY_TOKENS):
+                continue
+            # Post-GDPR WHOIS almost never exposes the registrant — what comes
+            # back is the registrar's abuse/support desk (abusecomplaints@
+            # registrarsafe.com, domains@hostinger.com …). Only an address on
+            # the business's own domain is evidence of a real contact.
+            if not _is_same_site(e_lower.partition("@")[2], domain):
+                log_fn(f"   ⏭️  WHOIS email {e} is not on {domain} — registrar contact, skipped")
                 continue
             log_fn(f"   ✅ WHOIS email: {e}")
             return e

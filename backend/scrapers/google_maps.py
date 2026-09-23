@@ -49,6 +49,68 @@ except ImportError:
     _SELENIUM_OK = False
 
 
+# ── Region targeting ──────────────────────────────────────────────────────────
+# Without hl/gl Google localises Maps to the caller's IP: from Bangladesh a
+# "dentist usa" search returned Bengali-named Dhaka clinics. hl=en keeps names
+# and aria-labels English (the selectors below rely on that); gl biases results
+# to the target country; a bare-country "city" is expanded to its major cities.
+_REGION_CODES: Dict[str, str] = {
+    "usa": "us", "us": "us", "united states": "us", "united states of america": "us", "america": "us",
+    "uk": "gb", "united kingdom": "gb", "england": "gb", "great britain": "gb", "scotland": "gb", "wales": "gb",
+    "uae": "ae", "united arab emirates": "ae", "dubai": "ae", "abu dhabi": "ae", "sharjah": "ae",
+    "canada": "ca", "australia": "au", "new zealand": "nz", "ireland": "ie", "india": "in",
+    "bangladesh": "bd", "pakistan": "pk", "germany": "de", "france": "fr", "spain": "es",
+    "italy": "it", "netherlands": "nl", "belgium": "be", "switzerland": "ch", "austria": "at",
+    "portugal": "pt", "poland": "pl", "sweden": "se", "norway": "no", "denmark": "dk",
+    "mexico": "mx", "brazil": "br", "argentina": "ar", "chile": "cl", "colombia": "co",
+    "saudi arabia": "sa", "qatar": "qa", "kuwait": "kw", "oman": "om", "bahrain": "bh",
+    "egypt": "eg", "nigeria": "ng", "kenya": "ke", "south africa": "za", "singapore": "sg",
+    "malaysia": "my", "japan": "jp", "south korea": "kr", "china": "cn",
+}
+
+
+def _region_code(city: str, country: str = "") -> Optional[str]:
+    """ISO-3166 alpha-2 (lowercase) for the search target, or None when unknown."""
+    for cand in (country, (city or "").split(",")[-1], city):
+        code = _REGION_CODES.get((cand or "").strip().lower().rstrip("."))
+        if code:
+            return code
+    return None
+
+
+def _country_cities(city: str) -> List[str]:
+    """Major cities when `city` is really a whole country ('usa', 'UK'), else []."""
+    try:
+        from ..research_agent.planner import _FALLBACK_CITIES   # noqa: PLC0415
+    except Exception:
+        return []
+    return list(_FALLBACK_CITIES.get((city or "").strip().lower(), []))
+
+
+def _maps_search_url(query: str, region: Optional[str]) -> str:
+    url = f"https://www.google.com/maps/search/{urllib.parse.quote(query)}?hl=en"
+    return url + (f"&gl={region}" if region else "")
+
+
+def _phone_outside_region(phone: Optional[str], region: Optional[str]) -> bool:
+    """True only when the phone number provably belongs to another country."""
+    if not phone or not region:
+        return False
+    try:
+        import phonenumbers   # noqa: PLC0415
+    except ImportError:
+        return False
+    try:
+        num = phonenumbers.parse(phone, region.upper())
+    except phonenumbers.NumberParseException:
+        return False
+    if phonenumbers.is_valid_number(num):
+        return (phonenumbers.region_code_for_number(num) or "").lower() != region
+    # A local-format number (no +country) that is invalid for the target region
+    # is another country's domestic number (e.g. BD "01717…" under gl=us).
+    return not phone.strip().startswith("+") and not phonenumbers.is_possible_number(num)
+
+
 # ── User-agent pool (10 real desktop browser UAs) ─────────────────────────────
 _USER_AGENTS: List[str] = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -424,8 +486,15 @@ def scrape_sync(
         log_fn("🖥️  No display available on this host — forcing headless Chrome")
         cfg = {**cfg, "headless": True}
 
-    # 3 query variants — each may surface different listings
-    query_variants = [
+    region = _region_code(city, country)
+    metro  = _country_cities(city)
+    if region:
+        log_fn(f"🌍 Targeting region '{region.upper()}' (English results)")
+
+    # 3 query variants — each may surface different listings. A whole-country
+    # target searches its major cities instead (Maps has no country-wide list).
+    query_cities   = metro[:3] if metro else [city] * 3
+    query_variants = [f"{niche} in {c}" for c in metro[:3]] if metro else [
         f"{niche} in {city}",
         f"{niche} {city}",
         f"best {niche} {city}",
@@ -458,8 +527,7 @@ def scrape_sync(
             driver = _build_driver(cfg["headless"], user_agent=ua)
             wait   = WebDriverWait(driver, 20)
 
-            encoded  = urllib.parse.quote(query)
-            maps_url = f"https://www.google.com/maps/search/{encoded}"
+            maps_url = _maps_search_url(query, region)
             driver.get(maps_url)
 
             _dismiss_consent(driver)
@@ -497,7 +565,7 @@ def scrape_sync(
                 seen_urls.add(url)
 
                 result = _extract_detail(
-                    driver, url, niche, city,
+                    driver, url, niche, query_cities[q_idx],
                     idx=len(all_leads) + 1,
                     total=max_results,
                     log_fn=log_fn,
@@ -516,7 +584,7 @@ def scrape_sync(
                         captcha_retried = True
                         # Re-attempt this URL once
                         result = _extract_detail(
-                            driver, url, niche, city,
+                            driver, url, niche, query_cities[q_idx],
                             idx=len(all_leads) + 1,
                             total=max_results,
                             log_fn=log_fn,
@@ -529,6 +597,10 @@ def scrape_sync(
                     else:
                         log_fn("❌ CAPTCHA (already retried) — stopping this query")
                         break
+
+                if _phone_outside_region(result.get("phone"), region):
+                    log_fn(f"   ⏭️  Outside target region ({result.get('phone')}): {result.get('business_name')}")
+                    continue
 
                 name = (result.get("business_name") or "").strip().lower()
                 if name in seen_names:

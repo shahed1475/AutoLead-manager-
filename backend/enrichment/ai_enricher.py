@@ -255,8 +255,8 @@ async def enrich_lead_with_ai(
 
         except Exception as exc:
             logger.warning(
-                "enrich_lead_with_ai: attempt %d/%d failed for '%s': %s",
-                attempt, _MAX_RETRIES, biz, exc,
+                "enrich_lead_with_ai: attempt %d/%d failed for '%s': %s: %s",
+                attempt, _MAX_RETRIES, biz, type(exc).__name__, exc,
             )
             if attempt == _MAX_RETRIES:
                 # Still persist the structural score

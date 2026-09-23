@@ -39,7 +39,9 @@ api.interceptors.response.use(
       window.dispatchEvent(new CustomEvent('autolead:unauthorized'))
     }
     const msg = err.response?.data?.detail || err.response?.data?.message || err.message
-    return Promise.reject(new Error(msg))
+    const e = new Error(msg)
+    e.status = err.response?.status   // lets callers treat e.g. 404 as "nothing yet"
+    return Promise.reject(e)
   }
 )
 
@@ -169,7 +171,9 @@ export const enrichApi = {
 // top of the existing research/company_profile pipeline. 404s are expected
 // (and handled by the caller) whenever research hasn't completed for a lead yet.
 export const intelligenceApi = {
-  getIntelligence:  (leadId) => api.get(`/leads/${leadId}/intelligence`).then((r) => r.data),
+  // 404 = lead not researched yet — an empty state, not a failure
+  getIntelligence:  (leadId) => api.get(`/leads/${leadId}/intelligence`).then((r) => r.data)
+    .catch((e) => { if (e.status === 404) return null; throw e }),
   getPainPoints:    (leadId) => api.get(`/leads/${leadId}/pain-points`).then((r) => r.data),
   getOpportunities: (leadId) => api.get(`/leads/${leadId}/opportunities`).then((r) => r.data),
   getSolutions:     (leadId) => api.get(`/leads/${leadId}/solutions`).then((r) => r.data),

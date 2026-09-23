@@ -196,7 +196,8 @@ Email reply:
 Reply ONLY with the category word, nothing else. One word."""
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        from .ai_brain import ollama_slot   # noqa: PLC0415 — shared Ollama concurrency gate
+        async with ollama_slot(), httpx.AsyncClient(timeout=timeout) as client:
             r = await client.post(
                 f"{ollama_url}/api/generate",
                 json={

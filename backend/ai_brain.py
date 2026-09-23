@@ -783,6 +783,30 @@ def _build_individual_prompt(lead: Dict[str, Any], message_type: str, dna: str) 
     return f"{context}\n\n{instructions[message_type]}"
 
 
+# ── Ollama concurrency gate ────────────────────────────────────────────────────
+# A local Ollama serves one generation at a time on small GPUs; firing several
+# requests at once (enrichment runs 3 leads concurrently, the job queue has 4
+# workers) just queues them inside Ollama, where the client timeout keeps
+# ticking — queued calls time out and Ollama still burns GPU time on the
+# abandoned work. Gate here so the timeout covers only the actual generation.
+# OLLAMA_MAX_PARALLEL (env / Settings) raises the limit on bigger hardware.
+_ollama_gates: Dict[int, asyncio.Semaphore] = {}   # one per event loop (tests run many loops)
+
+
+def ollama_slot() -> asyncio.Semaphore:
+    loop_id = id(asyncio.get_running_loop())
+    gate = _ollama_gates.get(loop_id)
+    if gate is None:
+        try:
+            limit = max(1, int(getattr(get_settings(), "ollama_max_parallel", 1)))
+        except Exception:
+            limit = 1
+        if len(_ollama_gates) > 32:          # drop gates of finished loops
+            _ollama_gates.clear()
+        gate = _ollama_gates[loop_id] = asyncio.Semaphore(limit)
+    return gate
+
+
 # ── Ollama call layer ──────────────────────────────────────────────────────────
 
 async def _call_ollama_raw(
@@ -804,7 +828,7 @@ async def _call_ollama_raw(
     if time.monotonic() < _cpu_fallback_until:
         options["num_gpu"] = 0
 
-    async with httpx.AsyncClient(timeout=cfg["timeout"]) as client:
+    async with ollama_slot(), httpx.AsyncClient(timeout=cfg["timeout"]) as client:
         payload = {"model": model, "prompt": prompt, "stream": False, "think": False, "options": options}
         r = await client.post(f"{cfg['base_url']}/api/generate", json=payload)
 

@@ -349,7 +349,7 @@ def _scrape_sync(
         return []
 
     query    = urllib.parse.quote(f"{niche} in {city}")
-    maps_url = f"https://www.google.com/maps/search/{query}"
+    maps_url = f"https://www.google.com/maps/search/{query}?hl=en"   # English names regardless of host IP
     leads: List[Dict[str, Any]] = []
     driver: Optional["webdriver.Chrome"] = None
 
