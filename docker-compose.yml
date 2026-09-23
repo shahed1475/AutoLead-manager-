@@ -1,13 +1,17 @@
-version: "3.9"
-
-# ─── AutoLead Infrastructure ──────────────────────────────────────────────────
-# SQLite-only — no external DB/cache services to install or manage. This
-# mirrors what actually runs locally, so `docker compose up` and a native
-# `uvicorn main:app --reload` behave identically.
+# ─── AutoLead — Docker deployment ─────────────────────────────────────────────
+# SQLite-only — no external DB/cache services. Data persists in ./backend/data.
 #
 # Quick start:
-#   1. Copy .env.example → .env and fill in secrets
-#   2. docker compose --profile full up -d --build
+#   1. cp backend/.env.example backend/.env   (fill in SMTP etc. — optional)
+#   2. Make sure Ollama is reachable from containers. Either:
+#        a) host Ollama listening on all interfaces:
+#             OLLAMA_HOST=0.0.0.0:11434 ollama serve
+#        b) or run the bundled Ollama container:
+#             OLLAMA_BASE_URL=http://ollama:11434 \
+#               docker compose --profile full --profile ollama up -d --build
+#             docker compose exec ollama ollama pull llama3.1:8b
+#   3. docker compose --profile full up -d --build
+#   4. Open http://localhost:5173
 # ──────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -15,20 +19,27 @@ services:
   # ── FastAPI Backend ────────────────────────────────────────────────────────
   backend:
     build:
-      context:    ./backend
-      dockerfile: Dockerfile
+      context:    .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     env_file:
-      - .env
+      - path: backend/.env
+        required: false
+    environment:
+      # Container → host Ollama by default; override for the bundled service.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      - ./backend:/app
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      - ./backend/data:/app/backend/data
+      - ./backend/company_dna.txt:/app/backend/company_dna.txt
+    shm_size: "1gb"   # headless Chromium crashes with Docker's 64MB default
     profiles:
       - full     # only starts with: docker compose --profile full up
 
-  # ── Vite frontend (built + served via nginx) ──────────────────────────────
+  # ── Vite frontend (built + served via nginx, proxies /api → backend) ──────
   frontend:
     build:
       context:    ./frontend
@@ -40,3 +51,15 @@ services:
       - backend
     profiles:
       - full
+
+  # ── Optional bundled Ollama (for machines without a host install) ─────────
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+    profiles:
+      - ollama
+
+volumes:
+  ollama-models:
