@@ -7,8 +7,15 @@ import clsx from 'clsx'
 const PAGE_TITLES = {
   '/dashboard': 'Dashboard',
   '/leads':     'Leads',
-  '/campaign':  'Campaign',
+  '/pipeline':  'Pipeline',
+  '/lead-search':            'Lead Search',
+  '/lead-search/automation': 'Lead Search',
+  '/lead-search/manual':     'Lead Search',
+  '/research-agent':         'Research Agent',
+  '/campaign':  'Lead Search Campaign',
+  '/email-campaigns':        'Email Campaigns',
   '/ai-lab':    'AI Lab',
+  '/inbox':     'Inbox',
   '/settings':  'Settings',
 }
 
