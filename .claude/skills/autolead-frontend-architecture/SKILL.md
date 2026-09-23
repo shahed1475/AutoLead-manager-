@@ -27,6 +27,15 @@ Backend-only changes with no UI surface.
 - **Established visual patterns to reuse:** card-with-`border-slate-700` sections, `border-{color}-500/50 bg-{color}-500/15 text-{color}-300` badge pattern for score/status pills, `SectionCard` wrapper (Settings.jsx), progress-step pipeline visualization (`Campaign.jsx`'s `PIPELINE_STEPS`/`STAGE_TO_STEP`), route-level code splitting (lazy-loaded page chunks) with manual vendor/charts chunk splitting in `vite.config.js`.
 - **Performance patterns already in place:** `useVirtualizer` (`@tanstack/react-virtual`) in `LeadTable.jsx`, `useDebouncedValue` for search, `useAnimatedNumber` for stat cards, `useResizableColumns` for table columns.
 
+## Design system & theming (redesign 2026-09-23)
+
+- **Identity:** warm graphite (night) / soft ivory (day) neutrals, ONE accent — pine (`brand`/`primary`). Brand mark: `components/Logo.jsx` (`Logo`, `LogoMark`, `BRAND` = HCM · Sales Growth Engine); static copies `public/brand/*.svg`, favicon `public/favicon.svg`. `public/logo.png` is the retired logo, unused.
+- **Tokens:** `src/theme.css` is **generated** by `node scripts/gen-theme.mjs` — edit the script. Semantic tokens (`bg-background`, `bg-surface`, `bg-surface-elevated`, `bg-surface-muted`, `border-border(-subtle)`, `bg-primary`, `text-muted-foreground`, `success/warning/error/info`) are what new UI should use. Every palette class (`slate-*`, `emerald-*` …) is also a token so older markup follows both themes; decorative hues (blue/violet/purple/pink/sky/cyan) are desaturated and `indigo` aliases the accent — don't introduce new accent colours.
+- **Primitives (`src/index.css`):** type levels `.text-display/.text-page/.text-section/.text-subheading/.text-body/.text-support/.text-meta/.text-overline`; surfaces `.surface-subtle` → `.surface-raised` (`.card` alias) → `.surface-overlay` (dialogs) — most content should sit open on the background, raise only what needs grouping or is the primary action; `.btn-primary/.btn-secondary/.btn-ghost/.btn-danger/.btn-success`, `.input`, `.label`, `.badge-*`.
+- **Type:** system UI stack (SF Pro / Segoe UI Variable), Inter fallback; weights are calmed in `tailwind.config.js` (bold = 640); no emoji as icons (lucide only); avoid all-caps + wide tracking for buttons.
+- **Theme state:** `src/lib/theme.js` (`useTheme`, `chartColors`); `index.html` applies it before first paint; toggle in `Topbar.jsx`. Never hardcode hex in JSX — SVG attributes take `chartColors(theme)` or `className="stroke-*"`. A subtree that must stay dark gets `data-theme="dark"` (campaign log console).
+- **Shell:** `Sidebar` is off-canvas below `lg` (`open`/`onClose` from `App.jsx`), `Topbar` has the menu button.
+
 ## Rules
 
 1. **New pages/components reuse existing primitives** (`Skeleton`, `ErrorState`/`EmptyState`, `ScoreBadge`, badge color classes) rather than inventing new loading/error/badge styles.

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Lock, RefreshCw, ShieldCheck } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
+import { LogoMark, BRAND } from './Logo'
 import toast from 'react-hot-toast'
 import { authApi, getSessionToken, setSessionToken } from '../api/client'
 
@@ -58,46 +59,36 @@ export default function AuthGate({ children }) {
 
   if (status === 'checking') {
     return (
-      <div className="h-screen flex items-center justify-center bg-slate-950 text-slate-500">
+      <div className="h-screen flex items-center justify-center bg-background text-muted-foreground">
         <RefreshCw size={20} className="animate-spin" />
       </div>
     )
   }
 
   return (
-    <div className="h-screen flex items-center justify-center bg-slate-950 px-4">
-      <form
-        onSubmit={handleUnlock}
-        className="w-full max-w-sm card p-6 space-y-4 border border-slate-700/50"
-      >
-        <div className="flex flex-col items-center gap-2 text-center">
-          <div className="w-11 h-11 rounded-xl bg-brand-500/15 ring-1 ring-brand-500/40 flex items-center justify-center">
-            <Lock size={18} className="text-brand-400" />
-          </div>
-          <h1 className="text-base font-bold text-slate-100">AutoLead is locked</h1>
-          <p className="text-xs text-slate-500">Enter the app password to continue.</p>
+    <div className="min-h-screen flex items-center justify-center bg-background px-4">
+      <form onSubmit={handleUnlock} className="w-full max-w-[360px] animate-page-in">
+        <div className="flex flex-col items-center text-center">
+          <LogoMark size={52} />
+          <h1 className="text-page mt-6">Welcome back</h1>
+          <p className="text-support mt-1.5">Enter the password for {BRAND.name} to continue.</p>
         </div>
 
-        <input
-          type="password"
-          autoFocus
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          placeholder="Password"
-          className="w-full px-3 py-2.5 rounded-lg bg-slate-900 border border-slate-700 text-sm text-slate-200
-                     focus:outline-none focus:ring-2 focus:ring-brand-500/50"
-        />
-
-        <button
-          type="submit"
-          disabled={submitting || !password}
-          className="w-full py-2.5 rounded-lg font-bold text-sm uppercase tracking-widest
-                     bg-brand-600 hover:bg-brand-500 text-white disabled:opacity-40 disabled:cursor-not-allowed
-                     flex items-center justify-center gap-2 transition-colors"
-        >
-          {submitting ? <RefreshCw size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
-          Unlock
-        </button>
+        <div className="surface-overlay mt-8 p-5 space-y-3">
+          <label htmlFor="app-password" className="label">Password</label>
+          <input
+            id="app-password"
+            type="password"
+            autoFocus
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="input"
+          />
+          <button type="submit" disabled={submitting || !password} className="btn-primary w-full">
+            {submitting && <RefreshCw size={14} className="animate-spin" />}
+            Unlock
+          </button>
+        </div>
       </form>
     </div>
   )

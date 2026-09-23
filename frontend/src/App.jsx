@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import AuthGate from './components/AuthGate'
 import Sidebar from './components/Sidebar'
@@ -12,6 +12,7 @@ const Pipeline   = lazy(() => import('./pages/Pipeline'))
 const LeadSearch    = lazy(() => import('./pages/LeadSearch'))
 const LeadSearchAutomation = lazy(() => import('./pages/LeadSearchAutomation'))
 const LeadSearchManual     = lazy(() => import('./pages/LeadSearchManual'))
+const LeadRun              = lazy(() => import('./pages/LeadRun'))
 const ResearchAgent = lazy(() => import('./pages/ResearchAgent'))
 const Campaign      = lazy(() => import('./pages/Campaign'))
 const EmailCampaigns = lazy(() => import('./pages/EmailCampaigns'))
@@ -27,6 +28,7 @@ function RoutedContent() {
   return (
     <ErrorBoundary key={pathname}>
       <Suspense fallback={<PageSkeleton />}>
+        <div key={pathname} className="animate-page-in">
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
@@ -35,6 +37,7 @@ function RoutedContent() {
           <Route path="/lead-search" element={<LeadSearch />} />
           <Route path="/lead-search/automation" element={<LeadSearchAutomation />} />
           <Route path="/lead-search/manual" element={<LeadSearchManual />} />
+          <Route path="/lead-search/runs/:runId" element={<LeadRun />} />
           <Route path="/research-agent" element={<ResearchAgent />} />
           <Route path="/campaign"  element={<Campaign />} />
           <Route path="/email-campaigns" element={<EmailCampaigns />} />
@@ -42,19 +45,21 @@ function RoutedContent() {
           <Route path="/inbox"     element={<Inbox />} />
           <Route path="/settings"  element={<Settings />} />
         </Routes>
+        </div>
       </Suspense>
     </ErrorBoundary>
   )
 }
 
 export default function App() {
+  const [navOpen, setNavOpen] = useState(false)
   return (
     <AuthGate>
       <BrowserRouter>
-        <div className="flex h-screen overflow-hidden bg-slate-950">
-          <Sidebar />
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <Topbar />
+        <div className="app-shell flex h-screen overflow-hidden">
+          <Sidebar open={navOpen} onClose={() => setNavOpen(false)} />
+          <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+            <Topbar onMenu={() => setNavOpen(true)} />
             <main className="flex-1 overflow-y-auto">
               <RoutedContent />
             </main>

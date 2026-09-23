@@ -11,6 +11,7 @@ import { SkeletonTableRows } from '../components/ui/Skeleton'
 import EmptyState from '../components/ui/EmptyState'
 import ErrorState from '../components/ui/ErrorState'
 import SendToCampaignModal from '../components/lead-search/SendToCampaignModal'
+import BackToFindLeads from '../components/BackToFindLeads'
 
 const ACTIVE_STATUSES = new Set(['QUEUED', 'RUNNING', 'CANCEL_REQUESTED'])
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
@@ -247,18 +248,14 @@ export default function LeadSearchManual() {
   }
 
   return (
-    <div className="p-6 space-y-5 max-w-4xl">
-      <Link to="/lead-search" className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200">
-        <ArrowLeft size={13} /> Lead Search
-      </Link>
-      <div className="flex items-center gap-2">
-        <Search size={18} className="text-brand-400" />
-        <h1 className="text-lg font-bold text-slate-100">Manual Lead Search</h1>
-      </div>
-      <p className="text-sm text-slate-500 -mt-3">
-        A quick, one-time search — we automatically pick the best source for what you're looking for.
-        You can leave this page while it runs; it keeps going and reconnects when you return.
-      </p>
+    <div className="px-4 sm:px-8 py-8 max-w-5xl mx-auto space-y-6">
+      <header>
+        <BackToFindLeads />
+        <h1 className="text-page">Quick search</h1>
+        <p className="text-support mt-1">
+          A one-time list of matching businesses. We pick where to look, and it keeps running if you leave.
+        </p>
+      </header>
 
       <form onSubmit={handleSubmit} className="rounded-xl border border-slate-800 bg-slate-900/30 p-5 space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

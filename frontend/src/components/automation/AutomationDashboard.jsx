@@ -5,13 +5,13 @@ import toast from 'react-hot-toast'
 import { automationApi } from '../../api/client'
 
 const PILL = {
-  RUNNING:       ['🟢', 'Running',              'text-emerald-400'],
-  SCHEDULED:     ['🟡', 'Scheduled',            'text-amber-400'],
-  PAUSED:        ['⏸', 'Paused',                'text-slate-300'],
-  LIMIT_REACHED: ['✅', 'Daily limit reached',  'text-emerald-400'],
-  STOPPED:       ['🔴', 'Stopped',              'text-red-400'],
-  COMPLETED:     ['✔', 'Queue complete',        'text-emerald-400'],
-  IDLE:          ['⚪', 'Idle',                  'text-slate-400'],
+  RUNNING:       ['bg-success',   'Running',              'text-emerald-400'],
+  SCHEDULED:     ['bg-warning',   'Scheduled',            'text-amber-400'],
+  PAUSED:        ['bg-slate-500', 'Paused',               'text-slate-300'],
+  LIMIT_REACHED: ['bg-success',   'Daily limit reached',  'text-emerald-400'],
+  STOPPED:       ['bg-error',     'Stopped',              'text-red-400'],
+  COMPLETED:     ['bg-success',   'Queue complete',       'text-emerald-400'],
+  IDLE:          ['bg-slate-500', 'Idle',                 'text-slate-400'],
 }
 const ACTIVE = new Set(['RUNNING', 'SCHEDULED'])
 
@@ -61,7 +61,7 @@ export default function AutomationDashboard() {
 
   if (!s) return <div className="rounded-xl border border-slate-800 bg-slate-900/30 p-5 text-sm text-slate-500">Loading automation…</div>
 
-  const [emoji, label, cls] = PILL[s.status] || PILL.IDLE
+  const [dot, label, cls] = PILL[s.status] || PILL.IDLE
   const limit = s.settings?.automation_daily_limit || 0
   const pct = s.progress_pct ?? 0
   const deadline = tsLocal(s.duration_deadline)
@@ -72,7 +72,7 @@ export default function AutomationDashboard() {
   return (
     <div className="rounded-xl border border-slate-800 bg-slate-900/30 p-5 space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <span className={`text-sm font-semibold ${cls}`}>{emoji} {label}</span>
+        <span className={`flex items-center gap-2 text-sm font-semibold ${cls}`}><span className={`w-2 h-2 rounded-full ${dot}`} />{label}</span>
         <span className="text-xs text-slate-500">
           {nextRun ? `Next run: ${nextRun.toLocaleString()}` : (s.next_run_reason || 'Not scheduled')}
         </span>

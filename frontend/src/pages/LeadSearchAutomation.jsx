@@ -8,6 +8,7 @@ import AutomationQueueTable from '../components/automation/AutomationQueueTable'
 import AutomationLog from '../components/automation/AutomationLog'
 import AutomationSettings from '../components/automation/AutomationSettings'
 import AutomationResearch from '../components/automation/AutomationResearch'
+import BackToFindLeads from '../components/BackToFindLeads'
 
 export default function LeadSearchAutomation() {
   const { data: status } = useQuery({
@@ -18,18 +19,15 @@ export default function LeadSearchAutomation() {
   const hasQueue = (status?.queue_total || 0) > 0
 
   return (
-    <div className="p-6 space-y-5 max-w-4xl">
-      <Link to="/lead-search" className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200">
-        <ArrowLeft size={13} /> Lead Search
-      </Link>
-      <div className="flex items-center gap-2">
-        <Zap size={18} className="text-brand-400" />
-        <h1 className="text-lg font-bold text-slate-100">Lead Search Automation</h1>
-      </div>
-      <p className="text-sm text-slate-500 -mt-3">
-        Discover leads from your imported niche + location list, enrich and score them, and (optionally)
-        hand qualified leads to the Research Agent — on a daily schedule.
-      </p>
+    <div className="px-4 sm:px-8 py-8 max-w-5xl mx-auto space-y-6">
+      <header>
+        <BackToFindLeads />
+        <h1 className="text-page">Daily automation</h1>
+        <p className="text-support mt-1">
+          Import a list of niches and locations, and new leads are found, enriched and scored every day.
+          Qualified leads can go on to deep research.
+        </p>
+      </header>
 
       <div className="space-y-4">
         {!hasQueue && <AutomationUpload onImported={() => window.location.reload()} />}

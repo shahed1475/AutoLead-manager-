@@ -1,20 +1,19 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import {
-  Users, Send, TrendingUp, DollarSign, MailOpen, MessageSquare,
-  MapPin, Clock, AlertCircle, PlayCircle, RefreshCw, Rocket,
-  CheckCircle2, XCircle, Activity, Flame, Sun, Snowflake, Inbox,
+  TrendingUp, MailOpen, MessageSquare, MapPin, Clock, AlertCircle, PlayCircle,
+  RefreshCw, Activity, ArrowRight, Search,
 } from 'lucide-react'
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, PieChart, Pie, Cell, Legend,
+  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
 import { statsApi, engineApi, logsApi, scraperApi } from '../api/client'
-import StatCard from '../components/StatCard'
-import { SkeletonStatCard, Skeleton } from '../components/ui/Skeleton'
+import { Skeleton } from '../components/ui/Skeleton'
 import ErrorState from '../components/ui/ErrorState'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
+import { useTheme, chartColors } from '../lib/theme'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -44,15 +43,6 @@ const LOG_CFG = {
   DEFAULT:        { color: 'slate',  Icon: Activity,      label: 'Action'      },
 }
 
-const COLOR_CLASSES = {
-  blue:   { border: 'border-l-blue-500',   icon: 'text-blue-400',   badge: 'bg-blue-500/15 text-blue-400 border border-blue-500/30'   },
-  green:  { border: 'border-l-green-500',  icon: 'text-green-400',  badge: 'bg-green-500/15 text-green-400 border border-green-500/30' },
-  purple: { border: 'border-l-purple-500', icon: 'text-purple-400', badge: 'bg-purple-500/15 text-purple-400 border border-purple-500/30' },
-  amber:  { border: 'border-l-amber-500',  icon: 'text-amber-400',  badge: 'bg-amber-500/15 text-amber-400 border border-amber-500/30'  },
-  red:    { border: 'border-l-red-500',    icon: 'text-red-400',    badge: 'bg-red-500/15 text-red-400 border border-red-500/30'       },
-  slate:  { border: 'border-l-slate-600',  icon: 'text-slate-400',  badge: 'bg-slate-500/15 text-slate-400 border border-slate-500/30' },
-}
-
 function logCfg(log) {
   if (!log.success) return LOG_CFG.FAILED
   const key = `${log.channel}_${log.action}`
@@ -68,43 +58,34 @@ function ActivityFeed({ logs, isLoading }) {
   )
 
   if (!logs.length) return (
-    <div className="flex flex-col items-center justify-center py-14 gap-2">
-      <Activity size={28} className="text-slate-700" />
-      <p className="text-sm text-slate-500">No activity yet</p>
-      <p className="text-xs text-slate-600">Run your first campaign to see actions here</p>
+    <div className="py-10">
+      <p className="text-subheading">No activity yet</p>
+      <p className="text-support mt-1">Actions from campaigns and searches will show up here.</p>
     </div>
   )
 
   return (
-    <div className="divide-y divide-slate-800/50 max-h-72 overflow-y-auto">
-      {logs.map((log) => {
+    <ul className="divide-y divide-border-subtle">
+      {logs.slice(0, 8).map((log) => {
         const { color, Icon, label } = logCfg(log)
-        const cc = COLOR_CLASSES[color]
+        const failed = color === 'red'
         return (
-          <div
-            key={log.id}
-            className={clsx(
-              'flex items-center gap-3 px-5 py-3 border-l-2 hover:bg-slate-700/20 transition-colors',
-              cc.border
-            )}
-          >
-            <Icon size={14} className={clsx('shrink-0', cc.icon)} />
+          <li key={log.id} className="flex items-center gap-3 py-3">
+            <span className={clsx('grid place-items-center w-8 h-8 rounded-full shrink-0',
+              failed ? 'bg-error/10 text-error' : 'bg-secondary text-muted-foreground')}>
+              <Icon size={14} strokeWidth={1.9} />
+            </span>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-slate-200 truncate">{log.business_name}</p>
-              {(log.niche || log.city) && (
-                <p className="text-xs text-slate-600 truncate">
-                  {[log.niche, log.city].filter(Boolean).join(' · ')}
-                </p>
-              )}
+              <p className="text-sm font-medium text-foreground truncate">{log.business_name}</p>
+              <p className="text-meta truncate">
+                {label}{(log.niche || log.city) && ` · ${[log.niche, log.city].filter(Boolean).join(' · ')}`}
+              </p>
             </div>
-            <div className="text-right shrink-0">
-              <span className={clsx('badge text-[10px] px-2 py-0.5', cc.badge)}>{label}</span>
-              <p className="text-[10px] text-slate-600 mt-1">{timeAgo(log.timestamp)}</p>
-            </div>
-          </div>
+            <span className="text-meta tabular shrink-0">{timeAgo(log.timestamp)}</span>
+          </li>
         )
       })}
-    </div>
+    </ul>
   )
 }
 
@@ -133,15 +114,10 @@ function QuickLaunchPanel({ engineStatus }) {
   const isBusy = engineStatus?.scraper_running || launchMut.isPending
 
   return (
-    <div className="p-5 space-y-4 h-full flex flex-col">
-      <div className="flex items-center gap-2">
-        <div className="w-7 h-7 rounded-lg bg-brand-600/20 border border-brand-600/30 flex items-center justify-center">
-          <Rocket size={13} className="text-brand-400" />
-        </div>
-        <div>
-          <h3 className="text-sm font-semibold text-slate-200">Quick Launch</h3>
-          <p className="text-[10px] text-slate-500">Scrape + generate + send</p>
-        </div>
+    <div className="p-5 space-y-5 h-full flex flex-col">
+      <div>
+        <h2 className="text-section">Quick launch</h2>
+        <p className="text-support mt-0.5">Find new leads in a city, or run today's campaign.</p>
       </div>
 
       <div className="space-y-2.5 flex-1">
@@ -202,11 +178,11 @@ function QuickLaunchPanel({ engineStatus }) {
         <button
           disabled={!form.query || !form.city || isBusy}
           onClick={() => launchMut.mutate()}
-          className="btn-primary w-full justify-center text-xs py-2.5"
+          className="btn-primary w-full"
         >
           {isBusy
             ? <><RefreshCw size={12} className="animate-spin" /> Running...</>
-            : <><Rocket size={12} /> Launch Scraper</>}
+            : <><Search size={14} /> Find leads</>}
         </button>
 
         <div className="relative flex items-center gap-2">
@@ -218,14 +194,14 @@ function QuickLaunchPanel({ engineStatus }) {
         <button
           onClick={() => runNowMut.mutate()}
           disabled={runNowMut.isPending}
-          className="btn-secondary w-full justify-center text-xs py-2"
+          className="btn-secondary w-full"
         >
           {runNowMut.isPending
             ? <><RefreshCw size={12} className="animate-spin" /> Queuing...</>
-            : <><PlayCircle size={12} /> Run Campaign Now</>}
+            : <><PlayCircle size={14} /> Run campaign now</>}
         </button>
-        <p className="text-[10px] text-slate-600 text-center">
-          AI generate + send all PENDING leads
+        <p className="text-meta text-center">
+          Drafts messages for pending leads and sends the approved ones.
         </p>
       </div>
     </div>
@@ -237,26 +213,48 @@ function QuickLaunchPanel({ engineStatus }) {
 function ChartTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null
   return (
-    <div className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs shadow-xl">
-      <p className="text-slate-400 mb-1.5 font-medium">{label}</p>
+    <div className="surface-overlay rounded-lg px-3 py-2 text-xs">
+      <p className="text-muted-foreground mb-1">{label}</p>
       {payload.map((p) => (
         <div key={p.dataKey} className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full" style={{ background: p.color }} />
-          <span className="text-slate-400">{p.name}:</span>
-          <span className="text-slate-100 font-semibold">{p.value}</span>
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: p.color }} />
+          <span className="text-muted-foreground">{p.name}</span>
+          <span className="ml-auto pl-3 font-semibold text-foreground tabular">{p.value}</span>
         </div>
       ))}
     </div>
   )
 }
 
-// ─── Pie chart colours ───────────────────────────────────────────────────────
+function Metric({ label, value, detail, accent }) {
+  return (
+    <div className="sm:px-5 sm:first:pl-0">
+      <dt className="text-meta">{label}</dt>
+      <dd className={clsx('text-2xl font-bold tabular mt-1', accent ? 'text-primary' : 'text-foreground')}>{value}</dd>
+      <dd className="text-meta mt-0.5 truncate">{detail}</dd>
+    </div>
+  )
+}
 
-const PIE_COLORS = ['#f59e0b', '#3b82f6', '#10b981', '#64748b']
+function SectionHeader({ title, children }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 mb-4">
+      <h2 className="text-section">{title}</h2>
+      {children && <div className="text-meta flex items-center gap-4">{children}</div>}
+    </div>
+  )
+}
 
-// ─── Dashboard ───────────────────────────────────────────────────────────────
+const PIPELINE = [
+  { key: 'pending', label: 'Waiting',  bar: 'bg-slate-500' },
+  { key: 'sent',    label: 'Contacted', bar: 'bg-primary' },
+  { key: 'replied', label: 'Replied',  bar: 'bg-success' },
+  { key: 'skipped', label: 'Skipped',  bar: 'bg-slate-700' },
+]
 
 export default function Dashboard() {
+  const { theme } = useTheme()
+  const cc = chartColors(theme)
   const {
     data: stats, isLoading: statsLoading, isError: statsError, refetch: refetchStats, isFetching: statsRefetching,
   } = useQuery({
@@ -286,287 +284,148 @@ export default function Dashboard() {
     retry: false,
   })
 
-  // Est. Revenue — pulled from backend (avg_deal_value is configurable in Settings)
+  // Est. revenue comes from the backend (avg_deal_value is set in Settings).
   const estRevenue = stats?.estimated_revenue ?? 0
   const sentToday  = (stats?.email_sent_today || 0) + (stats?.whatsapp_sent_today || 0)
-
-  const pieData = stats
-    ? [
-        { name: 'Pending',  value: stats.pending  || 0 },
-        { name: 'Sent',     value: stats.sent     || 0 },
-        { name: 'Replied',  value: stats.replied  || 0 },
-        { name: 'Skipped',  value: stats.skipped  || 0 },
-      ].filter((d) => d.value > 0)
-    : []
-
+  const conversion = stats?.sent ? `${((stats.replied / stats.sent) * 100).toFixed(1)}%` : '—'
+  const pipelineTotal = PIPELINE.reduce((n, p) => n + (stats?.[p.key] || 0), 0)
   const hasWeekly = weeklyData.some((d) => d.leads_created > 0 || d.total_sent > 0)
+  const unread = stats?.unread_replies || 0
 
   return (
-    <div className="p-6 space-y-5">
+    <div className="px-4 sm:px-8 py-8 max-w-[1280px] mx-auto space-y-12">
 
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <header className="flex items-end justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-slate-100">Dashboard</h1>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Live overview · auto-refreshes every 15 s
-          </p>
+          <h1 className="text-page">Overview</h1>
+          <p className="text-support mt-1">Your pipeline at a glance. Updates every 15 seconds.</p>
         </div>
-        <div className="flex items-center gap-2 text-xs text-slate-500">
-          {statsError ? (
-            <span className="flex items-center gap-1.5 text-red-400">
-              <XCircle size={12} /> Connection error
-            </span>
-          ) : (
-            <>
-              <CheckCircle2 size={12} className={clsx(statsRefetching ? 'text-slate-500 animate-pulse' : 'text-emerald-500')} />
-              {stats ? 'Live' : 'Loading...'}
-            </>
-          )}
-        </div>
-      </div>
+        <p className="text-meta flex items-center gap-1.5 shrink-0">
+          <span className={clsx('w-1.5 h-1.5 rounded-full',
+            statsError ? 'bg-error' : statsRefetching ? 'bg-slate-500' : 'bg-success')} />
+          {statsError ? 'Connection error' : stats ? 'Live' : 'Loading…'}
+        </p>
+      </header>
 
-      {/* ── Row 1: Stat cards ─────────────────────────────────────────── */}
+      {/* Headline + secondary metrics */}
       {statsError ? (
         <ErrorState message="Couldn't load dashboard stats." onRetry={refetchStats} retrying={statsRefetching} />
       ) : statsLoading ? (
-        <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-          {Array.from({ length: 4 }).map((_, i) => <SkeletonStatCard key={i} />)}
-        </div>
+        <div className="space-y-3"><Skeleton className="h-3 w-24" /><Skeleton className="h-12 w-40" /></div>
       ) : (
-        <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-          <StatCard
-            label="Total Leads"
-            value={stats?.total_leads ?? '—'}
-            icon={Users}
-            color="brand"
-            sub={`${stats?.pending ?? 0} pending`}
-          />
-          <StatCard
-            label="Sent Today"
-            value={stats ? sentToday : '—'}
-            icon={Send}
-            color="blue"
-            sub={`${stats?.email_sent_today ?? 0} email · ${stats?.whatsapp_sent_today ?? 0} wa`}
-          />
-          <StatCard
-            label="Reply Rate"
-            value={stats ? `${stats.reply_rate}%` : '—'}
-            icon={TrendingUp}
-            color="purple"
-            sub={`${stats?.replied ?? 0} total replies`}
-          />
-          <StatCard
-            label="Est. Revenue"
-            value={stats ? fmtCurrency(estRevenue) : '—'}
-            icon={DollarSign}
-            color="amber"
-            sub={`${stats?.replied ?? 0} replies converted`}
-          />
-        </div>
+        <section className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,2.2fr)] lg:items-end">
+          <div>
+            <p className="text-meta">Total leads</p>
+            <p className="text-5xl font-bold tabular mt-2">{stats?.total_leads ?? '—'}</p>
+            <p className="text-support mt-2">{stats?.pending ?? 0} waiting to be contacted</p>
+          </div>
+          <dl className="grid grid-cols-2 sm:grid-cols-4 gap-y-6 sm:divide-x divide-border-subtle">
+            <Metric label="Sent today" value={sentToday}
+              detail={`${stats?.email_sent_today ?? 0} email · ${stats?.whatsapp_sent_today ?? 0} WhatsApp`} />
+            <Metric label="Reply rate" value={`${stats?.reply_rate ?? 0}%`} detail={`${stats?.replied ?? 0} replies`} />
+            <Metric label="Conversion" value={conversion} detail="Replies per message sent" />
+            <Metric label="Est. revenue" value={fmtCurrency(estRevenue)} detail="From replied leads" accent />
+          </dl>
+        </section>
       )}
 
-      {/* ── Row 2: Charts ─────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-
-        {/* Area chart — Leads Found vs Messages Sent */}
-        <div className="card p-5 lg:col-span-2">
-          <div className="flex items-start justify-between mb-4">
-            <div>
-              <h3 className="text-sm font-semibold text-slate-200">Leads Found vs Messages Sent</h3>
-              <p className="text-[11px] text-slate-500 mt-0.5">7-day trend</p>
-            </div>
-            <div className="flex items-center gap-4 text-[10px] text-slate-500">
-              <span className="flex items-center gap-1.5">
-                <span className="inline-block w-2.5 h-0.5 rounded-full bg-indigo-500" /> Leads Found
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="inline-block w-2.5 h-0.5 rounded-full bg-emerald-500" /> Sent
-              </span>
+      {/* Pipeline composition + quality */}
+      {stats && (
+        <section>
+          <SectionHeader title="Pipeline">
+            <span className="tabular">{pipelineTotal} leads</span>
+          </SectionHeader>
+          <div className="flex h-2 rounded-full overflow-hidden bg-secondary gap-0.5" role="img"
+            aria-label={PIPELINE.map((p) => `${p.label} ${stats[p.key] || 0}`).join(', ')}>
+            {pipelineTotal > 0 && PIPELINE.map((p) => (stats[p.key] || 0) > 0 && (
+              <div key={p.key} className={clsx(p.bar, 'h-full')} style={{ width: `${(stats[p.key] / pipelineTotal) * 100}%` }} />
+            ))}
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-x-8 gap-y-3">
+            {PIPELINE.map((p) => (
+              <div key={p.key} className="flex items-center gap-2 text-sm">
+                <span className={clsx('w-2 h-2 rounded-full', p.bar)} />
+                <span className="text-muted-foreground">{p.label}</span>
+                <span className="font-semibold tabular">{stats[p.key] || 0}</span>
+              </div>
+            ))}
+            <span className="hidden sm:block w-px h-4 bg-border" />
+            <div className="flex items-center gap-5 text-sm">
+              <span className="text-muted-foreground">Lead quality</span>
+              {[['Hot', stats.hot_leads, 'bg-error'], ['Warm', stats.warm_leads, 'bg-warning'], ['Cold', stats.cold_leads, 'bg-info']].map(([l, n, dot]) => (
+                <span key={l} className="flex items-center gap-1.5">
+                  <span className={clsx('w-2 h-2 rounded-full', dot)} />
+                  <span className="text-muted-foreground">{l}</span>
+                  <span className="font-semibold tabular">{n ?? 0}</span>
+                </span>
+              ))}
             </div>
           </div>
-
-          {weeklyError ? (
-            <ErrorState message="Couldn't load the weekly trend." onRetry={refetchWeekly} className="h-[210px] justify-center" />
-          ) : hasWeekly ? (
-            <ResponsiveContainer width="100%" height={210}>
-              <AreaChart data={weeklyData} margin={{ top: 5, right: 5, bottom: 0, left: -20 }}>
-                <defs>
-                  <linearGradient id="gradLeads" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor="#6366f1" stopOpacity={0.35} />
-                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0}    />
-                  </linearGradient>
-                  <linearGradient id="gradSent" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor="#10b981" stopOpacity={0.35} />
-                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}    />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                <XAxis
-                  dataKey="day_label"
-                  tick={{ fontSize: 10, fill: '#64748b' }}
-                  axisLine={false} tickLine={false}
-                />
-                <YAxis
-                  tick={{ fontSize: 10, fill: '#64748b' }}
-                  axisLine={false} tickLine={false}
-                  allowDecimals={false}
-                />
-                <Tooltip content={<ChartTooltip />} />
-                <Area
-                  type="monotone" dataKey="leads_created" name="Leads Found"
-                  stroke="#6366f1" strokeWidth={2.5} fill="url(#gradLeads)"
-                  dot={false} activeDot={{ r: 4, fill: '#6366f1', strokeWidth: 0 }}
-                />
-                <Area
-                  type="monotone" dataKey="total_sent" name="Messages Sent"
-                  stroke="#10b981" strokeWidth={2.5} fill="url(#gradSent)"
-                  dot={false} activeDot={{ r: 4, fill: '#10b981', strokeWidth: 0 }}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="flex flex-col items-center justify-center h-[210px] gap-2">
-              <TrendingUp size={32} className="text-slate-700" />
-              <p className="text-sm text-slate-500">No activity yet</p>
-              <p className="text-xs text-slate-700">Start a campaign to see the chart populate</p>
-            </div>
+          {unread > 0 && (
+            <Link to="/inbox" className="mt-6 flex items-center justify-between gap-3 rounded-xl bg-primary/10 px-4 py-3 text-sm text-foreground hover:bg-primary/[0.14] transition-colors">
+              <span><span className="font-semibold">{unread} unread {unread === 1 ? 'reply' : 'replies'}</span>
+                <span className="text-muted-foreground"> waiting in your inbox</span></span>
+              <ArrowRight size={16} className="text-primary" />
+            </Link>
           )}
-        </div>
-
-        {/* Pie — Lead Distribution */}
-        <div className="card p-5">
-          <h3 className="text-sm font-semibold text-slate-200 mb-4">Lead Distribution</h3>
-          {pieData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={210}>
-              <PieChart>
-                <Pie
-                  data={pieData}
-                  cx="50%" cy="46%"
-                  innerRadius={56} outerRadius={82}
-                  paddingAngle={3} dataKey="value"
-                >
-                  {pieData.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} strokeWidth={0} />
-                  ))}
-                </Pie>
-                <Legend
-                  iconSize={7}
-                  wrapperStyle={{ fontSize: 10, color: '#94a3b8', paddingTop: 8 }}
-                />
-                <Tooltip content={<ChartTooltip />} />
-              </PieChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="flex flex-col items-center justify-center h-[210px] gap-2">
-              <Users size={28} className="text-slate-700" />
-              {stats?.total_leads > 0 ? (
-                <>
-                  <p className="text-sm text-slate-500">{stats.total_leads} leads ready</p>
-                  <p className="text-xs text-slate-600">Run a campaign to send them</p>
-                </>
-              ) : (
-                <p className="text-sm text-slate-600">No leads yet</p>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ── Row 3: Activity + Quick Launch ────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-
-        {/* Recent Activity — spans 2 cols */}
-        <div className="card lg:col-span-2 overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-700/50">
-            <div className="flex items-center gap-2">
-              <Activity size={14} className="text-slate-400" />
-              <h3 className="text-sm font-semibold text-slate-200">Recent Activity</h3>
-            </div>
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-700/60 text-slate-400 border border-slate-600/40">
-              Last {logs.length} actions · live
-            </span>
-          </div>
-          <ActivityFeed logs={logs} isLoading={logsLoading} />
-        </div>
-
-        {/* Quick Launch */}
-        <div className="card overflow-hidden">
-          <QuickLaunchPanel engineStatus={engineStatus} />
-        </div>
-      </div>
-
-      {/* ── Row 4: Secondary stats strip ──────────────────────────────── */}
-      {statsLoading ? (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="card p-4 border border-slate-700/30 space-y-2">
-              <Skeleton className="h-2.5 w-20" />
-              <Skeleton className="h-6 w-12" />
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <div className="card p-4 border border-slate-700/30">
-            <p className="text-[10px] text-slate-500 uppercase tracking-wider">Skipped</p>
-            <p className="text-xl font-bold text-slate-300 mt-1">{stats?.skipped ?? '—'}</p>
-          </div>
-          <div className="card p-4 border border-slate-700/30">
-            <p className="text-[10px] text-slate-500 uppercase tracking-wider">Emails Today</p>
-            <p className="text-xl font-bold text-purple-400 mt-1">{stats?.email_sent_today ?? '—'}</p>
-          </div>
-          <div className="card p-4 border border-slate-700/30">
-            <p className="text-[10px] text-slate-500 uppercase tracking-wider">WhatsApp Today</p>
-            <p className="text-xl font-bold text-green-400 mt-1">{stats?.whatsapp_sent_today ?? '—'}</p>
-          </div>
-          <div className="card p-4 border border-slate-700/30">
-            <p className="text-[10px] text-slate-500 uppercase tracking-wider">Conversion %</p>
-            <p className="text-xl font-bold text-amber-400 mt-1">
-              {stats?.sent
-                ? `${((stats.replied / stats.sent) * 100).toFixed(1)}%`
-                : '—'}
-            </p>
-          </div>
-        </div>
+        </section>
       )}
 
-      {/* ── Row 5: Lead Quality Scoring ───────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-        <div className="card p-4 border border-red-500/20 bg-red-500/5">
-          <div className="flex items-center gap-2 mb-2">
-            <Flame size={14} className="text-red-400" />
-            <p className="text-[10px] text-red-400 uppercase tracking-wider font-semibold">HOT Leads</p>
-          </div>
-          <p className="text-2xl font-bold text-red-300">{stats?.hot_leads ?? '—'}</p>
-          <p className="text-[10px] text-slate-600 mt-1">Score 70–100 · High priority</p>
-        </div>
-        <div className="card p-4 border border-amber-500/20 bg-amber-500/5">
-          <div className="flex items-center gap-2 mb-2">
-            <Sun size={14} className="text-amber-400" />
-            <p className="text-[10px] text-amber-400 uppercase tracking-wider font-semibold">WARM Leads</p>
-          </div>
-          <p className="text-2xl font-bold text-amber-300">{stats?.warm_leads ?? '—'}</p>
-          <p className="text-[10px] text-slate-600 mt-1">Score 40–69 · Worth sending</p>
-        </div>
-        <div className="card p-4 border border-blue-500/20 bg-blue-500/5">
-          <div className="flex items-center gap-2 mb-2">
-            <Snowflake size={14} className="text-blue-400" />
-            <p className="text-[10px] text-blue-400 uppercase tracking-wider font-semibold">COLD Leads</p>
-          </div>
-          <p className="text-2xl font-bold text-blue-300">{stats?.cold_leads ?? '—'}</p>
-          <p className="text-[10px] text-slate-600 mt-1">Score 0–39 · Incomplete data</p>
-        </div>
-        <div className="card p-4 border border-brand-500/20 bg-brand-500/5">
-          <div className="flex items-center gap-2 mb-2">
-            <Inbox size={14} className="text-brand-400" />
-            <p className="text-[10px] text-brand-400 uppercase tracking-wider font-semibold">Unread Replies</p>
-          </div>
-          <p className="text-2xl font-bold text-brand-300">{stats?.unread_replies ?? '—'}</p>
-          <p className="text-[10px] text-slate-600 mt-1">New inbox messages</p>
-        </div>
-      </div>
+      {/* Trend + activity (open), quick launch (raised) */}
+      <div className="grid gap-12 lg:grid-cols-3 lg:gap-10">
+        <div className="lg:col-span-2 space-y-12 min-w-0">
+          <section>
+            <SectionHeader title="Last 7 days">
+              <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded-full" style={{ background: cc.primary }} />Leads found</span>
+              <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded-full" style={{ background: cc.secondary }} />Messages sent</span>
+            </SectionHeader>
+            {weeklyError ? (
+              <ErrorState message="Couldn't load the weekly trend." onRetry={refetchWeekly} className="h-[220px] justify-center" />
+            ) : hasWeekly ? (
+              <ResponsiveContainer width="100%" height={220}>
+                <AreaChart data={weeklyData} margin={{ top: 6, right: 4, bottom: 0, left: -24 }}>
+                  <defs>
+                    <linearGradient id="gradLeads" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={cc.primary} stopOpacity={0.18} />
+                      <stop offset="100%" stopColor={cc.primary} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke={cc.grid} vertical={false} />
+                  <XAxis dataKey="day_label" tick={{ fontSize: 11, fill: cc.axis }} axisLine={false} tickLine={false} dy={6} />
+                  <YAxis tick={{ fontSize: 11, fill: cc.axis }} axisLine={false} tickLine={false} allowDecimals={false} />
+                  <Tooltip content={<ChartTooltip />} cursor={{ stroke: cc.grid }} />
+                  <Area type="monotone" dataKey="leads_created" name="Leads found"
+                    stroke={cc.primary} strokeWidth={2} fill="url(#gradLeads)"
+                    dot={false} activeDot={{ r: 3.5, fill: cc.primary, strokeWidth: 0 }} />
+                  <Area type="monotone" dataKey="total_sent" name="Messages sent"
+                    stroke={cc.secondary} strokeWidth={1.75} fill="none"
+                    dot={false} activeDot={{ r: 3.5, fill: cc.secondary, strokeWidth: 0 }} />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-[220px] flex flex-col justify-center border-y border-border-subtle">
+                <TrendingUp size={20} className="text-muted-foreground" />
+                <p className="text-subheading mt-3">No activity this week</p>
+                <p className="text-support mt-1">Start a search or campaign and the trend will appear here.</p>
+              </div>
+            )}
+          </section>
 
+          <section>
+            <SectionHeader title="Recent activity">
+              <span>Live</span>
+            </SectionHeader>
+            <ActivityFeed logs={logs} isLoading={logsLoading} />
+          </section>
+        </div>
+
+        <aside>
+          <div className="surface-raised lg:sticky lg:top-8">
+            <QuickLaunchPanel engineStatus={engineStatus} />
+          </div>
+        </aside>
+      </div>
     </div>
   )
 }

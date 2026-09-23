@@ -6,10 +6,11 @@ import {
   MessageSquare, AlertTriangle, Filter,
   TrendingUp, Users, Clock, Globe, Monitor,
   Flame, Send, BarChart3, Zap, FlaskConical, Database,
-  Pause, Play, Gauge, Timer, MessageCircle,
+  Pause, Play, Gauge, Timer, MessageCircle, Check, PenLine,
 } from 'lucide-react'
 import { campaignApi, engineApi, statsApi, enrichApi, withSessionToken } from '../api/client'
 import { useAnimatedNumber } from '../hooks/useAnimatedNumber'
+import BackToFindLeads from '../components/BackToFindLeads'
 import CampaignHistoryTable from '../components/CampaignHistoryTable'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -17,29 +18,29 @@ import clsx from 'clsx'
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const CHANNELS = [
-  { id: 'EMAIL',    label: 'Email',    emoji: '📧' },
-  { id: 'WHATSAPP', label: 'WhatsApp', emoji: '💬' },
-  { id: 'BOTH',     label: 'Both',     emoji: '📨' },
+  { id: 'EMAIL',    label: 'Email',    icon: Mail },
+  { id: 'WHATSAPP', label: 'WhatsApp', icon: MessageSquare },
+  { id: 'BOTH',     label: 'Both',     icon: Send },
 ]
 
 const SOURCE_GROUPS = [
   {
-    label: 'Browser (Selenium)',
+    label: 'Maps · opens a browser',
     sources: [
-      { id: 'GOOGLE_MAPS',  label: 'Google Maps',  emoji: '🗺️' },
+      { id: 'GOOGLE_MAPS',  label: 'Google Maps' },
     ],
   },
   {
-    label: 'HTTP Scrapers',
+    label: 'Search engines & directories',
     sources: [
-      { id: 'GOOGLE_SEARCH', label: 'Google Search', emoji: '🔍' },
-      { id: 'BING_SEARCH',   label: 'Bing Search',   emoji: '🔎' },
-      { id: 'YELP',          label: 'Yelp',           emoji: '⭐' },
-      { id: 'YELLOW_PAGES',  label: 'Yellow Pages',  emoji: '📒' },
-      { id: 'HOTFROG',       label: 'Hotfrog',        emoji: '🔥' },
-      { id: 'FOURSQUARE',    label: 'Foursquare',     emoji: '📍' },
-      { id: 'TOP_LIST',      label: 'Top Lists',      emoji: '📰' },
-      { id: 'GENERIC_DIR',   label: 'Directories',    emoji: '📂' },
+      { id: 'GOOGLE_SEARCH', label: 'Google Search' },
+      { id: 'BING_SEARCH',   label: 'Bing Search' },
+      { id: 'YELP',          label: 'Yelp' },
+      { id: 'YELLOW_PAGES',  label: 'Yellow Pages' },
+      { id: 'HOTFROG',       label: 'Hotfrog' },
+      { id: 'FOURSQUARE',    label: 'Foursquare' },
+      { id: 'TOP_LIST',      label: 'Top Lists' },
+      { id: 'GENERIC_DIR',   label: 'Directories' },
     ],
   },
 ]
@@ -48,19 +49,12 @@ const SOURCE_GROUPS = [
 const SOURCE_LIST = SOURCE_GROUPS.flatMap(g => g.sources)
 
 const PIPELINE_STEPS = [
-  { n: 1, label: 'Scraping',  icon: '🕷️' },
-  { n: 2, label: 'Enriching', icon: '🔍' },
-  { n: 3, label: 'Scoring',   icon: '📊' },
-  { n: 4, label: 'Writing',   icon: '✍️' },
-  { n: 5, label: 'Sending',   icon: '📤' },
+  { n: 1, label: 'Scraping',  icon: Globe },
+  { n: 2, label: 'Enriching', icon: Database },
+  { n: 3, label: 'Scoring',   icon: Gauge },
+  { n: 4, label: 'Writing',   icon: PenLine },
+  { n: 5, label: 'Sending',   icon: Send },
 ]
-
-const CHANNEL_ACTIVE = {
-  EMAIL:    'border-blue-500/60 bg-blue-500/15 text-blue-300',
-  WHATSAPP: 'border-green-500/60 bg-green-500/15 text-green-300',
-  BOTH:     'border-teal-500/60 bg-teal-500/15 text-teal-300',
-}
-
 
 const LOG_FILTERS = [
   { id: 'all',   label: 'All',    Icon: Activity      },
@@ -103,50 +97,50 @@ function pipelineStepFromStage(stage, isRunning) {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function EngineStatusBadge({ running, niche, city }) {
+function RunStatus({ running, paused, niche, city }) {
+  const label = !running ? 'Idle' : paused ? 'Paused' : 'Running'
   return (
-    <div className={clsx(
-      'flex items-center gap-2.5 px-4 py-2 rounded-xl border text-xs font-mono font-bold uppercase tracking-widest transition-all duration-500',
-      running
-        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 shadow-lg shadow-emerald-950/40'
-        : 'bg-slate-800/60 border-slate-700/50 text-slate-500',
-    )}>
-      <div className={clsx(
-        'w-2.5 h-2.5 rounded-full flex-shrink-0 transition-all',
-        running ? 'bg-emerald-400 animate-pulse shadow-lg shadow-emerald-500/50' : 'bg-slate-600',
-      )} />
-      {running ? 'ENGINE RUNNING' : 'ENGINE IDLE'}
+    <div className="flex items-center gap-2 text-sm min-w-0" role="status">
+      <span className={clsx('w-2 h-2 rounded-full shrink-0',
+        !running ? 'bg-slate-500' : paused ? 'bg-warning' : 'bg-success animate-pulse')} />
+      <span className="font-semibold">{label}</span>
       {running && niche && (
-        <span className="text-emerald-600/80 font-normal normal-case tracking-normal ml-0.5">
-          — {niche}{city ? `, ${city}` : ''}
-        </span>
+        <span className="text-muted-foreground truncate">· {niche}{city ? `, ${city}` : ''}</span>
       )}
     </div>
   )
 }
 
-function StatBox({ label, value, colorClass }) {
+function Figure({ label, value, detail }) {
   return (
-    <div className="bg-slate-900/70 border border-slate-700/40 rounded-xl p-3 text-center">
-      <p className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">{label}</p>
-      <p className={`text-2xl font-mono font-bold tabular-nums ${colorClass}`}>{value}</p>
+    <div className="min-w-0">
+      <dt className="text-meta">{label}</dt>
+      <dd className="text-2xl font-bold tabular mt-1 text-foreground">{value}</dd>
+      {detail && <dd className="text-meta mt-0.5 truncate">{detail}</dd>}
     </div>
   )
 }
 
-function SessionStat({ label, value, Icon, colorClass }) {
+function FormSection({ title, aside, children }) {
   return (
-    <div className="flex items-center justify-between text-xs">
-      <span className="flex items-center gap-1.5 text-slate-600">
-        <Icon size={10} />
-        {label}
-      </span>
-      <span className={`font-mono font-bold tabular-nums ${colorClass}`}>{value}</span>
-    </div>
+    <section className="space-y-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <h3 className="text-subheading">{title}</h3>
+        {aside && <span className="text-meta">{aside}</span>}
+      </div>
+      {children}
+    </section>
   )
 }
 
-// ── Pipeline Progress Card ────────────────────────────────────────────────────
+function SectionTitle({ title, children }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 mb-4">
+      <h2 className="text-section">{title}</h2>
+      {children && <div className="text-meta flex items-center gap-4">{children}</div>}
+    </div>
+  )
+}
 
 function fmtEta(seconds) {
   if (seconds == null || !isFinite(seconds) || seconds < 0) return null
@@ -155,16 +149,28 @@ function fmtEta(seconds) {
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
 }
 
-function PipelineCard({
-  isRunning, stage, paused, leadsFound, leadsSent, scoreDist,
-  currentLead, messagesGenerated, leadsPerMin, etaSeconds,
-}) {
+// Live figures for a running campaign (animated counters).
+function RunFigures({ leadsFound, leadsSent, messages, leadsPerMin, etaSeconds }) {
+  const found = useAnimatedNumber(leadsFound)
+  const sent  = useAnimatedNumber(leadsSent)
+  const msgs  = useAnimatedNumber(messages)
+  return (
+    <dl className="grid grid-cols-2 sm:grid-cols-5 gap-6">
+      <Figure label="Found" value={found} />
+      <Figure label="Sent" value={sent} />
+      <Figure label="Messages drafted" value={msgs} />
+      <Figure label="Leads per minute" value={leadsPerMin != null ? leadsPerMin.toFixed(1) : '—'} />
+      <Figure label="Time left" value={fmtEta(etaSeconds) ?? '—'} />
+    </dl>
+  )
+}
+
+// The five real backend stages as a segmented rail — no log-text guessing.
+function PipelineTracker({ isRunning, stage, paused, leadsFound, leadsSent, currentLead }) {
   const currentStep = pipelineStepFromStage(stage, isRunning)
   const campaignDone = !isRunning && leadsSent > 0
-
   const animFound = useAnimatedNumber(leadsFound)
   const animSent  = useAnimatedNumber(leadsSent)
-  const animMsgs  = useAnimatedNumber(messagesGenerated)
   const completionPct = leadsFound > 0 ? Math.min(100, Math.round((leadsSent / leadsFound) * 100)) : 0
 
   function stepState(n) {
@@ -174,7 +180,6 @@ function PipelineCard({
     if (n === currentStep) return 'active'
     return 'pending'
   }
-
   function stepCount(n) {
     const state = stepState(n)
     if (state === 'idle') return null
@@ -183,157 +188,47 @@ function PipelineCard({
     return animFound
   }
 
-  const hot  = scoreDist?.HOT  ?? 0
-  const warm = scoreDist?.WARM ?? 0
-  const cold = scoreDist?.COLD ?? 0
-  const distTotal = hot + warm + cold || 1
-  const hasDistData = hot + warm + cold > 0
-
   return (
-    <div className="card p-4 space-y-4 shrink-0">
-
+    <div className="space-y-6">
       {isRunning && paused && (
-        <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-1.5 w-fit">
-          <Pause size={11} /> Paused — holding after current lead ({stage?.toLowerCase() || 'idle'})
-        </div>
+        <p className="flex items-center gap-2 text-sm text-warning">
+          <Pause size={14} /> Paused. The current lead ({stage?.toLowerCase() || 'idle'}) finishes first.
+        </p>
       )}
-
-      {/* ── 5-step pipeline ─────────────────────────────────────────────── */}
-      <div className="flex items-start">
-        {PIPELINE_STEPS.map((step, idx) => {
+      <ol className="grid grid-cols-5 gap-2">
+        {PIPELINE_STEPS.map((step) => {
           const state = stepState(step.n)
           const count = stepCount(step.n)
-          const prevDone = idx > 0 && stepState(step.n - 1) === 'done'
-
+          const lit = state === 'done' || state === 'active'
           return (
-            <Fragment key={step.n}>
-              {idx > 0 && (
-                <div className={clsx(
-                  'h-px mt-[18px] shrink-0 transition-colors duration-500',
-                  'flex-1 max-w-[40px]',
-                  prevDone ? 'bg-emerald-500/50' : 'bg-slate-700/40',
-                )} />
-              )}
-
-              <div className="flex flex-col items-center gap-1.5 min-w-[60px]">
-                {/* Icon circle */}
-                <div className={clsx(
-                  'w-9 h-9 rounded-full flex items-center justify-center text-base transition-all duration-500',
-                  state === 'done'
-                    ? 'bg-emerald-500/15 ring-1 ring-emerald-500/50 shadow-sm shadow-emerald-900/40'
-                    : state === 'active'
-                    ? 'bg-brand-500/15 ring-2 ring-brand-500/60 animate-pulse shadow-lg shadow-brand-900/30'
-                    : state === 'pending'
-                    ? 'bg-slate-800/60 ring-1 ring-slate-700/30'
-                    : 'bg-slate-800/30 ring-1 ring-slate-800/50',
-                )}>
-                  {state === 'done' ? '✅' : step.icon}
-                </div>
-
-                {/* Label */}
-                <span className={clsx(
-                  'text-[9px] font-bold uppercase tracking-wider text-center',
-                  state === 'done'    ? 'text-emerald-400' :
-                  state === 'active'  ? 'text-brand-400'   :
-                  state === 'pending' ? 'text-slate-600'   :
-                  'text-slate-700',
-                )}>
+            <li key={step.n} className="min-w-0">
+              <div className={clsx('h-1 rounded-full transition-colors duration-500',
+                state === 'done' ? 'bg-success' : state === 'active' ? 'bg-primary animate-pulse' : 'bg-secondary')} />
+              <div className="mt-3 flex items-center gap-1.5 min-w-0">
+                {state === 'done'
+                  ? <Check size={14} strokeWidth={2.4} className="text-success shrink-0" />
+                  : <step.icon size={14} strokeWidth={1.9} className={clsx('shrink-0', state === 'active' ? 'text-primary' : 'text-muted-foreground')} />}
+                <span className={clsx('text-sm truncate', lit ? 'font-semibold text-foreground' : 'text-muted-foreground')}>
                   {step.label}
                 </span>
-
-                {/* Count */}
-                <span className={clsx(
-                  'text-[11px] font-mono font-bold tabular-nums',
-                  state === 'done'   ? 'text-emerald-300' :
-                  state === 'active' ? 'text-brand-300'   :
-                  'text-slate-700',
-                )}>
-                  {count !== null ? count : '—'}
-                </span>
               </div>
-            </Fragment>
+              <p className="text-meta tabular mt-0.5">{count !== null ? count : '—'}</p>
+            </li>
           )
         })}
-      </div>
-
-      {/* ── Live progress + metrics ────────────────────────────────────────── */}
+      </ol>
       {isRunning && (
-        <div className="pt-3 border-t border-slate-800/60 space-y-3">
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-[10px] text-slate-500 uppercase tracking-widest font-bold">
-              <span>Completion</span>
-              <span className="text-slate-300 font-mono">{completionPct}%</span>
-            </div>
-            <div className="h-1.5 bg-slate-800/80 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-brand-500 rounded-full transition-all duration-700"
-                style={{ width: `${completionPct}%` }}
-              />
-            </div>
+        <div className="space-y-2">
+          <div className="flex items-baseline justify-between gap-4 text-meta">
+            <span className="truncate">
+              {currentLead
+                ? <>Working on <span className="font-medium text-foreground">{currentLead}</span></>
+                : 'Completion'}
+            </span>
+            <span className="font-semibold text-foreground tabular">{completionPct}%</span>
           </div>
-
-          {currentLead && (
-            <p className="text-xs text-slate-400 truncate">
-              <span className="text-slate-600">Processing:</span>{' '}
-              <span className="text-slate-200 font-medium">{currentLead}</span>
-            </p>
-          )}
-
-          <div className="grid grid-cols-3 gap-2">
-            <div className="bg-slate-900/60 rounded-lg px-2.5 py-2 border border-slate-800/60">
-              <p className="text-[9px] text-slate-600 uppercase tracking-wider flex items-center gap-1">
-                <MessageCircle size={9} /> Messages
-              </p>
-              <p className="text-sm font-mono font-bold text-slate-200 mt-0.5">{animMsgs}</p>
-            </div>
-            <div className="bg-slate-900/60 rounded-lg px-2.5 py-2 border border-slate-800/60">
-              <p className="text-[9px] text-slate-600 uppercase tracking-wider flex items-center gap-1">
-                <Gauge size={9} /> Leads/min
-              </p>
-              <p className="text-sm font-mono font-bold text-slate-200 mt-0.5">
-                {leadsPerMin != null ? leadsPerMin.toFixed(1) : '—'}
-              </p>
-            </div>
-            <div className="bg-slate-900/60 rounded-lg px-2.5 py-2 border border-slate-800/60">
-              <p className="text-[9px] text-slate-600 uppercase tracking-wider flex items-center gap-1">
-                <Timer size={9} /> ETA
-              </p>
-              <p className="text-sm font-mono font-bold text-slate-200 mt-0.5">
-                {fmtEta(etaSeconds) ?? '—'}
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Score distribution bars ──────────────────────────────────────── */}
-      {hasDistData && (
-        <div className="pt-3 border-t border-slate-800/60">
-          <p className="text-[9px] text-slate-600 uppercase tracking-widest font-bold mb-2.5 flex items-center gap-1.5">
-            <BarChart3 size={9} />
-            Lead Quality Distribution
-          </p>
-          <div className="flex items-center gap-4">
-            {[
-              { label: 'HOT',  emoji: '🔥', n: hot,  bar: 'bg-red-500/70'   },
-              { label: 'WARM', emoji: '♨️', n: warm, bar: 'bg-amber-500/70' },
-              { label: 'COLD', emoji: '❄️', n: cold, bar: 'bg-blue-400/25'  },
-            ].map(({ label, emoji, n, bar }) => (
-              <div key={label} className="flex-1 space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-slate-500">
-                    {emoji} <span className="font-medium">{label}</span>
-                  </span>
-                  <span className="text-[10px] font-mono font-bold text-slate-400 tabular-nums">{n}</span>
-                </div>
-                <div className="h-1.5 bg-slate-800/80 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full ${bar} rounded-full transition-all duration-700`}
-                    style={{ width: `${Math.round((n / distTotal) * 100)}%` }}
-                  />
-                </div>
-              </div>
-            ))}
+          <div className="h-1.5 rounded-full bg-secondary overflow-hidden">
+            <div className="h-full bg-primary rounded-full transition-all duration-700" style={{ width: `${completionPct}%` }} />
           </div>
         </div>
       )}
@@ -341,27 +236,51 @@ function PipelineCard({
   )
 }
 
+function QualityBar({ hot, warm, cold, scope }) {
+  const total = hot + warm + cold
+  const parts = [['Hot', hot, 'bg-error'], ['Warm', warm, 'bg-warning'], ['Cold', cold, 'bg-info']]
+  return (
+    <section>
+      <SectionTitle title="Lead quality"><span>{scope}</span></SectionTitle>
+      <div className="flex h-2 rounded-full overflow-hidden bg-secondary gap-0.5" role="img"
+        aria-label={parts.map(([l, n]) => `${l} ${n}`).join(', ')}>
+        {total > 0 && parts.map(([l, n, c]) => n > 0 && (
+          <div key={l} className={clsx(c, 'h-full transition-all duration-700')} style={{ width: `${(n / total) * 100}%` }} />
+        ))}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-sm">
+        {parts.map(([l, n, c]) => (
+          <span key={l} className="flex items-center gap-2">
+            <span className={clsx('w-2 h-2 rounded-full', c)} />
+            <span className="text-muted-foreground">{l}</span>
+            <span className="font-semibold tabular">{n}</span>
+          </span>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 // ── Toggle Switch ─────────────────────────────────────────────────────────────
 
-function Toggle({ checked, onChange, disabled }) {
+function Toggle({ checked, onChange, disabled, label }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       disabled={disabled}
       onClick={() => !disabled && onChange(!checked)}
       className={clsx(
-        'relative w-9 h-5 rounded-full border transition-all duration-200 shrink-0',
-        'disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none',
-        checked
-          ? 'bg-orange-500/30 border-orange-500/50'
-          : 'bg-slate-700/60 border-slate-600/50',
+        'relative w-9 h-5 rounded-full transition-colors duration-200 shrink-0',
+        'disabled:opacity-40 disabled:cursor-not-allowed',
+        checked ? 'bg-primary' : 'bg-slate-600/60',
       )}
     >
       <span className={clsx(
-        'absolute top-0.5 w-4 h-4 rounded-full transition-all duration-200',
-        checked ? 'left-[18px] bg-orange-400 shadow-sm' : 'left-0.5 bg-slate-500',
+        'absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-200',
+        checked && 'translate-x-4',
       )} />
     </button>
   )
@@ -503,7 +422,9 @@ export default function Campaign() {
   }, [])
 
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    // Scroll only the log box — scrollIntoView would also scroll the page.
+    const box = logEndRef.current?.parentElement
+    if (box) box.scrollTo({ top: box.scrollHeight, behavior: 'smooth' })
   }, [logs])
 
   // ── Derived state ─────────────────────────────────────────────────────────
@@ -538,14 +459,14 @@ export default function Campaign() {
       country:       country || undefined,
       channel,
       daily_cap:     dailyCap,
-      sources,
+      // No sources: the backend's Discovery Planner picks them for the niche.
       headless,
       hot_warm_only: hotWarmOnly,
     }),
     onSuccess: (data) => {
       refetchEngine()
       refetchHistory()
-      toast.success(`Engine launched — Run #${data.run_id}`)
+      toast.success(`Campaign started — run #${data.run_id}`)
     },
     onError: (e) => toast.error(e.message),
   })
@@ -583,466 +504,286 @@ export default function Campaign() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  // scoreDist is the distribution across every scored lead (not just this run).
+  const quality = {
+    hot: scoreDist?.HOT ?? stats?.hot_leads ?? 0,
+    warm: scoreDist?.WARM ?? stats?.warm_leads ?? 0,
+    cold: scoreDist?.COLD ?? stats?.cold_leads ?? 0,
+    scope: 'All scored leads',
+  }
+
   return (
-    <div className="p-6 h-full flex flex-col gap-5 overflow-hidden">
+    <div className="px-4 sm:px-8 py-8 max-w-[1400px] mx-auto space-y-10">
 
       {/* ── Page header ──────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between shrink-0">
+      <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-slate-100 flex items-center gap-2.5">
-            <Rocket size={20} className="text-emerald-400" />
-            Mission Control
-          </h1>
-          <p className="text-sm text-slate-500 mt-0.5">
-            Automated lead scraping · AI generation · multi-source outreach
+          <BackToFindLeads />
+          <h1 className="text-page">Outreach campaign</h1>
+          <p className="text-support mt-1">
+            Finds leads, scores them, writes messages and sends them automatically. To review
+            messages before anything is sent, use Find leads with “Write outreach” instead.
           </p>
         </div>
-        <EngineStatusBadge
+        <RunStatus
           running={isRunning}
+          paused={isPaused}
           niche={engine?.campaign_niche}
           city={engine?.campaign_city}
         />
-      </div>
+      </header>
 
       {/* ── DB empty warning (shows after a run with 0 leads in DB) ───── */}
       {dbEmpty && (
-        <div className="flex items-start gap-3 px-4 py-3 rounded-xl border
-                        border-amber-500/30 bg-amber-500/8 text-amber-300 shrink-0">
-          <Database size={15} className="shrink-0 mt-0.5 text-amber-400" />
-          <div className="min-w-0">
-            <p className="text-xs font-semibold">
-              Campaigns ran but 0 leads are in the database
-            </p>
-            <p className="text-[11px] text-amber-400/70 mt-0.5">
-              This usually means concurrent SQLite write failures. Click{' '}
-              <strong>Test DB Pipeline</strong> below to diagnose. If the test passes,
-              restart the backend to apply the busy_timeout fix.
+        <div className="flex items-start gap-3 rounded-xl bg-warning/10 px-4 py-3">
+          <Database size={16} className="shrink-0 mt-0.5 text-warning" />
+          <div className="text-sm min-w-0">
+            <p className="font-semibold text-foreground">Campaigns ran, but no leads were saved</p>
+            <p className="text-muted-foreground mt-0.5">
+              This usually means the database was busy and rejected the writes. Use{' '}
+              <span className="font-medium text-foreground">Test database connection</span> to check. If the
+              test passes, restart the backend to apply the busy-timeout fix.
             </p>
           </div>
         </div>
       )}
 
-      {/* ── Main layout ──────────────────────────────────────────────────── */}
-      <div className="flex gap-5 flex-1 min-h-0">
+      <div className="grid gap-10 lg:grid-cols-[360px_minmax(0,1fr)] items-start">
 
-        {/* ══════ LEFT — Control Panel ══════ */}
-        <div className="w-80 shrink-0 flex flex-col gap-4 overflow-y-auto pr-0.5">
+        {/* ══════ LEFT — campaign setup (the one raised surface) ══════ */}
+        <div className="surface-raised p-6 space-y-7 lg:sticky lg:top-8">
 
-          {/* Config card */}
-          <div className="card p-5 flex flex-col gap-4">
-
-            {/* Live stat boxes */}
-            <div className="grid grid-cols-2 gap-2">
-              {isRunning ? (
-                <>
-                  <StatBox label="Found" value={leadsFound} colorClass="text-emerald-400" />
-                  <StatBox label="Sent"  value={leadsSent}  colorClass="text-violet-400"  />
-                </>
-              ) : (
-                <>
-                  <StatBox label="Email Today" value={stats?.email_sent_today    ?? 0} colorClass="text-blue-400"    />
-                  <StatBox label="WA Today"    value={stats?.whatsapp_sent_today ?? 0} colorClass="text-emerald-400" />
-                </>
-              )}
-            </div>
-
-            {/* ── Target Inputs ─────────────────────────────────────────── */}
+          <FormSection title="Target">
             <div className="space-y-3">
               <div>
-                <label className="label flex items-center gap-1.5">
-                  <Target size={10} /> Target Niche
-                </label>
-                <input
-                  className="input text-sm"
-                  placeholder="e.g. dental clinic"
-                  value={niche}
-                  onChange={e => setNiche(e.target.value)}
-                  disabled={isRunning}
-                />
+                <label htmlFor="campaign-niche" className="label">Niche</label>
+                <input id="campaign-niche" className="input" placeholder="e.g. dental clinic"
+                  value={niche} onChange={e => setNiche(e.target.value)} disabled={isRunning} />
               </div>
-
-              <div>
-                <label className="label flex items-center gap-1.5">
-                  <MapPin size={10} /> Target City
-                </label>
-                <input
-                  className="input text-sm"
-                  placeholder="e.g. Dubai"
-                  value={city}
-                  onChange={e => setCity(e.target.value)}
-                  disabled={isRunning}
-                />
-              </div>
-
-              <div>
-                <label className="label flex items-center gap-1.5">
-                  <Globe size={10} /> Country
-                </label>
-                <input
-                  className="input text-sm"
-                  placeholder="e.g. UAE (optional)"
-                  value={country}
-                  onChange={e => setCountry(e.target.value)}
-                  disabled={isRunning}
-                />
-              </div>
-            </div>
-
-            {/* ── Lead Sources ──────────────────────────────────────────── */}
-            <div>
-              <label className="label flex items-center gap-1.5">
-                <Zap size={10} /> Lead Sources
-                <span className="ml-auto text-[10px] text-slate-600 font-normal normal-case tracking-normal">
-                  {sources.length} selected
-                </span>
-              </label>
-
-              <div className="space-y-3">
-                {SOURCE_GROUPS.map(group => (
-                  <div key={group.label}>
-                    <p className="text-[9px] text-slate-600 uppercase tracking-widest font-bold mb-1.5 pl-0.5">
-                      {group.label}
-                    </p>
-                    <div className="grid grid-cols-2 gap-1">
-                      {group.sources.map(({ id, label, emoji }) => {
-                        const checked = sources.includes(id)
-                        const onlyOne = checked && sources.length === 1
-                        return (
-                          <label
-                            key={id}
-                            className={clsx(
-                              'flex items-center gap-1.5 cursor-pointer rounded-lg px-2 py-1.5 transition-colors',
-                              'border text-xs',
-                              checked
-                                ? 'bg-brand-500/8 border-brand-500/25 text-slate-200'
-                                : 'border-transparent text-slate-500 hover:bg-slate-800/40 hover:text-slate-300',
-                              (isRunning || onlyOne) && 'opacity-40 pointer-events-none',
-                            )}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => !onlyOne && toggleSource(id)}
-                              disabled={isRunning || onlyOne}
-                              className="w-3 h-3 rounded border-slate-600 bg-slate-800 accent-brand-500
-                                         disabled:cursor-not-allowed shrink-0"
-                            />
-                            <span className="text-xs leading-none">{emoji}</span>
-                            <span className="font-medium truncate">{label}</span>
-                          </label>
-                        )
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* ── Daily Cap ─────────────────────────────────────────────── */}
-            <div>
-              <label className="label flex items-center gap-1.5">
-                <BarChart3 size={10} /> Daily Cap (total leads)
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min={1} max={500}
-                  value={dailyCap}
-                  onChange={e => setDailyCap(Math.max(1, Number(e.target.value)))}
-                  disabled={isRunning}
-                  className="input text-sm h-9 w-24 text-center tabular-nums font-mono"
-                />
-                <p className="text-[10px] text-slate-500">
-                  Split proportionally across{' '}
-                  <span className="font-bold text-slate-300">{sources.length}</span> source{sources.length !== 1 ? 's' : ''}
-                </p>
-              </div>
-            </div>
-
-            {/* ── Scoring Filter ────────────────────────────────────────── */}
-            <div className="rounded-lg bg-slate-900/50 border border-slate-700/40 p-3 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <Flame
-                    size={13}
-                    className={clsx(hotWarmOnly ? 'text-orange-400' : 'text-slate-600', 'shrink-0')}
-                  />
-                  <span className="text-xs text-slate-300 truncate">Only HOT + WARM leads</span>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="campaign-city" className="label">City</label>
+                  <input id="campaign-city" className="input" placeholder="e.g. Dubai"
+                    value={city} onChange={e => setCity(e.target.value)} disabled={isRunning} />
                 </div>
-                <Toggle
-                  checked={hotWarmOnly}
-                  onChange={setHotWarmOnly}
-                  disabled={isRunning}
-                />
+                <div>
+                  <label htmlFor="campaign-country" className="label">Country</label>
+                  <input id="campaign-country" className="input" placeholder="Optional"
+                    value={country} onChange={e => setCountry(e.target.value)} disabled={isRunning} />
+                </div>
               </div>
-              {hotWarmOnly && (
-                <p className="text-[10px] text-slate-500 pl-0.5">
-                  Estimated emails to send:{' '}
-                  <span className="font-bold text-orange-400 font-mono">{hotWarmCount}</span>
-                </p>
-              )}
+              <p className="text-meta">We choose the best places to look for this kind of business.</p>
             </div>
+          </FormSection>
 
-            {/* ── Outreach Channel ─────────────────────────────────────── */}
-            <div>
-              <label className="label">Outreach Channel</label>
-              <div className="flex gap-1.5">
-                {CHANNELS.map(({ id, label, emoji }) => (
-                  <button
-                    key={id}
-                    onClick={() => setChannel(id)}
-                    disabled={isRunning}
-                    className={clsx(
-                      'flex-1 flex flex-col items-center gap-1.5 py-2.5 rounded-xl border',
-                      'text-xs font-medium transition-all duration-150',
-                      'disabled:opacity-40 disabled:cursor-not-allowed',
-                      channel === id
-                        ? CHANNEL_ACTIVE[id]
-                        : 'border-slate-700/50 text-slate-500 hover:border-slate-600 hover:text-slate-400',
-                    )}
-                  >
-                    <span className="text-base leading-none">{emoji}</span>
-                    <span>{label}</span>
-                  </button>
-                ))}
-              </div>
+          <FormSection title="Daily limit">
+            <div className="flex items-center gap-3">
+              <input
+                type="number"
+                min={1} max={500}
+                aria-label="Daily limit (total leads)"
+                value={dailyCap}
+                onChange={e => setDailyCap(Math.max(1, Number(e.target.value)))}
+                disabled={isRunning}
+                className="input w-24 text-center tabular"
+              />
+              <p className="text-meta">
+                leads a day
+              </p>
             </div>
+          </FormSection>
 
-            {/* ── Show Browser Window (only relevant for Google Maps) ────── */}
-            {needsBrowser && (
-              <label className="flex items-center gap-2 cursor-pointer group select-none">
-                <input
-                  type="checkbox"
-                  checked={!headless}
-                  onChange={e => setHeadless(!e.target.checked)}
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-subheading">Only hot and warm leads</p>
+              <p className="text-meta mt-0.5">
+                {hotWarmOnly
+                  ? <>About <span className="font-semibold text-foreground tabular">{hotWarmCount}</span> emails will go out</>
+                  : 'Skip leads scored as cold'}
+              </p>
+            </div>
+            <Toggle checked={hotWarmOnly} onChange={setHotWarmOnly} disabled={isRunning} label="Only hot and warm leads" />
+          </div>
+
+          <FormSection title="Channel">
+            <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-secondary" role="radiogroup" aria-label="Outreach channel">
+              {CHANNELS.map(({ id, label, icon: ChannelIcon }) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="radio"
+                  aria-checked={channel === id}
+                  onClick={() => setChannel(id)}
                   disabled={isRunning}
-                  className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 accent-emerald-500
-                             disabled:opacity-40 disabled:cursor-not-allowed"
-                />
-                <Monitor size={11} className="text-slate-500" />
-                <span className="text-xs text-slate-400 group-hover:text-slate-300 transition-colors">
-                  Show Browser Window
-                </span>
-              </label>
-            )}
+                  className={clsx(
+                    'flex items-center justify-center gap-1.5 h-8 rounded-lg text-sm transition-all',
+                    'disabled:opacity-40 disabled:cursor-not-allowed',
+                    channel === id
+                      ? 'bg-surface-elevated text-foreground font-semibold shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  <ChannelIcon size={14} strokeWidth={1.9} />
+                  {label}
+                </button>
+              ))}
+            </div>
+          </FormSection>
 
-            {/* ── Start / Stop buttons ──────────────────────────────────── */}
-            <div className="flex flex-col gap-2 pt-1">
+          <div className="space-y-2 pt-5 border-t border-border-subtle">
+            {!isRunning ? (
               <button
                 onClick={() => startMut.mutate()}
                 disabled={!canStart || startMut.isPending}
-                className="w-full py-3.5 rounded-xl font-bold text-sm tracking-widest uppercase
-                           bg-emerald-600 hover:bg-emerald-500 text-white
-                           shadow-lg shadow-emerald-950/60 hover:shadow-emerald-800/40
-                           disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none
-                           transition-all duration-150 active:scale-[0.98] disabled:active:scale-100
-                           flex items-center justify-center gap-2"
+                className="btn-primary w-full h-10"
               >
                 {startMut.isPending
-                  ? <><RefreshCw size={15} className="animate-spin" /> Launching…</>
-                  : <><Rocket size={15} /> START ENGINE</>}
+                  ? <><RefreshCw size={15} className="animate-spin" /> Starting…</>
+                  : <><Play size={15} /> Start campaign</>}
               </button>
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => (isPaused ? resumeMut.mutate() : pauseMut.mutate())}
+                  disabled={pauseMut.isPending || resumeMut.isPending}
+                  className="btn-secondary w-full h-10"
+                >
+                  {(pauseMut.isPending || resumeMut.isPending)
+                    ? <RefreshCw size={14} className="animate-spin" />
+                    : isPaused ? <Play size={14} /> : <Pause size={14} />}
+                  {isPaused ? 'Resume' : 'Pause'}
+                </button>
+                <button
+                  onClick={() => stopMut.mutate()}
+                  disabled={stopMut.isPending}
+                  className="btn-danger w-full h-10"
+                >
+                  {stopMut.isPending ? <RefreshCw size={14} className="animate-spin" /> : <Square size={13} />}
+                  Stop
+                </button>
+              </div>
+            )}
 
-              <button
-                onClick={() => (isPaused ? resumeMut.mutate() : pauseMut.mutate())}
-                disabled={!isRunning || pauseMut.isPending || resumeMut.isPending}
-                className={clsx(
-                  'w-full py-2.5 rounded-xl font-bold text-sm tracking-widest uppercase',
-                  'border transition-all duration-150 active:scale-[0.98]',
-                  'disabled:opacity-25 disabled:cursor-not-allowed',
-                  'flex items-center justify-center gap-2',
-                  isPaused
-                    ? 'bg-emerald-600/10 hover:bg-emerald-600/25 text-emerald-400 border-emerald-600/30'
-                    : 'bg-amber-600/10 hover:bg-amber-600/25 text-amber-400 border-amber-600/30',
-                )}
-              >
-                {(pauseMut.isPending || resumeMut.isPending)
-                  ? <RefreshCw size={13} className="animate-spin" />
-                  : isPaused ? <Play size={13} /> : <Pause size={13} />}
-                {isPaused ? 'RESUME ENGINE' : 'PAUSE ENGINE'}
-              </button>
+            {!niche.trim() && !isRunning && (
+              <p className="text-meta text-center">Enter a niche and city to start.</p>
+            )}
 
-              <button
-                onClick={() => stopMut.mutate()}
-                disabled={!isRunning || stopMut.isPending}
-                className="w-full py-2.5 rounded-xl font-bold text-sm tracking-widest uppercase
-                           bg-red-600/10 hover:bg-red-600/25 text-red-400 border border-red-600/30
-                           disabled:opacity-25 disabled:cursor-not-allowed
-                           transition-all duration-150 active:scale-[0.98]
-                           flex items-center justify-center gap-2"
-              >
-                {stopMut.isPending
-                  ? <RefreshCw size={14} className="animate-spin" />
-                  : <Square size={13} />}
-                STOP ENGINE
-              </button>
-
-              {!niche.trim() && !isRunning && (
-                <p className="text-[10px] text-amber-500/70 text-center">
-                  Enter niche &amp; city to enable launch
-                </p>
-              )}
-
-              {/* ── DB diagnostic button ──────────────────────────────── */}
-              <button
-                onClick={() => testMut.mutate()}
-                disabled={isRunning || testMut.isPending}
-                title="Insert 5 dummy leads to verify the database write path works"
-                className="w-full py-2 rounded-xl font-medium text-xs tracking-wide uppercase
-                           bg-slate-800/60 hover:bg-slate-700/60 text-slate-500 hover:text-slate-300
-                           border border-slate-700/40 hover:border-slate-600/50
-                           disabled:opacity-25 disabled:cursor-not-allowed
-                           transition-all duration-150 active:scale-[0.98]
-                           flex items-center justify-center gap-1.5"
-              >
-                {testMut.isPending
-                  ? <><RefreshCw size={11} className="animate-spin" /> Testing DB…</>
-                  : <><FlaskConical size={11} /> Test DB Pipeline</>}
-              </button>
-            </div>
-          </div>
-
-          {/* Session stats card */}
-          <div className="card p-4 space-y-3">
-            <p className="text-[10px] text-slate-500 uppercase tracking-widest font-semibold flex items-center gap-1.5">
-              <TrendingUp size={10} />
-              Session Overview
-            </p>
-            <div className="space-y-2">
-              <SessionStat label="Total Leads"  value={stats?.total_leads ?? '—'}              Icon={Users}         colorClass="text-slate-300"   />
-              <SessionStat label="Pending"       value={stats?.pending     ?? '—'}              Icon={Clock}         colorClass="text-amber-400"   />
-              <SessionStat label="Replies"       value={stats?.replied     ?? '—'}              Icon={MessageSquare} colorClass="text-emerald-400" />
-              <SessionStat label="Reply Rate"    value={stats ? `${stats.reply_rate}%` : '—'}  Icon={TrendingUp}    colorClass="text-purple-400"  />
-              <SessionStat label="HOT Leads"     value={stats?.hot_leads   ?? '—'}              Icon={Flame}         colorClass="text-red-400"     />
-              <SessionStat label="WARM Leads"    value={stats?.warm_leads  ?? '—'}              Icon={Activity}      colorClass="text-amber-400"   />
-            </div>
+            <button
+              onClick={() => testMut.mutate()}
+              disabled={isRunning || testMut.isPending}
+              title="Insert 5 dummy leads to verify the database write path works"
+              className="btn-ghost w-full h-8 text-xs"
+            >
+              {testMut.isPending
+                ? <><RefreshCw size={12} className="animate-spin" /> Testing database…</>
+                : <><FlaskConical size={12} /> Test database connection</>}
+            </button>
           </div>
         </div>
 
-        {/* ══════ RIGHT — Pipeline + Terminal + History ══════ */}
-        <div className="flex-1 flex flex-col gap-4 min-h-0 min-w-0">
+        {/* ══════ RIGHT — progress, quality, live feed, history (open) ══════ */}
+        <div className="space-y-12 min-w-0">
 
-          {/* ── Pipeline progress card ────────────────────────────────── */}
-          <PipelineCard
-            isRunning={isRunning}
-            stage={engine?.campaign_stage}
-            paused={Boolean(engine?.campaign_paused)}
-            leadsFound={leadsFound}
-            leadsSent={leadsSent}
-            scoreDist={scoreDist}
-            currentLead={engine?.campaign_current_lead}
-            messagesGenerated={engine?.campaign_messages_generated ?? 0}
-            leadsPerMin={engine?.campaign_leads_per_min}
-            etaSeconds={engine?.campaign_eta_seconds}
-          />
+          <section>
+            <SectionTitle title={isRunning ? 'This run' : 'Today'}>
+              {!isRunning && <span>Live figures appear while a campaign runs</span>}
+            </SectionTitle>
+            {isRunning ? (
+              <RunFigures
+                leadsFound={leadsFound}
+                leadsSent={leadsSent}
+                messages={engine?.campaign_messages_generated ?? 0}
+                leadsPerMin={engine?.campaign_leads_per_min}
+                etaSeconds={engine?.campaign_eta_seconds}
+              />
+            ) : (
+              <dl className="grid grid-cols-2 sm:grid-cols-4 gap-6">
+                <Figure label="Emails sent" value={stats?.email_sent_today ?? 0} />
+                <Figure label="WhatsApp sent" value={stats?.whatsapp_sent_today ?? 0} />
+                <Figure label="Total leads" value={stats?.total_leads ?? '—'} detail={`${stats?.pending ?? 0} pending`} />
+                <Figure label="Replies" value={stats?.replied ?? '—'} detail={stats ? `${stats.reply_rate}% reply rate` : undefined} />
+              </dl>
+            )}
+          </section>
 
-          {/* ── Live terminal ─────────────────────────────────────────── */}
-          <div className="bg-[#07080d] border border-slate-700/60 rounded-xl overflow-hidden flex flex-col flex-1 min-h-0">
+          <section>
+            <SectionTitle title="Progress">
+              {!isRunning && <span>Every run moves through these five steps</span>}
+            </SectionTitle>
+            <PipelineTracker
+              isRunning={isRunning}
+              stage={engine?.campaign_stage}
+              paused={Boolean(engine?.campaign_paused)}
+              leadsFound={leadsFound}
+              leadsSent={leadsSent}
+              currentLead={engine?.campaign_current_lead}
+            />
+          </section>
 
-            {/* Title bar */}
-            <div className="flex items-center gap-2 px-4 py-2.5 bg-slate-900/90 border-b border-slate-800 shrink-0">
-              <div className="flex gap-1.5 mr-2">
-                <div className="w-3 h-3 rounded-full bg-red-500/70" />
-                <div className="w-3 h-3 rounded-full bg-amber-400/70" />
-                <div className="w-3 h-3 rounded-full bg-emerald-500/70" />
-              </div>
+          <QualityBar {...quality} />
 
-              <Radio size={11} className="text-slate-600" />
-              <span className="text-[11px] font-mono text-slate-500 uppercase tracking-widest">
-                outreach engine — live feed
+          {/* ── Live feed (stays a dark console in both themes) ─────────── */}
+          <section>
+            <SectionTitle title="Live feed">
+              <span className="tabular">{logs.length} entries</span>
+              <span className="flex items-center gap-1.5">
+                <span className={clsx('w-1.5 h-1.5 rounded-full', sseLive ? 'bg-success animate-pulse' : 'bg-error')} />
+                {sseLive ? 'Live' : 'Reconnecting'}
               </span>
+              <button onClick={() => setLogs([])} className="btn-ghost h-7 px-2 text-xs">
+                <Trash2 size={12} /> Clear
+              </button>
+            </SectionTitle>
+            <div data-theme="dark" className="rounded-2xl bg-[#0E0E0D] border border-slate-800 overflow-hidden">
+              <div className="flex items-center gap-1 px-3 py-2 border-b border-slate-800 overflow-x-auto" role="tablist">
+                {LOG_FILTERS.map(({ id, label }) => {
+                  const count = id === 'all' ? logs.length : (logCounts[id] || 0)
+                  return (
+                    <button
+                      key={id}
+                      role="tab"
+                      aria-selected={logFilter === id}
+                      onClick={() => setLogFilter(id)}
+                      className={clsx(
+                        'h-7 px-2.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap',
+                        logFilter === id ? 'bg-slate-800 text-slate-100' : 'text-slate-500 hover:text-slate-300',
+                      )}
+                    >
+                      {label}
+                      {count > 0 && <span className="ml-1.5 tabular text-slate-500">{count}</span>}
+                    </button>
+                  )
+                })}
+              </div>
 
-              <div className="ml-auto flex items-center gap-3">
-                <span className="text-[10px] font-mono text-slate-700 tabular-nums">
-                  {logs.length} entries
-                </span>
+              <div className="h-[380px] overflow-y-auto p-4 space-y-0.5 font-mono text-xs leading-5">
+                {filteredLogs.length === 0 && (
+                  <p className="text-slate-500 select-none font-sans text-sm">
+                    {logs.length === 0
+                      ? 'Nothing yet. Start a campaign and each step will stream here.'
+                      : `No "${logFilter}" events yet.`}
+                  </p>
+                )}
 
-                <div className="flex items-center gap-1.5">
-                  <div className={clsx(
-                    'w-1.5 h-1.5 rounded-full transition-colors duration-300',
-                    sseLive ? 'bg-emerald-400 animate-pulse' : 'bg-red-500',
-                  )} />
-                  <span className={clsx(
-                    'text-[10px] font-mono',
-                    sseLive ? 'text-emerald-500' : 'text-red-500',
-                  )}>
-                    {sseLive ? 'LIVE' : 'RECONNECTING'}
-                  </span>
-                </div>
-
-                <button
-                  onClick={() => setLogs([])}
-                  title="Clear log"
-                  className="p-1 rounded text-slate-700 hover:text-slate-400 transition-colors"
-                >
-                  <Trash2 size={11} />
-                </button>
+                {filteredLogs.map((entry, i) => (
+                  <div key={i} className="flex gap-3 rounded px-1 -mx-1 hover:bg-slate-900 transition-colors">
+                    <span className="text-slate-600 shrink-0 tabular w-16 text-right select-none">{entry.ts}</span>
+                    <span className={clsx('flex-1 break-words', entry.color)}>{entry.message}</span>
+                  </div>
+                ))}
+                <div ref={logEndRef} />
               </div>
             </div>
+          </section>
 
-            {/* Filter tabs */}
-            <div className="flex items-center gap-0.5 px-4 py-2 bg-slate-900/50 border-b border-slate-800/60 shrink-0">
-              <Filter size={10} className="text-slate-700 mr-1.5 shrink-0" />
-              {LOG_FILTERS.map(({ id, label }) => {
-                const count = id === 'all' ? logs.length : (logCounts[id] || 0)
-                return (
-                  <button
-                    key={id}
-                    onClick={() => setLogFilter(id)}
-                    className={clsx(
-                      'px-2.5 py-0.5 rounded text-[10px] font-mono font-medium transition-all whitespace-nowrap',
-                      logFilter === id
-                        ? 'bg-slate-700/80 text-slate-200'
-                        : 'text-slate-600 hover:text-slate-400 hover:bg-slate-800/50',
-                    )}
-                  >
-                    {label}
-                    {count > 0 && <span className="ml-1 opacity-60">({count})</span>}
-                  </button>
-                )
-              })}
-            </div>
-
-            {/* Log body */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-0.5 font-mono text-[11px] leading-5 min-h-0">
-              {filteredLogs.length === 0 && (
-                <span className="text-slate-700 select-none">
-                  {logs.length === 0
-                    ? 'Waiting for activity… Start the engine to see live output.'
-                    : `No "${logFilter}" events yet.`}
-                </span>
-              )}
-
-              {filteredLogs.map((entry, i) => (
-                <div
-                  key={i}
-                  className="flex gap-3 hover:bg-white/[0.02] rounded px-1 -mx-1 transition-colors"
-                >
-                  <span className="text-slate-700 shrink-0 tabular-nums w-16 text-right pt-px select-none">
-                    {entry.ts}
-                  </span>
-                  <span className={clsx('flex-1 break-words', entry.color)}>
-                    {entry.message}
-                  </span>
-                </div>
-              ))}
-
-              {/* Blinking cursor */}
-              <div className="flex items-center h-5 mt-0.5 pl-[calc(4rem+0.75rem)]">
-                <span className="inline-block w-2 h-3.5 bg-emerald-500/60 animate-pulse rounded-sm" />
-              </div>
-              <div ref={logEndRef} />
-            </div>
-          </div>
-
-          {/* ── Campaign history ──────────────────────────────────────── */}
-          <CampaignHistoryTable
-            history={history}
-            isLoading={historyLoading}
-            onRefresh={refetchHistory}
-            onDuplicate={handleDuplicateRun}
-          />
-
+          <section>
+            <CampaignHistoryTable
+              history={history}
+              isLoading={historyLoading}
+              onRefresh={refetchHistory}
+              onDuplicate={handleDuplicateRun}
+            />
+          </section>
         </div>
       </div>
     </div>

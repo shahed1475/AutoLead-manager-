@@ -35,17 +35,17 @@ export const SOURCE_BADGE = {
 }
 
 export const SOURCE_LABEL = {
-  GOOGLE_MAPS:   '🗺 Maps',
-  YELP:          '⭐ Yelp',
-  YELLOW_PAGES:  '📒 YP',
-  GOOGLE_SEARCH: '🔍 Search',
-  BING_SEARCH:   '🔎 Bing',
-  HOTFROG:       '🔥 Hotfrog',
-  FOURSQUARE:    '📍 4sq',
-  TOP_LIST:      '📰 List',
-  GENERIC_DIR:   '📂 Dir',
-  BROWSER_RESEARCH_AGENT: '🤖 Research',
-  AUTOMATION:    '🤖 Auto',
+  GOOGLE_MAPS:   'Maps',
+  YELP:          'Yelp',
+  YELLOW_PAGES:  'YP',
+  GOOGLE_SEARCH: 'Search',
+  BING_SEARCH:   'Bing',
+  HOTFROG:       'Hotfrog',
+  FOURSQUARE:    '4sq',
+  TOP_LIST:      'List',
+  GENERIC_DIR:   'Dir',
+  BROWSER_RESEARCH_AGENT: 'Research',
+  AUTOMATION:    'Auto',
 }
 
 // leads.research_status — small inline text colors (not full badges)

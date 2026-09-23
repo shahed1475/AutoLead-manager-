@@ -14,7 +14,7 @@ import { SLabel, TagCloud, BulletList } from './ui/DrawerPrimitives'
 
 // ── SVG score ring ────────────────────────────────────────────────────────────
 
-const RING_COLOR = { HOT: '#ef4444', WARM: '#f97316', COLD: '#64748b' }
+const RING_COLOR = { HOT: 'stroke-error', WARM: 'stroke-warning', COLD: 'stroke-slate-500' }
 
 function ScoreRing({ score = 0, label = 'COLD' }) {
   const r    = 26
@@ -26,16 +26,15 @@ function ScoreRing({ score = 0, label = 'COLD' }) {
   return (
     <div className="relative w-[68px] h-[68px] shrink-0">
       <svg className="w-full h-full -rotate-90" viewBox="0 0 68 68">
-        <circle cx="34" cy="34" r={r} fill="none" stroke="#1e293b"    strokeWidth="6" />
-        <circle cx="34" cy="34" r={r} fill="none" stroke={color}
+        <circle cx="34" cy="34" r={r} fill="none" className="stroke-slate-800" strokeWidth="6" />
+        <circle cx="34" cy="34" r={r} fill="none" className={color}
           strokeWidth="6" strokeLinecap="round"
           strokeDasharray={`${dash} ${circ - dash}`}
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center leading-none">
         <span className="text-xl font-extrabold text-slate-100">{Math.round(pct)}</span>
-        <span className="text-[8px] font-bold uppercase tracking-widest mt-0.5"
-          style={{ color }}>{label}</span>
+        <span className={`text-[8px] font-bold uppercase tracking-widest mt-0.5 ${color.replace('stroke-', 'text-')}`}>{label}</span>
       </div>
     </div>
   )

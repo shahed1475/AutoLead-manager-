@@ -3,8 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AutoLead Marketing Engine</title>
-    <link rel="icon" type="image/png" href="/logo.png" />
+    <meta name="theme-color" content="#121211" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <title>HCM · Sales Growth Engine</title>
+    <script>
+      // Apply the saved day/night theme before first paint (see src/lib/theme.js).
+      (function () {
+        var t = null
+        try { t = localStorage.getItem('autolead_theme') } catch (e) {}
+        if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+        document.documentElement.setAttribute('data-theme', t)
+        document.querySelector('meta[name="theme-color"]').setAttribute('content', t === 'light' ? '#F6F5F1' : '#121211')
+      })()
+    </script>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   </head>
   <body>
     <div id="root"></div>

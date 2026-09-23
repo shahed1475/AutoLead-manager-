@@ -225,6 +225,16 @@ export const discoveryApi = {
   active:  ()        => api.get('/discovery/search/active').then((r) => r.data),
 }
 
+// Find leads runs — chain collect -> deep research -> draft outreach over one
+// set of leads. Drafts only: sending stays in AI Lab.
+export const leadRunsApi = {
+  start:   (payload) => api.post('/lead-runs', payload).then((r) => r.data),
+  list:    (limit = 10) => api.get('/lead-runs', { params: { limit } }).then((r) => r.data),
+  get:     (id) => api.get(`/lead-runs/${id}`).then((r) => r.data),
+  results: (id) => api.get(`/lead-runs/${id}/results`).then((r) => r.data),
+  cancel:  (id) => api.post(`/lead-runs/${id}/cancel`).then((r) => r.data),
+}
+
 // Browser Research Agent — iterative LLM+Playwright deep research
 export const researchAgentApi = {
   start:   (payload)   => api.post('/research-agent/start', payload).then((r) => r.data),

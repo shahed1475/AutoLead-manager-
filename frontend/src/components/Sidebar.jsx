@@ -1,25 +1,60 @@
-import { NavLink } from 'react-router-dom'
+import { useEffect } from 'react'
+import { NavLink, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  LayoutDashboard, Users, GitBranch, Send, Cpu, Settings, Inbox, Search, Bot, Mail,
+  LayoutDashboard, Users, GitBranch, Sparkles, Settings, Inbox, Search, Mail, X,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { inboxApi } from '../api/client'
+import Logo from './Logo'
 
-const nav = [
-  { to: '/dashboard',       icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/leads',           icon: Users,           label: 'Leads'     },
-  { to: '/pipeline',        icon: GitBranch,       label: 'Pipeline'  },
-  { to: '/lead-search',     icon: Search,          label: 'Lead Search' },
-  { to: '/research-agent',  icon: Bot,             label: 'Research Agent' },
-  { to: '/campaign',        icon: Send,            label: 'Lead Search Campaign' },
-  { to: '/email-campaigns', icon: Mail,            label: 'Email Campaigns' },
-  { to: '/ai-lab',          icon: Cpu,             label: 'AI Lab'    },
-  { to: '/inbox',           icon: Inbox,           label: 'Inbox', badge: true },
-  { to: '/settings',        icon: Settings,        label: 'Settings'  },
+// Grouped by what the user is doing, not by how the backend is built.
+const groups = [
+  { label: 'Workspace', items: [
+    { to: '/dashboard',       icon: LayoutDashboard, label: 'Overview' },
+    // One entry for every way of finding leads; its detail pages stay "inside" it.
+    { to: '/lead-search',     icon: Search,          label: 'Find leads', also: ['/research-agent', '/campaign'] },
+    { to: '/leads',           icon: Users,           label: 'Leads' },
+    { to: '/pipeline',        icon: GitBranch,       label: 'Pipeline' },
+    { to: '/inbox',           icon: Inbox,           label: 'Inbox', badge: true },
+  ] },
+  { label: 'Engage', items: [
+    { to: '/email-campaigns', icon: Mail,            label: 'Email Campaigns' },
+    { to: '/ai-lab',          icon: Sparkles,        label: 'AI Lab' },
+  ] },
 ]
 
-export default function Sidebar() {
+function NavItem({ to, icon: Icon, label, badge, unread, also }) {
+  const { pathname } = useLocation()
+  const alsoActive = (also || []).some((p) => pathname === p || pathname.startsWith(`${p}/`))
+  return (
+    <NavLink
+      to={to}
+      className={({ isActive: routeActive }) => { const isActive = routeActive || alsoActive; return clsx(
+        'group relative flex items-center gap-2.5 h-8 px-2.5 rounded-lg text-sm transition-colors',
+        isActive
+          ? 'bg-surface-elevated text-foreground font-semibold shadow-sm ring-1 ring-border-subtle'
+          : 'text-muted-foreground hover:text-foreground hover:bg-secondary/70'
+      ) }}
+    >
+      {({ isActive: routeActive }) => { const isActive = routeActive || alsoActive; return (
+        <>
+          <Icon size={16} strokeWidth={isActive ? 2.1 : 1.75}
+            className={clsx('shrink-0', isActive ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground')} />
+          <span className="flex-1 truncate">{label}</span>
+          {badge && unread > 0 && (
+            <span className="min-w-5 h-5 px-1.5 grid place-items-center rounded-full bg-primary text-primary-foreground text-2xs font-semibold tabular">
+              {unread > 99 ? '99+' : unread}
+            </span>
+          )}
+        </>
+      ) }}
+    </NavLink>
+  )
+}
+
+export default function Sidebar({ open, onClose }) {
+  const { pathname } = useLocation()
   const { data: inboxStats } = useQuery({
     queryKey: ['inbox-stats'],
     queryFn: inboxApi.stats,
@@ -28,44 +63,46 @@ export default function Sidebar() {
   })
   const unread = inboxStats?.unread ?? 0
 
+  // Close the mobile drawer after navigating.
+  useEffect(() => { onClose?.() }, [pathname]) // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
-    <aside className="w-56 shrink-0 flex flex-col bg-slate-900 border-r border-slate-800 h-screen">
-      <div className="flex items-center justify-center px-4 py-4 border-b border-slate-800">
-        <img
-          src={`${import.meta.env.BASE_URL}logo.png`}
-          alt="AutoLead Marketing Engine"
-          className="h-14 w-auto object-contain drop-shadow-lg"
-        />
-      </div>
+    <>
+      {/* Mobile scrim */}
+      <div
+        onClick={onClose}
+        className={clsx('fixed inset-0 z-30 bg-black/30 lg:hidden transition-opacity',
+          open ? 'opacity-100' : 'opacity-0 pointer-events-none')}
+      />
+      <aside
+        className={clsx(
+          'fixed lg:static inset-y-0 left-0 z-40 w-64 lg:w-60 shrink-0 flex flex-col h-full',
+          'bg-sidebar border-r border-border-subtle transition-transform duration-200 ease-out',
+          open ? 'translate-x-0 shadow-lg' : '-translate-x-full lg:translate-x-0'
+        )}
+      >
+        <div className="flex items-center justify-between h-14 px-4">
+          <Logo size={26} />
+          <button onClick={onClose} className="btn-ghost h-8 w-8 px-0 lg:hidden" aria-label="Close menu">
+            <X size={16} />
+          </button>
+        </div>
 
-      <nav className="flex-1 px-3 py-4 space-y-0.5">
-        {nav.map(({ to, icon: Icon, label, badge }) => (
-          <NavLink
-            key={to}
-            to={to}
-            className={({ isActive }) =>
-              clsx(
-                'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all',
-                isActive
-                  ? 'bg-brand-600/20 text-brand-400 border border-brand-600/20'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-              )
-            }
-          >
-            <Icon size={16} />
-            <span className="flex-1">{label}</span>
-            {badge && unread > 0 && (
-              <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded-full bg-brand-600 text-white font-bold">
-                {unread > 99 ? '99+' : unread}
-              </span>
-            )}
-          </NavLink>
-        ))}
-      </nav>
+        <nav className="flex-1 overflow-y-auto px-3 pt-2 pb-4 space-y-6" aria-label="Main">
+          {groups.map((g) => (
+            <div key={g.label}>
+              <p className="px-2.5 pb-1.5 text-2xs font-semibold text-muted-foreground/80">{g.label}</p>
+              <div className="space-y-0.5">
+                {g.items.map((item) => <NavItem key={item.to} {...item} unread={unread} />)}
+              </div>
+            </div>
+          ))}
+        </nav>
 
-      <div className="px-4 py-4 border-t border-slate-800">
-        <p className="text-[10px] text-slate-600 text-center">AutoLead Marketing Engine</p>
-      </div>
-    </aside>
+        <div className="px-3 py-3 border-t border-border-subtle">
+          <NavItem to="/settings" icon={Settings} label="Settings" />
+        </div>
+      </aside>
+    </>
   )
 }

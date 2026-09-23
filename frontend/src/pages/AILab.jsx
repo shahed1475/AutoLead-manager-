@@ -127,7 +127,7 @@ function LeadCard({ lead, checked, onCheck }) {
       setJustUpdated(true)
       clearTimeout(updatedTimer.current)
       updatedTimer.current = setTimeout(() => setJustUpdated(false), 2500)
-      toast.success('Messages updated', { icon: '✨', duration: 2000 })
+      toast.success('Messages updated', { duration: 2000 })
     },
     onError: (e) => toast.error(e.message),
   })
@@ -724,7 +724,7 @@ export default function AILab() {
 
   const { data: leadsData, isLoading, refetch } = useQuery({
     queryKey: ['pending-leads'],
-    queryFn:  () => leadsApi.list({ page_size: 100, status: 'PENDING', sort_by: 'created_at', sort_dir: 'desc' }),
+    queryFn:  () => leadsApi.list({ page_size: 100, status: 'PENDING,ENRICHED,SCORED,MESSAGES_READY', sort_by: 'created_at', sort_dir: 'desc' }),
     refetchInterval: 20_000,
   })
 

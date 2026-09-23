@@ -9,6 +9,7 @@ import EmptyState from '../components/ui/EmptyState'
 import ErrorState from '../components/ui/ErrorState'
 import ResearchResultDrawer from '../components/ResearchResultDrawer'
 import TargetTitlesInput from '../components/TargetTitlesInput'
+import BackToFindLeads from '../components/BackToFindLeads'
 
 const ACTIVE_STATUSES = new Set(['QUEUED', 'RUNNING', 'CANCEL_REQUESTED'])
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
@@ -332,16 +333,15 @@ export default function ResearchAgent() {
   const canResume = session?.status === 'FAILED' && session?.resumable
 
   return (
-    <div className="p-6 space-y-5 max-w-6xl">
-      <div className="flex items-center gap-2">
-        <Bot size={18} className="text-brand-400" />
-        <h1 className="text-lg font-bold text-slate-100">Research Agent</h1>
-      </div>
-      <p className="text-sm text-slate-500 -mt-3">
-        Deep, iterative browser research — a local AI decides what to search next, one step at a time.
-        Runs on the backend: you can leave this page or refresh and it keeps going. No outreach is sent from here.
-        Leads sent from <span className="text-slate-400">Lead Search</span> or <span className="text-slate-400">Lead Search Automation</span> land here as <span className="text-indigo-300">Handoff</span> sessions.
-      </p>
+    <div className="px-4 sm:px-8 py-8 max-w-6xl mx-auto space-y-6">
+      <header>
+        <BackToFindLeads />
+        <h1 className="text-page">Deep research</h1>
+        <p className="text-support mt-1 max-w-3xl">
+          Reads each business's website to find decision makers and contact details, and keeps the source
+          for every fact. It keeps running if you leave this page. Nothing is sent from here.
+        </p>
+      </header>
 
       <SessionsPanel currentId={sessionId} onSelect={selectSession} />
 
