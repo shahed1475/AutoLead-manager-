@@ -24,6 +24,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -143,6 +144,40 @@ _REPLY_ALIASES: Dict[str, List[str]] = {
 
 # ── Config helpers ─────────────────────────────────────────────────────────────
 
+# General-purpose instruct families, best first. Used only when the configured
+# model is missing — avoids falling back to a coder/embedding model or a narrow
+# fine-tune that happens to sort first in /api/tags.
+_GENERAL_MODEL_FAMILIES = ("llama3", "qwen2.5", "qwen3", "mistral", "gemma", "phi", "llama")
+_NON_CHAT_MARKERS      = ("coder", "code", "embed", "vision", "llava", "whisper")
+
+
+def _pick_general_model(available: List[str]) -> str:
+    chat = [m for m in available if not any(k in m.lower() for k in _NON_CHAT_MARKERS)]
+    for family in _GENERAL_MODEL_FAMILIES:
+        match = next((m for m in chat if m.lower().startswith(family)), None)
+        if match:
+            return match
+    return chat[0] if chat else available[0]
+
+
+# When the GPU is out of memory (e.g. another process holds VRAM), Ollama
+# returns HTTP 500 "cudaMalloc failed: out of memory" on every call. We then
+# retry on CPU (num_gpu=0) and stay on CPU for a cool-down before re-trying GPU.
+_CPU_FALLBACK_SECONDS = 600
+_cpu_fallback_until: float = 0.0
+_OOM_MARKERS = ("out of memory", "cudamalloc", "failed to allocate", "unable to allocate")
+
+
+def _is_gpu_oom(resp: httpx.Response) -> bool:
+    if resp.status_code != 500:
+        return False
+    try:
+        body = (resp.json().get("error") or "").lower()
+    except Exception:
+        body = resp.text.lower()
+    return any(m in body for m in _OOM_MARKERS)
+
+
 async def _detect_available_model(base_url: str, preferred: str) -> str:
     """
     Query Ollama /api/tags and return the best available model.
@@ -163,11 +198,12 @@ async def _detect_available_model(base_url: str, preferred: str) -> str:
             if match:
                 logger.warning("ai_brain: model '%s' → '%s' (prefix match)", preferred, match)
                 return match
+            fallback = _pick_general_model(available)
             logger.warning(
-                "ai_brain: model '%s' not found → '%s' (first available). Available: %s",
-                preferred, available[0], available,
+                "ai_brain: model '%s' not found → '%s' (best available). Available: %s",
+                preferred, fallback, available,
             )
-            return available[0]
+            return fallback
     except Exception as exc:
         logger.debug("ai_brain: model detection failed (%s) — keeping '%s'", exc, preferred)
         return preferred
@@ -763,17 +799,20 @@ async def _call_ollama_raw(
         cfg["base_url"], model, num_predict, temp,
     )
 
+    global _cpu_fallback_until
+    options: Dict[str, Any] = {"temperature": temp, "top_p": 0.92, "num_predict": num_predict}
+    if time.monotonic() < _cpu_fallback_until:
+        options["num_gpu"] = 0
+
     async with httpx.AsyncClient(timeout=cfg["timeout"]) as client:
-        r = await client.post(
-            f"{cfg['base_url']}/api/generate",
-            json={
-                "model":   model,
-                "prompt":  prompt,
-                "stream":  False,
-                "think":   False,
-                "options": {"temperature": temp, "top_p": 0.92, "num_predict": num_predict},
-            },
-        )
+        payload = {"model": model, "prompt": prompt, "stream": False, "think": False, "options": options}
+        r = await client.post(f"{cfg['base_url']}/api/generate", json=payload)
+
+        if "num_gpu" not in options and _is_gpu_oom(r):
+            logger.warning("ai_brain: GPU out of memory — retrying on CPU for the next %ds", _CPU_FALLBACK_SECONDS)
+            _cpu_fallback_until = time.monotonic() + _CPU_FALLBACK_SECONDS
+            options["num_gpu"] = 0
+            r = await client.post(f"{cfg['base_url']}/api/generate", json=payload)
 
         if r.status_code == 404:
             body = ""

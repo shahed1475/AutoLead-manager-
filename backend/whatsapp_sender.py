@@ -197,7 +197,9 @@ def _send_whatsapp_desktop(phone: str, message: str, config: Dict[str, Any]) -> 
     try:
         import pyautogui   # noqa: PLC0415
         import pyperclip   # noqa: PLC0415
-    except ImportError as exc:
+    except (ImportError, SystemExit) as exc:
+        # SystemExit: pyautogui's mouseinfo dependency calls sys.exit() on
+        # Linux without tkinter — uncaught, that kills the whole server.
         logger.error("Missing dependency: %s — run: pip install pyautogui pyperclip", exc)
         _emit("ERROR", "WHATSAPP", f"Missing dependency: {exc}")
         return False
@@ -294,6 +296,12 @@ async def send_whatsapp(phone_number: str, message: str, config: Dict[str, Any])
         return False
     if not message or not message.strip():
         _emit("ERROR", "WHATSAPP", "send_whatsapp called with empty message")
+        return False
+
+    if sys.platform != "win32":
+        msg = "WhatsApp Desktop automation is Windows-only — use EMAIL on this machine"
+        logger.warning(msg)
+        _emit("ERROR", "WHATSAPP", msg)
         return False
 
     normalized = _normalize_phone(phone_number)
