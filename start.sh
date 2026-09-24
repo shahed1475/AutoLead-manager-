@@ -278,8 +278,8 @@ cloudflared_bin() {
 }
 
 start_tunnel() {
-  if tunnel_alive && [[ -s "$LINK_FILE" ]]; then
-    ok "Share link is already open"
+  if tunnel_alive && [[ -s "$LINK_FILE" ]] && wait_public "$(cat "$LINK_FILE")" 15; then
+    ok "Dashboard link is already open"
     return 0
   fi
   stop_tunnel quiet
@@ -344,7 +344,7 @@ wait_live() {  # url logfile
 # The client link: only the client portal (sign-up, requests, results) is
 # reachable through it — never the dashboard, settings or your leads.
 start_portal_tunnel() {
-  if portal_tunnel_alive && [[ -s "$PORTAL_LINK_FILE" ]]; then
+  if portal_tunnel_alive && [[ -s "$PORTAL_LINK_FILE" ]] && wait_public "$(cat "$PORTAL_LINK_FILE")/signin/" 15; then
     ok "Client link is already open"
     return 0
   fi
