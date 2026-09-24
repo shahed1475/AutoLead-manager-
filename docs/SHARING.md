@@ -35,7 +35,17 @@ reboot; after a reboot, click the button again for a new link.
 | Link | Who | What is on it |
 |---|---|---|
 | **Your dashboard** (port 5173) | only you — needs your password | everything, incl. the Clients page |
-| **Client link** (port 5174) | clients | sign-in, then **their own private HOM** |
+| **Client link** (port 5174) | visitors and clients | **your public HOM website**, sign-up / log-in, then each client's **own private HOM** |
+
+**The website** (the client link's front page) presents HOM — how it works,
+features, privacy, early access, FAQ — with **Sign up** and **Log in**.
+Accounts use a **password**: sign-up asks for name, company, email and a
+password (10+ characters), then a 6-digit code confirms the email. Log-in is
+email + password (8 wrong tries lock the account for 15 minutes); "Forgot
+password?" emails a code to set a new one. Accounts from before passwords set
+one the first time they log in. Passwords are stored only as bcrypt hashes.
+Pages: `/`, `/signup`, `/login`, `/forgot-password`, `/privacy`; a signed-in
+client visiting `/` goes straight to their dashboard.
 
 **Every client gets their own workspace**: the same app as yours, without the
 Clients page, owner settings (App Lock, AI model, Cloud LLM, WhatsApp) and

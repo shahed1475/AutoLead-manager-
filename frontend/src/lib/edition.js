@@ -10,5 +10,5 @@ export function setEdition(value) {
 export const isClientEdition = () => current === 'client'
 
 // Where a client workspace sends people to sign in (the client link's front door).
-export const CLIENT_SIGN_IN = '/signin/'
-export const CLIENT_SIGN_OUT = '/signin/?signout=1'
+export const CLIENT_SIGN_IN = '/login'
+export const CLIENT_SIGN_OUT = '/login?signout=1'

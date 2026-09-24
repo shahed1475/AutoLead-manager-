@@ -32,7 +32,7 @@ class SetPasswordRequest(BaseModel):
 @router.get("/status")
 async def auth_status():
     if _edition.is_client():
-        return {"password_set": True, "edition": "client", "sign_in": "/signin/"}
+        return {"password_set": True, "edition": "client", "sign_in": "/login"}
     return {"password_set": await _auth.is_password_set(), "edition": "owner"}
 
 

@@ -754,6 +754,7 @@ CREATE INDEX IF NOT EXISTS idx_portal_requests_client ON portal_requests (client
 -- run by scripts/hom_supervisor.py). port = the workspace's local web port
 -- (127.0.0.1 only; the client link routes to it). Deleted workspaces keep
 -- their row (desired DELETED, port NULL) so the supervisor archives the data.
+-- (portal_login_codes.payload: a sign-up's details, applied once the code is confirmed)
 CREATE TABLE IF NOT EXISTS portal_workspaces (
     id          INTEGER   PRIMARY KEY AUTOINCREMENT,
     client_id   INTEGER   NOT NULL REFERENCES portal_clients(id) ON DELETE CASCADE,
@@ -1169,6 +1170,14 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
     # PRAGMA foreign_keys=ON — the SET-NULL-on-delete is enforced in code.
     await _add_col_if_missing(raw, "email_campaigns", "sender_profile_id", "INTEGER")
     await _add_col_if_missing(raw, "email_campaigns", "reply_to", "TEXT")
+
+    # Client passwords (website sign-up / log-in). Only a bcrypt hash is kept.
+    for col, typedef in (("password_hash", "TEXT"), ("email_verified_at", "TIMESTAMP"),
+                         ("failed_logins", "INTEGER NOT NULL DEFAULT 0"), ("locked_until", "TIMESTAMP")):
+        await _add_col_if_missing(raw, "portal_clients", col, typedef)
+    # Sessions opened with an emailed code may set a new password for a short while.
+    await _add_col_if_missing(raw, "portal_sessions", "via_code_at", "TIMESTAMP")
+    await _add_col_if_missing(raw, "portal_login_codes", "payload", "TEXT")
 
     # Data normalisation
     # DO_NOT_CONTACT (Phase 4 opt-out) is a terminal, sticky status — must be in

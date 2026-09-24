@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from ..portal import config as portal_config, service, workspaces
 from ..portal.service import PortalError
-from ..rate_limit import limiter
+from ..rate_limit import limiter, visitor_ip
 
 router = APIRouter(prefix="/api/portal", tags=["portal"])
 
@@ -41,6 +41,24 @@ async def current_client(authorization: Optional[str] = Header(None)):
 
 class CodeRequest(BaseModel):
     email: str
+    purpose: str = "reset"          # reset | signin — a code for an existing account
+
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+    name: str
+    company: Optional[str] = None
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class PasswordChange(BaseModel):
+    password: str
+    current_password: Optional[str] = None
 
 
 class VerifyRequest(BaseModel):
@@ -57,48 +75,92 @@ class ProfileUpdate(BaseModel):
 
 _CODE_EMAIL = """Hi,
 
-Your sign-in code for the {name} client portal is:
+Your {name} verification code is:
 
     {code}
 
-It works for 10 minutes. If you didn't ask for it, you can ignore this email.
+It works for 10 minutes. If you didn't ask for it, you can safely ignore this
+email — nobody can use your account without it.
 """
 
 
-@router.post("/auth/request-code")
-@limiter.limit("20/minute")
-async def request_code(request: Request, payload: CodeRequest):
+async def _send_code(email: str, code: str, cfg: dict, purpose: str) -> None:
+    subject = {"signup": f"Confirm your email for {cfg['name']}: {code}",
+               "reset": f"Your {cfg['name']} password reset code: {code}"}.get(purpose, f"Your {cfg['name']} sign-in code: {code}")
+    sent = await portal_config.send_mail(email, subject, _CODE_EMAIL.format(code=code, name=cfg["name"]), cfg)
+    if not sent:
+        await service.withdraw_code(email)   # never received: don't make them wait
+        raise HTTPException(status_code=503, detail="We couldn't send the email right now. Please try again in a few minutes.")
+
+
+async def _ready_cfg() -> dict:
+    cfg = await portal_config.get_config()
+    if not (await portal_config.sender_status(cfg))["ready"]:
+        raise HTTPException(status_code=503, detail=_NOT_READY)
+    return cfg
+
+
+@router.post("/auth/signup")
+@limiter.limit("10/minute", key_func=visitor_ip)
+async def signup(request: Request, payload: SignupRequest):
+    """Step 1 of sign-up: check the details, email a code to confirm the address."""
     try:
         email = service.normalize_email(payload.email)
     except PortalError as exc:
         _raise(exc)
-    cfg = await portal_config.get_config()
-    if not (await portal_config.sender_status(cfg))["ready"]:
-        raise HTTPException(status_code=503, detail=_NOT_READY)
+    cfg = await _ready_cfg()
     try:
-        code = await service.issue_code(email)
+        code = await service.start_signup(email, payload.password, payload.name, payload.company)
     except PortalError as exc:
         _raise(exc)
-    sent = await portal_config.send_mail(email, f"Your {cfg['name']} sign-in code: {code}",
-                                         _CODE_EMAIL.format(code=code, name=cfg["name"]), cfg)
-    if not sent:
-        await service.withdraw_code(email)   # never received: don't make them wait
-        raise HTTPException(status_code=503, detail="We couldn't send the code right now. Please try again in a few minutes.")
+    await _send_code(email, code, cfg, "signup")
+    return {"ok": True, "email": email}
+
+
+@router.post("/auth/login")
+@limiter.limit("10/minute", key_func=visitor_ip)
+async def login(request: Request, payload: LoginRequest):
+    try:
+        return await service.login(service.normalize_email(payload.email), payload.password)
+    except PortalError as exc:
+        _raise(exc)
+
+
+@router.post("/auth/request-code")
+@limiter.limit("20/minute", key_func=visitor_ip)
+async def request_code(request: Request, payload: CodeRequest):
+    """A code for an EXISTING account (forgot password / first password). For
+    an unknown email it answers the same way but sends nothing, so it can't be
+    used to find out who has an account."""
+    try:
+        email = service.normalize_email(payload.email)
+    except PortalError as exc:
+        _raise(exc)
+    cfg = await _ready_cfg()
+    exists = await service.client_exists(email)
+    if exists:
+        try:
+            code = await service.issue_code(email)
+        except PortalError as exc:
+            _raise(exc)
+        await _send_code(email, code, cfg, "reset" if payload.purpose == "reset" else "signin")
     return {"ok": True, "email": email}
 
 
 @router.get("/status")
 async def portal_status():
-    """Public: what the sign-in screen needs — can clients sign in right now,
-    and the owner's portal name, welcome text and contact email."""
+    """Public: what the website and sign-in pages need — can people sign up /
+    log in right now, and the owner's portal name, welcome text and contact."""
     cfg = await portal_config.get_config()
-    ready = (await portal_config.sender_status(cfg))["ready"] and cfg["signup_mode"] != "closed"
-    return {"sign_in_ready": ready, "signup_mode": cfg["signup_mode"], "name": cfg["name"],
+    email_ready = (await portal_config.sender_status(cfg))["ready"]
+    return {"sign_in_ready": email_ready and cfg["signup_mode"] != "closed",
+            "signup_open": email_ready and cfg["signup_mode"] == "open",
+            "signup_mode": cfg["signup_mode"], "name": cfg["name"],
             "welcome": cfg["welcome"], "contact_email": cfg["contact_email"]}
 
 
 @router.post("/auth/verify")
-@limiter.limit("30/minute")
+@limiter.limit("30/minute", key_func=visitor_ip)
 async def verify(request: Request, payload: VerifyRequest):
     try:
         email = service.normalize_email(payload.email)
@@ -119,6 +181,17 @@ async def sign_out(response: Response, authorization: Optional[str] = Header(Non
 @router.get("/me")
 async def me(client=Depends(current_client)):
     return service.public_client(client)
+
+
+@router.post("/me/password")
+@limiter.limit("10/minute", key_func=visitor_ip)
+async def set_my_password(request: Request, payload: PasswordChange, client=Depends(current_client),
+                          authorization: Optional[str] = Header(None)):
+    try:
+        await service.change_password(client, _bearer(authorization), payload.password, payload.current_password)
+    except PortalError as exc:
+        _raise(exc)
+    return {"ok": True}
 
 
 @router.put("/me")
@@ -153,7 +226,7 @@ async def my_workspace(client=Depends(current_client)):
 
 
 @router.post("/workspace/enter")
-@limiter.limit("30/minute")
+@limiter.limit("30/minute", key_func=visitor_ip)
 async def enter_workspace(request: Request, response: Response, client=Depends(current_client)):
     """Open the client's own dashboard: a one-time signed sign-in link for
     THEIR workspace, plus the cookie that routes this browser to it."""

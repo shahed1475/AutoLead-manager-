@@ -39,7 +39,8 @@ async def _client():
 
 async def _sign_in(c, outbox, email):
     await db.portal_execute("UPDATE portal_login_codes SET created_at = datetime(created_at, '-2 minutes') WHERE email = ?", email)
-    assert (await c.post("/api/portal/auth/request-code", json={"email": email})).status_code == 200
+    r = await c.post("/api/portal/auth/signup", json={"email": email, "password": "correct horse battery", "name": "Test"})
+    assert r.status_code == 200, r.text
     code = outbox[-1]["subject"].rsplit(" ", 1)[-1]
     r = await c.post("/api/portal/auth/verify", json={"email": email, "code": code})
     assert r.status_code == 200, r.text

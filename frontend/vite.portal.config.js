@@ -2,14 +2,15 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { fileURLToPath } from 'node:url'
 
-// The client link's sign-in pages (/signin/): their own small build, served by
-// the client link's web server. They never include the dashboard's code.
+// The client link's public website (landing, sign-up, log-in): its own small
+// build. Pages live at /, /login, /signup…; their files are served from /site/.
+// It never includes the dashboard's code.
 //   npx vite build --config vite.portal.config.js && node scripts/portal-dist.mjs
 export default defineConfig({
   plugins: [react()],
-  base: '/signin/',
+  base: '/site/',
   build: {
-    outDir: 'dist-portal/signin',
+    outDir: 'dist-portal/site',
     emptyOutDir: true,
     rollupOptions: {
       input: { portal: fileURLToPath(new URL('./portal.html', import.meta.url)) },
