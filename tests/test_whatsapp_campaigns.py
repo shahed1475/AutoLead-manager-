@@ -394,3 +394,120 @@ async def test_upload_endpoint(wa):
         assert r.status_code == 201 and r.json()["total"] == 2
         bad = await c.post("/api/whatsapp/contacts", files={"file": ("x.csv", b"Name\nA\n", "text/csv")}, data={})
         assert bad.status_code == 400 and "phone column" in bad.json()["detail"]
+
+
+# ── Meta WhatsApp Cloud API ─────────────────────────────────────────────
+
+import hashlib as _hashlib
+import hmac as _hmac
+import json as _json
+
+
+async def _use_meta(monkeypatch=None):
+    for k, v in {"wa_engine": "meta", "wa_meta_phone_number_id": "1234567890", "wa_meta_waba_id": "999",
+                 "wa_meta_access_token": "EAAtoken", "wa_meta_app_secret": "appsecret"}.items():
+        await db.upsert_setting(k, v)
+
+
+def _meta_payload(phone="971501112233", body="Hi there", mid="wamid.A", kind="text"):
+    msg = {"from": phone, "id": mid, "timestamp": "0", "type": kind}
+    if kind == "text":
+        msg["text"] = {"body": body}
+    return {"object": "whatsapp_business_account", "entry": [{"changes": [{"value": {
+        "contacts": [{"wa_id": phone, "profile": {"name": "Omar"}}], "messages": [msg]}}]}]}
+
+
+def test_meta_webhook_payload_becomes_hom_events():
+    from backend.whatsapp import meta
+    ev = meta.to_events(_meta_payload())
+    assert ev == [{"event": "message", "payload": {"from": "971501112233@c.us", "body": "Hi there", "fromMe": False,
+                                                   "id": "wamid.A", "timestamp": "0", "notifyName": "Omar"}}]
+    assert meta.to_events(_meta_payload(kind="image")) == []            # media isn't answered automatically
+    body = b'{"x":1}'
+    sig = "sha256=" + _hmac.new(b"appsecret", body, _hashlib.sha256).hexdigest()
+    assert meta.signature_ok(body, sig, "appsecret") and not meta.signature_ok(body, sig, "other")
+    assert not meta.signature_ok(body, None, "appsecret")
+    assert meta.fill_template("Hi {{1}}, about {{2}}.", ["Sara", "Bright Dental"]) == "Hi Sara, about Bright Dental."
+
+
+async def test_meta_webhook_verification_and_signed_messages(wa):
+    from backend.main import app
+    await _use_meta()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        token = (await c.get("/api/whatsapp/meta")).json()["verify_token"]
+        ok = await c.get("/api/whatsapp/meta/webhook", params={"hub.mode": "subscribe", "hub.verify_token": token, "hub.challenge": "42"})
+        assert ok.status_code == 200 and ok.text == "42"
+        bad = await c.get("/api/whatsapp/meta/webhook", params={"hub.mode": "subscribe", "hub.verify_token": "nope", "hub.challenge": "42"})
+        assert bad.status_code == 403
+        body = _json.dumps(_meta_payload(phone="971509990000", body="Do you build websites?", mid="wamid.B")).encode()
+        assert (await c.post("/api/whatsapp/meta/webhook", content=body, headers={"X-Hub-Signature-256": "sha256=forged"})).status_code == 401
+        sig = "sha256=" + _hmac.new(b"appsecret", body, _hashlib.sha256).hexdigest()
+        r = await c.post("/api/whatsapp/meta/webhook", content=body, headers={"X-Hub-Signature-256": sig, "Content-Type": "application/json"})
+        assert r.status_code == 200
+    lead = await db.portal_fetchrow("SELECT * FROM leads WHERE phone = ?", "+971509990000")
+    assert lead["business_name"] == "WhatsApp · Omar"
+    msg = await db.portal_fetchrow("SELECT * FROM whatsapp_messages WHERE wa_message_id = ?", "wamid.B")
+    assert msg["direction"] == "IN" and msg["body"] == "Do you build websites?"
+
+
+async def test_meta_secrets_are_masked_and_kept(wa):
+    from backend.main import app
+    await _use_meta()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        got = (await c.get("/api/whatsapp/meta")).json()
+        assert got["access_token"] == "••••set••••" and got["app_secret"] == "••••set••••" and got["phone_number_id"] == "1234567890"
+        await c.put("/api/whatsapp/meta", json={"access_token": "••••set••••", "waba_id": "777"})
+        assert (await c.put("/api/whatsapp/meta", json={"phone_number_id": "abc"})).status_code == 422
+    from backend.whatsapp import meta
+    cfg = await meta.config()
+    assert cfg["access_token"] == "EAAtoken" and cfg["waba_id"] == "777"
+    row = await db.portal_fetchrow("SELECT value FROM app_settings WHERE key = 'wa_meta_access_token'")
+    assert "EAAtoken" not in row["value"]                              # encrypted at rest
+
+
+async def test_send_whatsapp_uses_meta_when_chosen(clean_db, monkeypatch):
+    from backend.whatsapp import meta
+    await _use_meta()
+    calls = []
+
+    async def send_text(phone, text):
+        calls.append(("text", phone, text))
+        return "wamid.1"
+
+    async def send_template(phone, name, language, params):
+        calls.append(("template", phone, name, language, params))
+        return "wamid.2"
+    monkeypatch.setattr(meta, "send_text", send_text)
+    monkeypatch.setattr(meta, "send_template", send_template)
+    assert await whatsapp_sender.send_whatsapp("+971 50 111 2233", "Hello", {}) is True
+    assert await whatsapp_sender.send_whatsapp("+971501112233", "x", {"template": {"name": "intro", "language": "en", "params": ["Sara"]}}) is True
+    assert calls == [("text", "+971501112233", "Hello"), ("template", "+971501112233", "intro", "en", ["Sara"])]
+
+
+async def test_meta_campaigns_need_an_approved_template(wa, monkeypatch):
+    await _use_meta()
+    a = await _lead("Pearl Dental", "+971501112233", contact_name="Amira")
+    with pytest.raises(service.WhatsAppError, match="template"):
+        await service.create_campaign("Free text", "Hello {business_name}, a quick idea.", False, [a])
+    c = await service.create_campaign("Template", None, False, [a], meta_template={
+        "name": "intro_offer", "language": "en_US", "body": "Hi {{1}}, a quick idea for {{2}}.", "vars": ["first_name", "business_name"]})
+    await service.set_campaign_status(c["id"], "start")
+    sent = []
+
+    async def fake_send(phone, text, config):
+        sent.append((phone, text, config))
+        return True
+    await service.tick(send=fake_send, is_ready=lambda: _true())
+    assert sent == [("+971501112233", "Hi Amira, a quick idea for Pearl Dental.",
+                     {"template": {"name": "intro_offer", "language": "en_US", "params": ["Amira", "Pearl Dental"]}})]
+
+
+async def _true():
+    return True
+
+
+async def test_workspaces_can_only_use_meta(wa, monkeypatch):
+    monkeypatch.setenv("HOM_EDITION", "client")
+    assert await service.current_engine() == "meta"
+    with pytest.raises(service.WhatsAppError, match="Meta"):
+        await service.save_settings({"wa_engine": "web"})

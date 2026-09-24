@@ -43,6 +43,36 @@ the WhatsApp login is kept in `whatsapp/sessions/`.
    chat per day (stops two bots answering each other forever). People who ask to
    stop are marked *Do not contact* and never answered.
 
+## Meta WhatsApp Cloud API (official, your own keys)
+
+WhatsApp → Settings → **Connection** → *Meta WhatsApp Cloud API*. Enter the Phone
+number ID, WhatsApp Business Account ID, a permanent access token (System user)
+and the App secret (stored encrypted; shown masked), then **Save and test**. In
+Meta: add the **Callback URL** and **Verify token** HOM shows, and subscribe to
+*messages*. Meta signs every webhook call; HOM rejects unsigned ones.
+
+- First messages to someone must be an **approved template** — campaigns on Meta
+  pick one and map `{{1}}`, `{{2}}`… to first name / business / city / niche.
+  Automatic replies are normal messages (inside Meta's 24-hour window).
+- **Client workspaces** get the same WhatsApp automation as you — see below.
+  Their Meta webhook is `<client link>/wa-hook/<port>`, shown on their Connection page.
+- Free links change on restart — update the Callback URL in Meta, or use your
+  own domain.
+
+## Client workspaces
+
+Every client workspace has the same WhatsApp page and features: QR login with
+**its own private WhatsApp engine** (a `waha` container in the workspace's
+project, GOWS mode, not published, ~150–400 MB), or its own Meta API; campaigns
+from leads or an uploaded file; pacing; automatic replies from the client's own
+Company DNA; opt-outs; the live monitor. Instead of an n8n per client (~700 MB
+each), the workspace does n8n's two jobs itself: its engine posts incoming
+messages straight to its app (`X-HOM-Secret`), and campaigns are paced every
+minute inside the app. The engine key and secret are unique per workspace
+(derived from the supervisor's master key); the outbound guard allows only the
+workspace's own engine and the AI relay — never the owner's engine, dashboard or
+network. The login is kept in `workspaces/ws-<id>/whatsapp/`.
+
 ## Be careful with your number
 
 WhatsApp doesn't allow unofficial automation and can block numbers. Use a separate

@@ -225,9 +225,16 @@ async def test_client_edition_locks_owner_settings(clean_db, client_edition):
     assert stored.get("dedup_days") == "9" and stored.get("ollama_base_url") != "http://10.0.0.5:11434"
 
 
-async def test_client_edition_never_sends_whatsapp(client_edition):
+async def test_client_edition_never_uses_the_owners_whatsapp(clean_db, client_edition, monkeypatch):
+    """A workspace sends only through its OWN Meta API — never the owner's
+    WhatsApp Web engine or desktop, even if those were reachable."""
     from backend import whatsapp_sender
-    assert await whatsapp_sender.send_whatsapp("+971500000000", "hello", {}) is False
+    from backend.whatsapp import engine
+
+    async def owner_engine_ready():
+        raise AssertionError("a workspace must never touch the owner's WhatsApp engine")
+    monkeypatch.setattr(engine, "ready", owner_engine_ready)
+    assert await whatsapp_sender.send_whatsapp("+971500000000", "hello", {}) is False   # no Meta keys yet
 
 
 def test_owner_edition_is_unchanged(monkeypatch):
@@ -273,6 +280,13 @@ assert results["10.0.0.1"] == "blocked", results
 assert results["192.168.1.1"] == "blocked", results
 assert results["172.17.0.1"] == "blocked", results
 assert results["127.0.0.1"] == "tried", results            # the AI relay (11434) is allowed ...
+s = socket.socket(); s.settimeout(0.2)
+try:
+    s.connect(("127.0.0.2", 3000)); raise SystemExit("unexpected")
+except edition.EgressBlocked:
+    raise SystemExit("own WhatsApp engine was blocked")
+except OSError:
+    pass                                                    # its own WhatsApp engine is allowed too
 assert results["169.254.169.254"] == "blocked", results
 assert results["::1"] == "blocked", results
 try:
@@ -285,7 +299,7 @@ print("ok")
 '''
     r = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=60,
                        env={**__import__('os').environ, "HOM_EDITION": "client",
-                            "OLLAMA_BASE_URL": "http://127.0.0.1:11434"})
+                            "OLLAMA_BASE_URL": "http://127.0.0.1:11434", "HOM_WAHA_URL": "http://127.0.0.2:3000"})
     assert r.returncode == 0 and "ok" in r.stdout, r.stdout + r.stderr[-2000:]
 
 
@@ -449,3 +463,63 @@ def test_supervisor_fills_only_an_empty_company_dna(sup):
     assert dna.read_text() == "Sector: Dental\n\nWe help clinics.\n" and dna.stat().st_ino == inode   # same file (mounted)
     dna.write_text("The client's own edited profile")
     assert sup.seed_company_dna(ws) is False and dna.read_text() == "The client's own edited profile"
+
+
+def test_each_workspace_gets_its_own_whatsapp_engine_and_keys(sup):
+    d = FakeDocker()
+    sup.reconcile(_ctl((1, "RUNNING"), (2, "RUNNING")), {}, b"k" * 64, d)
+    envs = {e["WS_ID"]: e for c, e in d.compose_calls()}
+    assert envs["1"]["WS_WAHA_KEY"] != envs["2"]["WS_WAHA_KEY"] and envs["1"]["WS_WA_SECRET"] != envs["2"]["WS_WA_SECRET"]
+    assert len(envs["1"]["WS_WAHA_KEY"]) == 64 and (sup.WS_ROOT / "ws-1" / "whatsapp").is_dir()
+    compose = (ROOT / "deploy" / "workspace-compose.yml").read_text()
+    assert "waha:" in compose and "HOM_WAHA_URL: http://waha:3000" in compose
+    waha_block = compose.split("  waha:")[1]
+    assert "ports:" not in waha_block                      # never published: only its own backend reaches it
+
+
+async def test_workspace_with_its_own_engine_can_use_whatsapp_web(clean_db, client_edition, monkeypatch):
+    from backend.whatsapp import engine, service as wa_service
+    from backend import whatsapp_sender
+    monkeypatch.setenv("HOM_WAHA_URL", "http://waha:3000")
+    assert engine.available() and await wa_service.current_engine() == "web"
+    sent = []
+
+    async def ready():
+        return True
+
+    async def send_text(phone, text):
+        sent.append((phone, text))
+    monkeypatch.setattr(engine, "ready", ready)
+    monkeypatch.setattr(engine, "send_text", send_text)
+    assert await whatsapp_sender.send_whatsapp("+971501112233", "Hello", {}) is True and sent
+
+
+def test_workspace_engine_posts_events_straight_to_its_app_with_the_secret(monkeypatch):
+    import importlib
+    monkeypatch.setenv("HOM_WA_EVENTS_WEBHOOK", "http://backend:8000/api/whatsapp/hooks/event")
+    monkeypatch.setenv("HOM_WA_SECRET", "ws-secret")
+    from backend.whatsapp import engine
+    importlib.reload(engine)
+    try:
+        captured = {}
+
+        async def fake_request(method, path, **kw):
+            captured.setdefault("calls", []).append((method, path, kw.get("json")))
+
+            class R:
+                status_code = 201
+                text = ""
+            return R()
+
+        async def fake_session():
+            return {"state": "SCAN_QR_CODE"}
+        monkeypatch.setattr(engine, "_request", fake_request)
+        monkeypatch.setattr(engine, "session", fake_session)
+        import asyncio
+        asyncio.run(engine.start())
+        hook = captured["calls"][0][2]["config"]["webhooks"][0]
+        assert hook["url"] == "http://backend:8000/api/whatsapp/hooks/event"
+        assert hook["customHeaders"] == [{"name": "X-HOM-Secret", "value": "ws-secret"}]
+    finally:
+        monkeypatch.delenv("HOM_WA_EVENTS_WEBHOOK")
+        importlib.reload(engine)

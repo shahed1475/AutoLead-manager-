@@ -23,7 +23,7 @@ const groups = [
   ] },
   { label: 'Engage', items: [
     { to: '/email-campaigns', icon: Mail,            label: 'Email Campaigns' },
-    { to: '/whatsapp',        icon: MessageCircle,   label: 'WhatsApp', ownerOnly: true },
+    { to: '/whatsapp',        icon: MessageCircle,   label: 'WhatsApp' },
     { to: '/ai-lab',          icon: Sparkles,        label: 'AI Lab' },
   ] },
 ]

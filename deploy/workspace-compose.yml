@@ -23,9 +23,17 @@ services:
       HOM_HANDOFF_SECRET: "${WS_SECRET}"
       OLLAMA_BASE_URL: "${WS_AI_URL}"
       OLLAMA_MODEL: "${WS_AI_MODEL:-}"
+      HOM_WORKSPACE_PORT: "${WS_PORT}"   # its Meta WhatsApp webhook: <client link>/wa-hook/<port>
+      # Its OWN WhatsApp Web engine (below) — never the owner's.
+      HOM_WAHA_URL: http://waha:3000
+      HOM_WA_EVENTS_WEBHOOK: http://backend:8000/api/whatsapp/hooks/event
+      WAHA_API_KEY: "${WS_WAHA_KEY}"
+      HOM_WA_SECRET: "${WS_WA_SECRET}"
     volumes:
       - ${WS_DIR}/data:/app/backend/data
       - ${WS_DIR}/company_dna.txt:/app/backend/company_dna.txt
+    depends_on:
+      - waha
     shm_size: "1gb"            # headless Chromium needs more than Docker's 64MB
     mem_limit: 2g              # one workspace can never take the whole machine
     cpus: 2.0
@@ -48,5 +56,25 @@ services:
     depends_on:
       - backend
     mem_limit: 128m
+    security_opt:
+      - no-new-privileges:true
+
+  # The client's own WhatsApp Web engine (free, QR login). Private to this
+  # workspace's network — not published; only its backend talks to it.
+  waha:
+    image: devlikeapro/waha:latest
+    restart: unless-stopped
+    labels:
+      hom.workspace: "${WS_ID}"
+      hom.project_prefix: "${WS_PROJECT_PREFIX:-hom-ws-}"
+    environment:
+      WHATSAPP_DEFAULT_ENGINE: GOWS
+      WHATSAPP_RESTART_ALL_SESSIONS: "True"
+      WAHA_PRINT_QR: "False"
+      WAHA_LOG_LEVEL: warn
+      WAHA_API_KEY: "${WS_WAHA_KEY}"
+    volumes:
+      - ${WS_DIR}/whatsapp:/app/.sessions
+    mem_limit: 400m
     security_opt:
       - no-new-privileges:true

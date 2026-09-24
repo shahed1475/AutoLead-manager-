@@ -118,10 +118,17 @@ async def lifespan(app: FastAPI):
             logger.warning("Startup discovery-run reconcile failed: %s", exc)
         await _reconcile_automation(queue)
     asyncio.create_task(_reconcile_interrupted_jobs())
+    wa_pacer = None
+    if edition.is_client():
+        # Workspaces have no n8n: pace WhatsApp campaigns here (one step a minute).
+        from .whatsapp.service import pacer_loop
+        wa_pacer = asyncio.create_task(pacer_loop())
 
     yield
 
     await queue.stop()
+    if wa_pacer:
+        wa_pacer.cancel()
     stop_scheduler()
     await close_db()
 
@@ -176,9 +183,13 @@ if not edition.is_client():
     app.include_router(portal_admin_router.router, dependencies=_authed)   # owner's view of the client portal
     # Client portal API: public, but protected by its own client sessions.
     app.include_router(portal_router.router)
-    # WhatsApp Campaigns: yours (session), and the n8n hooks (shared secret).
-    app.include_router(whatsapp_router.router, dependencies=_authed)
-    app.include_router(whatsapp_router.hooks)
+# WhatsApp Campaigns (both editions; workspaces use their own Meta API) and
+# Meta's signed webhook (public).
+app.include_router(whatsapp_router.router, dependencies=_authed)
+app.include_router(whatsapp_router.meta_hooks)
+# Incoming WhatsApp events + the pacer (shared secret): the owner's n8n, or a
+# client workspace's own engine.
+app.include_router(whatsapp_router.hooks)
 app.include_router(email_campaigns_router.router, dependencies=_authed)  # feature-flagged (email_campaigns_enabled, default OFF)
 app.include_router(email_senders_router.router)  # per-route session/flag deps (Gmail OAuth callback must stay public)
 

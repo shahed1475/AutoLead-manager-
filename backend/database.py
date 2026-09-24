@@ -1217,6 +1217,7 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
 
     # The person to address at a lead (e.g. from an uploaded WhatsApp contact file).
     await _add_col_if_missing(raw, "leads", "contact_name", "TEXT")
+    await _add_col_if_missing(raw, "whatsapp_campaigns", "meta_template", "TEXT")   # Meta API: approved template + variables
 
     # Client passwords (website sign-up / log-in). Only a bcrypt hash is kept.
     for col, typedef in (("password_hash", "TEXT"), ("email_verified_at", "TIMESTAMP"),

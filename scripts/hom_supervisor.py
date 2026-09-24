@@ -165,6 +165,7 @@ def ws_dir(ws_id: int) -> Path:
 def prepare_dir(ws_id: int) -> Path:
     d = ws_dir(ws_id)
     (d / "data").mkdir(parents=True, exist_ok=True)
+    (d / "whatsapp").mkdir(parents=True, exist_ok=True)      # its WhatsApp login
     dna = d / "company_dna.txt"
     if not dna.exists():
         dna.write_text("")        # empty: Settings shows the guided outline to fill in
@@ -190,6 +191,13 @@ def seed_company_dna(ws: Dict[str, Any]) -> bool:
         return False
 
 
+def derived(key: bytes, purpose: str, ws_id: int) -> str:
+    """A per-workspace secret for one purpose (never the same across workspaces)."""
+    import hashlib
+    import hmac
+    return hmac.new(key, f"hom-{purpose}:{ws_id}".encode(), hashlib.sha256).hexdigest()
+
+
 def compose(ws: Dict[str, Any], args: List[str], key: bytes, control: Dict[str, Any],
             runner: Runner = run, timeout: int = 300) -> subprocess.CompletedProcess:
     env = dict(os.environ)
@@ -202,6 +210,9 @@ def compose(ws: Dict[str, Any], args: List[str], key: bytes, control: Dict[str, 
         "WS_AI_MODEL": str(control.get("ai_model") or ""),
         "WS_IMAGE_TAG": IMAGE_TAG,
         "WS_PROJECT_PREFIX": PROJECT_PREFIX,
+        # The workspace's own WhatsApp engine: its API key and the engine → app secret.
+        "WS_WAHA_KEY": derived(key, "waha", int(ws["id"])),
+        "WS_WA_SECRET": derived(key, "wa-events", int(ws["id"])),
     })
     return runner(DOCKER + ["compose", "-p", f"{PROJECT_PREFIX}{int(ws['id'])}", "-f", str(COMPOSE_FILE)] + args,
                   timeout=timeout, env=env)

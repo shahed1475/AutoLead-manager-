@@ -118,10 +118,15 @@ def verify_handoff(token: str, secret: str, workspace_id: int, now: Optional[flo
 
 # ── Outbound guard ────────────────────────────────────────────────────────────
 
+# Services a workspace may still reach although they're on a private address:
+# the local AI relay, and the workspace's OWN WhatsApp engine.
+_ALLOWED_URL_VARS = ("OLLAMA_BASE_URL", "HOM_WAHA_URL")
+
+
 def _allowed_private() -> Set[Tuple[str, int]]:
-    """Private (ip, port) pairs a workspace may still reach: the AI relay."""
+    """Private (ip, port) pairs a workspace may still reach (resolved now)."""
     out: Set[Tuple[str, int]] = set()
-    for var in ("OLLAMA_BASE_URL",):
+    for var in _ALLOWED_URL_VARS:
         url = os.getenv(var, "")
         if not url:
             continue
@@ -163,6 +168,7 @@ def install_egress_guard() -> None:
     if _guard_installed:
         return
     allowed = _allowed_private()
+    state = {"refreshed": time.monotonic()}
 
     def hook(event: str, args: tuple) -> None:
         if event != "socket.connect":
@@ -173,8 +179,16 @@ def install_egress_guard() -> None:
         if not isinstance(address, tuple) or not address:
             return
         ip, port = str(address[0]), int(address[1]) if len(address) > 1 else 0
-        if ip_is_private(ip) and (ip, port) not in allowed:
-            raise EgressBlocked(f"blocked: client workspaces can't connect to private address {ip}:{port}")
+        if not ip_is_private(ip) or (ip, port) in allowed:
+            return
+        # An allowed service may have a new address after a restart: re-resolve
+        # its name (at most every 10 s) before refusing.
+        if time.monotonic() - state["refreshed"] > 10:
+            state["refreshed"] = time.monotonic()
+            allowed.update(_allowed_private())
+            if (ip, port) in allowed:
+                return
+        raise EgressBlocked(f"blocked: client workspaces can't connect to private address {ip}:{port}")
 
     sys.addaudithook(hook)
     _guard_installed = True

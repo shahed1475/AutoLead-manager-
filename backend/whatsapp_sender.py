@@ -294,9 +294,6 @@ async def send_whatsapp(phone_number: str, message: str, config: Dict[str, Any])
         True on success, False on failure (errors logged + pushed to log_stream)
     """
     from . import edition
-    if edition.is_client():
-        _emit("ERROR", "WHATSAPP", "WhatsApp sending isn't available in client workspaces")
-        return False
     if not phone_number or not phone_number.strip():
         _emit("ERROR", "WHATSAPP", "send_whatsapp called with empty phone_number")
         return False
@@ -304,8 +301,30 @@ async def send_whatsapp(phone_number: str, message: str, config: Dict[str, Any])
         _emit("ERROR", "WHATSAPP", "send_whatsapp called with empty message")
         return False
 
+    # Official Meta WhatsApp Cloud API (the user's own keys) — when chosen.
+    # The only option inside client workspaces.
+    from .whatsapp import service as wa_service
+    if await wa_service.current_engine() == "meta":
+        from .whatsapp import meta as wa_meta
+        normalized = _normalize_phone(phone_number)
+        tpl = (config or {}).get("template")
+        try:
+            if tpl:
+                await wa_meta.send_template(normalized, tpl["name"], tpl.get("language") or "en", tpl.get("params") or [])
+            else:
+                await wa_meta.send_text(normalized, message)
+            _emit("INFO", "WHATSAPP", f"Sent to {normalized} (Meta Cloud API)")
+            return True
+        except wa_meta.MetaError as exc:
+            logger.error("send_whatsapp (meta) failed for %s: %s", normalized, exc)
+            _emit("ERROR", "WHATSAPP", f"Meta: {exc}")
+            return False
     # WhatsApp Web engine (self-hosted WAHA, any OS) — used whenever it is linked.
+    # In a client workspace this is the workspace's OWN engine, never the owner's.
     from .whatsapp import engine as wa_engine
+    if not wa_engine.available():
+        _emit("ERROR", "WHATSAPP", "No WhatsApp connection here — set it up in WhatsApp → Settings")
+        return False
     if await wa_engine.ready():
         normalized = _normalize_phone(phone_number)
         async with _wa_lock:
@@ -318,6 +337,9 @@ async def send_whatsapp(phone_number: str, message: str, config: Dict[str, Any])
                 _emit("ERROR", "WHATSAPP", str(exc))
                 return False
 
+    if edition.is_client():                           # never the owner's desktop
+        _emit("ERROR", "WHATSAPP", "WhatsApp isn't linked — scan the QR code in WhatsApp → Monitor")
+        return False
     if sys.platform != "win32":
         msg = "WhatsApp isn't linked — scan the QR code in Engage → WhatsApp (desktop automation is Windows-only)"
         logger.warning(msg)

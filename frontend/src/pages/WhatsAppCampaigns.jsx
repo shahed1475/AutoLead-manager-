@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Ban, Bot, Check, CircleAlert, Info, Link2, MessageCircle, Pause, Play, Plus, QrCode, RefreshCw, Send,
-  Settings2, SkipForward, Smartphone, Unlink, Workflow, X, FileSpreadsheet, Upload, Users,
+  Settings2, SkipForward, Smartphone, Unlink, Workflow, X, FileSpreadsheet, Upload, Users, Copy,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -22,6 +22,8 @@ const STATE = {
   FAILED:         ['Connection failed', 'bg-error/10 text-error'],
   ENGINE_OFFLINE: ['Engine offline', 'bg-error/10 text-error'],
   ENGINE_ERROR:   ['Engine error', 'bg-error/10 text-error'],
+  NOT_CONFIGURED: ['Not set up', 'bg-secondary text-muted-foreground'],
+  ERROR:          ['Meta API error', 'bg-error/10 text-error'],
 }
 const ACT = {
   sent: [Send, 'text-primary'], received: [MessageCircle, 'text-info'], auto_reply: [Bot, 'text-success'],
@@ -72,9 +74,10 @@ function Pill({ state }) {
 
 // ── Monitor ───────────────────────────────────────────────────────────────
 
-function LivePhone({ status }) {
+function LivePhone({ status, onSetup }) {
   const qc = useQueryClient()
   const state = status?.whatsapp?.state
+  const isMeta = status?.engine === 'meta'
   const [confirm, setConfirm] = useState(false)
   const qr = useLiveImage('qr', state === 'SCAN_QR_CODE', 5000)
   const [open, setOpen] = useState(null)
@@ -93,8 +96,9 @@ function LivePhone({ status }) {
           <>
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-success/5 border border-success/20 px-4 py-3 text-sm">
               <span className="flex items-center gap-2"><Check size={15} className="text-success" />
-                Linked: <span className="font-medium">{status.whatsapp.name || 'WhatsApp'}</span>{status.whatsapp.number && <span className="text-muted-foreground">+{status.whatsapp.number}</span>}</span>
-              {confirm
+                {isMeta ? 'Meta Cloud API:' : 'Linked:'} <span className="font-medium">{status.whatsapp.name || 'WhatsApp'}</span>{status.whatsapp.number && <span className="text-muted-foreground">+{status.whatsapp.number}</span>}
+                {isMeta && status.whatsapp.quality && <span className="text-meta">· quality {String(status.whatsapp.quality).toLowerCase()}</span>}</span>
+              {isMeta ? <button className="btn-ghost h-8 text-xs" onClick={onSetup}><Settings2 size={13} /> Connection</button> : confirm
                 ? <span className="flex items-center gap-2"><span className="text-xs">Unlink WhatsApp from HOM?</span>
                     <button className="btn h-8 px-3 text-xs bg-error text-white" disabled={unlink.isPending} onClick={() => unlink.mutate()}>Unlink</button>
                     <button className="btn-ghost h-8 text-xs" onClick={() => setConfirm(false)}>Cancel</button></span>
@@ -123,6 +127,19 @@ function LivePhone({ status }) {
             </ul>
             {open && <Conversation lead={open} onClose={() => setOpen(null)} />}
           </>
+        )}
+        {isMeta && state === 'NOT_CONFIGURED' && (
+          <div className="py-10 text-center space-y-4">
+            <MessageCircle size={32} className="mx-auto text-muted-foreground" />
+            <p className="text-support max-w-sm mx-auto">Connect your WhatsApp Business number with your own Meta WhatsApp Cloud API keys.</p>
+            <button className="btn-primary h-10" onClick={onSetup}><Link2 size={14} /> Set up Meta API</button>
+          </div>
+        )}
+        {isMeta && state === 'ERROR' && (
+          <div className="py-8 text-center space-y-3">
+            <p className="text-sm text-error max-w-md mx-auto break-words">{status.whatsapp.error || 'Meta rejected the connection.'}</p>
+            <button className="btn-secondary h-9" onClick={onSetup}><Settings2 size={14} /> Check the connection</button>
+          </div>
         )}
         {state === 'SCAN_QR_CODE' && (
           <div className="grid gap-6 sm:grid-cols-[auto_1fr] items-center">
@@ -311,12 +328,14 @@ function ContactUpload({ result, onResult, file, onFile, cc, onCc }) {
   )
 }
 
-function NewCampaign({ onClose }) {
+function NewCampaign({ onClose, engine }) {
   const qc = useQueryClient()
   const [f, setF] = useState({ name: '', source: 'leads', labels: ['HOT', 'WARM'], city: '', niche: '', mode: 'template', template: 'Hi {first_name}, I came across {business_name} in {city} and had a quick idea for you — may I share it?' })
   const [file, setFile] = useState(null)
   const [cc, setCcState] = useState(readCountryCode)
   const [checked, setChecked] = useState(null)
+  const [metaTpl, setMetaTpl] = useState(null)
+  const onMeta = engine === 'meta'
   const setCc = (v) => { setCcState(v); try { localStorage.setItem('hom-wa-cc', v) } catch { /* private mode */ } }
   const fromFile = f.source === 'file'
   const q = useMemo(() => ({ labels: f.labels.length ? f.labels : null, city: f.city || null, niche: f.niche || null, use_ai_drafts: f.mode === 'drafts' }), [f.labels, f.city, f.niche, f.mode])
@@ -331,11 +350,12 @@ function NewCampaign({ onClose }) {
     : null
   const create = useMutation({
     mutationFn: async () => {
+      const meta = onMeta ? { meta_template: metaTpl } : {}
       if (fromFile) {
         const saved = await whatsappApi.uploadContacts(file, cc, true)
-        return whatsappApi.create({ name: f.name, template: f.template, lead_ids: saved.lead_ids })
+        return whatsappApi.create({ name: f.name, template: f.template, lead_ids: saved.lead_ids, ...meta })
       }
-      return whatsappApi.create({ name: f.name, template: mode === 'template' ? f.template : null, ...q })
+      return whatsappApi.create({ name: f.name, template: mode === 'template' ? f.template : null, ...q, ...meta })
     },
     onSuccess: (c) => { qc.invalidateQueries({ queryKey: ['wa-campaigns'] }); toast.success(`“${c.name}” ready for ${c.total} contacts — press Start when you’re ready`); onClose() },
     onError: (e) => toast.error(e.message),
@@ -374,29 +394,36 @@ function NewCampaign({ onClose }) {
           </>
         )}
       </fieldset>
+      {onMeta ? (
+        <fieldset className="space-y-3">
+          <legend className="label">Message (approved template)</legend>
+          <TemplatePicker value={metaTpl} onChange={setMetaTpl} firstLead={first} />
+        </fieldset>
+      ) : (
       <fieldset className="space-y-3">
-        <legend className="label">Message</legend>
-        {!fromFile && (
-          <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-secondary max-w-md">
-            {[['template', 'Write one message'], ['drafts', 'Each lead’s approved draft']].map(([id, label]) => (
-              <button key={id} type="button" onClick={() => setF({ ...f, mode: id })}
-                className={clsx('h-8 rounded-lg text-xs', f.mode === id ? 'bg-surface-elevated font-semibold shadow-sm' : 'text-muted-foreground')}>{label}</button>
-            ))}
-          </div>
-        )}
-        {mode === 'template' ? (
-          <>
-            <textarea className="input" rows={4} maxLength={1500} value={f.template} onChange={(e) => setF({ ...f, template: e.target.value })} aria-label="Message" />
-            <div className="flex flex-wrap gap-1.5">{PLACEHOLDERS.map((p) => (
-              <button key={p} type="button" className="h-7 px-2.5 rounded-full border border-border text-xs text-muted-foreground hover:text-foreground"
-                onClick={() => setF({ ...f, template: `${f.template} ${p}`.trim() })}>{p}</button>))}</div>
-            {preview && <div className="rounded-xl bg-secondary/60 p-3.5 text-sm"><p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Preview · {first.business_name}</p>{preview}</div>}
-          </>
-        ) : <p className="text-support">Sends each lead the WhatsApp message you approved for them in AI Lab. Leads without one are skipped.</p>}
-      </fieldset>
+          <legend className="label">Message</legend>
+          {!fromFile && (
+            <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-secondary max-w-md">
+              {[['template', 'Write one message'], ['drafts', 'Each lead’s approved draft']].map(([id, label]) => (
+                <button key={id} type="button" onClick={() => setF({ ...f, mode: id })}
+                  className={clsx('h-8 rounded-lg text-xs', f.mode === id ? 'bg-surface-elevated font-semibold shadow-sm' : 'text-muted-foreground')}>{label}</button>
+              ))}
+            </div>
+          )}
+          {mode === 'template' ? (
+            <>
+              <textarea className="input" rows={4} maxLength={1500} value={f.template} onChange={(e) => setF({ ...f, template: e.target.value })} aria-label="Message" />
+              <div className="flex flex-wrap gap-1.5">{PLACEHOLDERS.map((p) => (
+                <button key={p} type="button" className="h-7 px-2.5 rounded-full border border-border text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => setF({ ...f, template: `${f.template} ${p}`.trim() })}>{p}</button>))}</div>
+              {preview && <div className="rounded-xl bg-secondary/60 p-3.5 text-sm"><p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Preview · {first.business_name}</p>{preview}</div>}
+            </>
+          ) : <p className="text-support">Sends each lead the WhatsApp message you approved for them in AI Lab. Leads without one are skipped.</p>}
+        </fieldset>
+      )}
       <div className="flex justify-end gap-2">
         <button type="button" className="btn-ghost h-10" onClick={onClose}>Cancel</button>
-        <button className="btn-primary h-10" disabled={create.isPending || !f.name.trim() || !(count > 0) || (fromFile && !file)}>
+        <button className="btn-primary h-10" disabled={create.isPending || !f.name.trim() || !(count > 0) || (fromFile && !file) || (onMeta && !metaTpl)}>
           {create.isPending ? <RefreshCw size={14} className="animate-spin" /> : <Check size={14} />} Create campaign{count ? ` (${count})` : ''}
         </button>
       </div>
@@ -404,14 +431,14 @@ function NewCampaign({ onClose }) {
   )
 }
 
-function Campaigns({ campaigns, isError, refetch }) {
+function Campaigns({ campaigns, isError, refetch, engine }) {
   const qc = useQueryClient()
   const [adding, setAdding] = useState(false)
   const act = useMutation({ mutationFn: ({ id, a }) => whatsappApi.action(id, a), onSuccess: () => qc.invalidateQueries({ queryKey: ['wa-campaigns'] }), onError: (e) => toast.error(e.message) })
   if (isError) return <ErrorState message="Couldn't load campaigns." onRetry={refetch} />
   return (
     <div className="space-y-4">
-      {adding ? <NewCampaign onClose={() => setAdding(false)} /> : <button className="btn-primary h-10" onClick={() => setAdding(true)}><Plus size={15} /> New campaign</button>}
+      {adding ? <NewCampaign engine={engine} onClose={() => setAdding(false)} /> : <button className="btn-primary h-10" onClick={() => setAdding(true)}><Plus size={15} /> New campaign</button>}
       {campaigns.length === 0 && !adding && <p className="text-support py-6">No campaigns yet. Create one to message leads on WhatsApp at a steady, safe pace.</p>}
       <ul className="grid gap-3">
         {campaigns.map((c) => {
@@ -439,6 +466,117 @@ function Campaigns({ campaigns, isError, refetch }) {
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────
+
+// How HOM connects to WhatsApp: the free WhatsApp Web engine (QR, owner only)
+// or the official Meta WhatsApp Cloud API with your own keys.
+function ConnectionSettings({ status }) {
+  const qc = useQueryClient()
+  const owner = status?.edition !== 'client'
+  const web = status?.web_available !== false
+  const engine = status?.engine
+  const metaQ = useQuery({ queryKey: ['wa-meta'], queryFn: whatsappApi.meta })
+  const [m, setM] = useState(null)
+  useEffect(() => { if (metaQ.data) setM(metaQ.data) }, [metaQ.data])
+  const [copied, setCopied] = useState('')
+  const choose = useMutation({ mutationFn: (e) => whatsappApi.saveSettings({ wa_engine: e }), onSuccess: () => { qc.invalidateQueries({ queryKey: ['wa-status'] }); toast.success('Connection changed') }, onError: (e) => toast.error(e.message) })
+  const save = useMutation({
+    mutationFn: async () => { const saved = await whatsappApi.saveMeta(m); const t = await whatsappApi.testMeta(); return { saved, t } },
+    onSuccess: ({ saved, t }) => { setM(saved); qc.invalidateQueries({ queryKey: ['wa-status'] }); t.state === 'WORKING' ? toast.success(`Connected: ${t.name || ''} +${t.number || ''}`) : toast.error(t.error || 'Saved — but Meta didn’t accept the keys yet') },
+    onError: (e) => toast.error(e.message),
+  })
+  const copy = async (label, text) => { try { await navigator.clipboard.writeText(text); setCopied(label); setTimeout(() => setCopied(''), 1500) } catch { toast.error('Copy failed') } }
+  const webhook = m ? `${window.location.origin}${m.webhook_path}` : ''
+  const localOnly = /localhost|127\.0\.0\.1/.test(window.location.hostname)
+  const field = (k, label, props = {}) => (
+    <div>
+      <label className="label" htmlFor={`meta-${k}`}>{label}</label>
+      <input id={`meta-${k}`} className="input" value={m?.[k] ?? ''} onChange={(e) => setM({ ...m, [k]: e.target.value })} autoComplete="off" {...props} />
+    </div>
+  )
+  return (
+    <section className="card p-5 space-y-5">
+      <div>
+        <h2 className="text-section">Connection</h2>
+        <p className="text-support mt-1">How HOM sends and receives your WhatsApp messages.</p>
+      </div>
+      <div className={clsx('grid gap-2', web && 'sm:grid-cols-2')} role="radiogroup" aria-label="WhatsApp connection">
+        {[web && ['web', 'WhatsApp Web (QR code)', owner ? 'Free. Link your phone by QR code. Runs on this computer.' : 'Free. Link your phone by QR code — your own private WhatsApp connection.'],
+          ['meta', 'Meta WhatsApp Cloud API', 'Official. Your own Meta keys. First messages use approved templates.']].filter(Boolean).map(([id, label, hint]) => (
+          <button key={id} type="button" role="radio" aria-checked={engine === id} disabled={choose.isPending || !web}
+            onClick={() => engine !== id && choose.mutate(id)}
+            className={clsx('text-left rounded-xl border p-3.5', engine === id ? 'border-primary bg-primary/5' : 'border-border hover:bg-secondary')}>
+            <span className="text-sm font-semibold flex items-center justify-between">{label}{engine === id && <Check size={14} className="text-primary" />}</span>
+            <span className="text-meta block mt-1">{hint}</span>
+          </button>
+        ))}
+      </div>
+      {engine === 'meta' && m && (
+        <form className="space-y-4 border-t border-border-subtle pt-5" onSubmit={(e) => { e.preventDefault(); save.mutate() }} autoComplete="off">
+          <ol className="text-meta list-decimal pl-4 space-y-0.5">
+            <li>In <a className="text-primary hover:underline" href="https://developers.facebook.com/apps" target="_blank" rel="noreferrer">Meta for Developers</a>, open your app → WhatsApp → API setup.</li>
+            <li>Copy the Phone number ID and WhatsApp Business Account ID; create a permanent access token (System user).</li>
+            <li>App settings → Basic → App secret. Then add the webhook below and subscribe to <b>messages</b>.</li>
+          </ol>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {field('phone_number_id', 'Phone number ID', { inputMode: 'numeric', placeholder: 'e.g. 1098765432101234' })}
+            {field('waba_id', 'WhatsApp Business Account ID', { inputMode: 'numeric' })}
+            {field('access_token', 'Access token', { type: 'password', placeholder: 'EAAG…' })}
+            {field('app_secret', 'App secret', { type: 'password' })}
+            {field('api_version', 'Graph API version', { placeholder: 'v23.0' })}
+          </div>
+          <div className="rounded-xl bg-secondary/60 p-4 space-y-3">
+            <p className="text-sm font-semibold">Webhook for Meta</p>
+            {[['Callback URL', webhook], ['Verify token', m.verify_token]].map(([label, value]) => (
+              <div key={label}>
+                <p className="text-meta">{label}</p>
+                <div className="flex items-center gap-2 mt-1">
+                  <code className="flex-1 min-w-0 truncate rounded-lg bg-surface px-3 py-2 text-xs select-all">{value}</code>
+                  <button type="button" className="btn-secondary h-8 text-xs" onClick={() => copy(label, value)}>{copied === label ? <Check size={13} /> : <Copy size={13} />} Copy</button>
+                </div>
+              </div>
+            ))}
+            {localOnly && <p className="text-meta text-warning">You’re on this computer’s address — Meta can’t reach it. Open this page from your dashboard link (or your own domain) and copy the Callback URL from there.</p>}
+            <p className="text-meta">Free links change when HOM restarts — update the Callback URL in Meta then, or use your own domain.</p>
+          </div>
+          <button className="btn-primary h-10" disabled={save.isPending}>{save.isPending ? <RefreshCw size={14} className="animate-spin" /> : <Check size={14} />} Save and test</button>
+        </form>
+      )}
+    </section>
+  )
+}
+
+function TemplatePicker({ value, onChange, firstLead }) {
+  const q = useQuery({ queryKey: ['wa-meta-templates'], queryFn: whatsappApi.metaTemplates, retry: false })
+  const tpl = (q.data || []).find((t) => `${t.name}|${t.language}` === `${value?.name}|${value?.language}`)
+  const vars = value?.vars || []
+  const fields = [['first_name', 'First name'], ['business_name', 'Business name'], ['city', 'City'], ['niche', 'Niche']]
+  const sample = (k) => ({ first_name: firstLead?.first_name || 'Sara', business_name: firstLead?.business_name || 'Bright Dental', city: firstLead?.city || 'Dhaka', niche: firstLead?.niche || '' }[k] || '')
+  const preview = tpl ? tpl.body.replace(/\{\{(\d+)\}\}/g, (m, n) => sample(vars[Number(n) - 1]) || m) : ''
+  if (q.isError) return <p className="text-sm text-error">{q.error.message}</p>
+  return (
+    <div className="space-y-3">
+      <p className="text-meta">Meta only allows an <b>approved template</b> as the first message to someone. Automatic replies afterwards are normal messages.</p>
+      <select className="input" value={value ? `${value.name}|${value.language}` : ''} aria-label="Template"
+        onChange={(e) => { const t = (q.data || []).find((x) => `${x.name}|${x.language}` === e.target.value); onChange(t ? { name: t.name, language: t.language, body: t.body, vars: Array.from({ length: t.variables }, (_, i) => fields[Math.min(i, 1)][0]) } : null) }}>
+        <option value="">{q.isLoading ? 'Loading your approved templates…' : (q.data || []).length ? 'Choose an approved template' : 'No approved templates yet — create one in WhatsApp Manager'}</option>
+        {(q.data || []).map((t) => <option key={`${t.name}|${t.language}`} value={`${t.name}|${t.language}`}>{t.name} · {t.language} · {String(t.category || '').toLowerCase()}</option>)}
+      </select>
+      {tpl && vars.length > 0 && (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {vars.map((v, i) => (
+            <label key={i} className="text-sm flex items-center gap-2">
+              <span className="text-muted-foreground w-12 shrink-0">{`{{${i + 1}}}`}</span>
+              <select className="input h-9" value={v} onChange={(e) => onChange({ ...value, vars: vars.map((x, j) => (j === i ? e.target.value : x)) })}>
+                {fields.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+            </label>
+          ))}
+        </div>
+      )}
+      {tpl && <div className="rounded-xl bg-secondary/60 p-3.5 text-sm"><p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Preview</p>{preview}</div>}
+    </div>
+  )
+}
 
 function PaceSettings({ settings }) {
   const qc = useQueryClient()
@@ -518,8 +656,8 @@ export default function WhatsAppCampaigns() {
         {s && (
           <div className="flex flex-wrap items-center gap-2">
             <Pill state={s.whatsapp.state} />
-            <span className={clsx('inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold', s.automation.n8n ? 'bg-success/10 text-success' : 'bg-error/10 text-error')}>
-              <Workflow size={12} /> Automation {s.automation.n8n ? 'running' : 'off'}</span>
+            {s.edition !== 'client' && <span className={clsx('inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold', s.automation.n8n ? 'bg-success/10 text-success' : 'bg-error/10 text-error')}>
+              <Workflow size={12} /> Automation {s.automation.n8n ? 'running' : 'off'}</span>}
             <button type="button" onClick={() => toggleAuto.mutate(!s.settings.wa_auto_reply)} disabled={toggleAuto.isPending}
               className={clsx('inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold border', s.settings.wa_auto_reply ? 'border-success/30 bg-success/10 text-success' : 'border-border text-muted-foreground')}>
               <Bot size={12} /> Auto-replies {s.settings.wa_auto_reply ? 'on' : 'off'}</button>
@@ -536,12 +674,12 @@ export default function WhatsAppCampaigns() {
       </div>
       {tab === 'monitor' && (
         <div className="grid gap-6 lg:grid-cols-[1.35fr_1fr] items-start">
-          <div className="space-y-6"><LivePhone status={s} /><Today status={s} campaigns={camps.data || []} /></div>
+          <div className="space-y-6"><LivePhone status={s} onSetup={() => setTab('settings')} /><Today status={s} campaigns={camps.data || []} /></div>
           <ActivityFeed />
         </div>
       )}
-      {tab === 'campaigns' && <Campaigns campaigns={camps.data || []} isError={camps.isError} refetch={camps.refetch} />}
-      {tab === 'settings' && <PaceSettings settings={s?.settings} />}
+      {tab === 'campaigns' && <Campaigns engine={s?.engine} campaigns={camps.data || []} isError={camps.isError} refetch={camps.refetch} />}
+      {tab === 'settings' && <div className="space-y-6 max-w-2xl"><ConnectionSettings status={s} /><PaceSettings settings={s?.settings} /></div>}
     </div>
   )
 }

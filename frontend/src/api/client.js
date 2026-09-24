@@ -258,6 +258,10 @@ export const whatsappApi = {
     return api.post('/whatsapp/contacts', fd).then((r) => r.data)
   },
   campaigns:    ()              => api.get('/whatsapp/campaigns').then((r) => r.data.campaigns),
+  meta:         ()              => api.get('/whatsapp/meta').then((r) => r.data),
+  saveMeta:     (data)          => api.put('/whatsapp/meta', data).then((r) => r.data),
+  testMeta:     ()              => api.post('/whatsapp/meta/test').then((r) => r.data),
+  metaTemplates: ()             => api.get('/whatsapp/meta/templates').then((r) => r.data.templates),
   create:       (data)          => api.post('/whatsapp/campaigns', data).then((r) => r.data),
   action:       (id, action)    => api.post(`/whatsapp/campaigns/${id}/${action}`).then((r) => r.data),
 }
