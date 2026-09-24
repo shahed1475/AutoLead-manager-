@@ -34,6 +34,18 @@ def _reset_rate_limiter():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolated_workspace_files(tmp_path, monkeypatch):
+    """Client workspaces talk to the host supervisor through files. Tests must
+    never write the real control file or read the real key/status."""
+    from backend.portal import config as portal_config, workspaces
+    monkeypatch.setattr(workspaces, "CONTROL_FILE", tmp_path / "workspaces.json")
+    monkeypatch.setattr(workspaces, "STATUS_FILE", tmp_path / "status.json")
+    monkeypatch.setattr(workspaces, "KEY_FILE", tmp_path / "workspace.key")
+    monkeypatch.setattr(portal_config, "LINK_FILE", tmp_path / "portal-link.txt")
+    yield
+
+
 @pytest_asyncio.fixture
 async def clean_db():
     """Function-scoped: wipe and reinitialize the test SQLite DB before each test.

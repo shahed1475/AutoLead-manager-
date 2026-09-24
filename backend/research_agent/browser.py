@@ -93,6 +93,8 @@ class BrowserController:
                 raise RuntimeError(f"Could not launch the research browser: {msg[:200]}") from exc
         self._context = await self._browser.new_context(user_agent=_UA, viewport={"width": 1440, "height": 900})
         await self._context.add_init_script(_STEALTH_INIT_SCRIPT)
+        from .. import edition
+        await edition.guard_browser_context(self._context)   # client workspaces: no private addresses
         self._page = await self._context.new_page()
         self._page.set_default_timeout(self.page_timeout_ms)
         self._tabs = [self._page]

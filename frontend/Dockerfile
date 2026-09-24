@@ -9,12 +9,16 @@ RUN --mount=type=cache,target=/root/.npm \
     npm ci --no-audit --no-fund && test -x node_modules/.bin/vite
 COPY . .
 # Absolute base for the web build (vite.config's './' is for Electron file://).
-RUN npx vite build --base=/
+RUN npx vite build --base=/ \
+ && npx vite build --config vite.portal.config.js \
+ && node scripts/portal-dist.mjs
 
 FROM nginx:1.27-alpine
 COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=build /app/dist-portal /usr/share/nginx/portal
 ENV NGINX_PORT=80 \
+    PORTAL_PORT=81 \
     BACKEND_URL=http://backend:8000
 COPY nginx.conf /etc/nginx/templates/default.conf.template
-EXPOSE 80
+EXPOSE 80 81
 CMD ["nginx", "-g", "daemon off;"]

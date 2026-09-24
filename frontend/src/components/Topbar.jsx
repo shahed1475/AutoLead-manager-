@@ -1,10 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { useLocation } from 'react-router-dom'
-import { Clock, Activity, Sun, Moon, Menu } from 'lucide-react'
+import { Clock, Activity, Sun, Moon, Menu, LogOut } from 'lucide-react'
 import { useTheme } from '../lib/theme'
 import { LogoMark } from './Logo'
 import { engineApi } from '../api/client'
 import clsx from 'clsx'
+import { setSessionToken } from '../api/client'
+import { CLIENT_SIGN_OUT, isClientEdition } from '../lib/edition'
 
 const PAGE_TITLES = {
   '/dashboard': 'Overview',
@@ -19,6 +21,7 @@ const PAGE_TITLES = {
   '/ai-lab':    'AI Lab',
   '/inbox':     'Inbox',
   '/settings':  'Settings',
+  '/clients':   'Clients',
 }
 
 function EngineStatus({ status }) {
@@ -106,6 +109,13 @@ export default function Topbar({ onMenu }) {
       <span className="hidden md:block w-px h-4 bg-border" />
       <EngineStatus status={engineStatus} />
       <ThemeToggle />
+      {isClientEdition() && (
+        <button type="button" aria-label="Sign out" title="Sign out"
+          onClick={() => { setSessionToken(''); window.location.replace(CLIENT_SIGN_OUT) }}
+          className="btn-ghost h-9 px-2.5 text-sm">
+          <LogOut size={15} /> <span className="hidden sm:inline">Sign out</span>
+        </button>
+      )}
       </div>
     </header>
   )

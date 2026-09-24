@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
-from .. import database as db
+from .. import database as db, edition
 from .. import email_sender
 from ..models import CompanyDnaUpdate, SettingsBulkUpdate, SettingsUpdate
 from ..config import get_settings as _get_cfg
@@ -48,6 +48,8 @@ async def get_settings():
 
 @router.put("")
 async def update_setting(payload: SettingsUpdate):
+    if edition.setting_locked(payload.key):
+        raise HTTPException(403, "This setting is managed by the workspace owner.")
     if payload.key == "research_handoff_mode" and str(payload.value).strip().lower() not in ("manual", "automatic"):
         raise HTTPException(422, "research_handoff_mode must be 'manual' or 'automatic'")
     if _should_skip_secret_write(payload.key, payload.value):
@@ -67,6 +69,9 @@ async def bulk_update(payload: SettingsBulkUpdate):
     skipped = 0
     try:
         for key, value in items.items():
+            if edition.setting_locked(str(key)):
+                skipped += 1
+                continue
             if _should_skip_secret_write(str(key), str(value)):
                 skipped += 1
                 continue

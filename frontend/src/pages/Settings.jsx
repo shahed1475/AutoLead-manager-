@@ -10,6 +10,7 @@ import { settingsApi, aiApi, leadsApi, authApi, setSessionToken } from '../api/c
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import EmailSendersSection from '../components/settings/EmailSendersSection'
+import { isClientEdition } from '../lib/edition'
 import SearchProvidersSection from '../components/settings/SearchProvidersSection'
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
@@ -187,6 +188,7 @@ function AppLockCard() {
     setMut.mutate()
   }
 
+  if (isClientEdition()) return null     // client workspaces sign in through the client link
   return (
     <SectionCard
       title="App Lock"
@@ -512,6 +514,7 @@ export default function Settings() {
       </SectionCard>
 
       {/* ─── Ollama AI ─── */}
+      {!isClientEdition() && (
       <SectionCard
         title="Ollama AI"
         description="Local LLM — zero cost, fully private. Run: ollama serve"
@@ -558,8 +561,10 @@ export default function Settings() {
           </div>
         )}
       </SectionCard>
+      )}
 
       {/* ─── Cloud LLM (optional) ─── */}
+      {!isClientEdition() && (
       <SectionCard
         title="Cloud LLM (Optional)"
         description="Ollama above stays the default and keeps AutoLead fully offline. Only switch this if you want higher-quality generation and don't mind API costs."
@@ -623,6 +628,7 @@ export default function Settings() {
           </p>
         )}
       </SectionCard>
+      )}
 
       {/* ─── Engine & Limits ─── */}
       <SectionCard
@@ -676,6 +682,7 @@ export default function Settings() {
       </SectionCard>
 
       {/* ─── WhatsApp ─── */}
+      {!isClientEdition() && (
       <SectionCard
         title="WhatsApp"
         description="Browser automation via pywhatkit — requires an active WhatsApp Web session."
@@ -696,6 +703,7 @@ export default function Settings() {
           onChange={() => set('whatsapp_close_tab', values.whatsapp_close_tab === 'true' ? 'false' : 'true')}
         />
       </SectionCard>
+      )}
 
       {/* ─── Scraper ─── */}
       <SectionCard

@@ -291,6 +291,10 @@ async def send_whatsapp(phone_number: str, message: str, config: Dict[str, Any])
     Returns:
         True on success, False on failure (errors logged + pushed to log_stream)
     """
+    from . import edition
+    if edition.is_client():
+        _emit("ERROR", "WHATSAPP", "WhatsApp sending isn't available in client workspaces")
+        return False
     if not phone_number or not phone_number.strip():
         _emit("ERROR", "WHATSAPP", "send_whatsapp called with empty phone_number")
         return False

@@ -3,11 +3,36 @@ import { RefreshCw } from 'lucide-react'
 import { LogoMark, BRAND } from './Logo'
 import toast from 'react-hot-toast'
 import { authApi, getSessionToken, setSessionToken } from '../api/client'
+import { CLIENT_SIGN_IN, isClientEdition, setEdition } from '../lib/edition'
 
 // Gates the whole app behind the optional local app password. If no
 // password has ever been set (fresh install / dev workflow), the app stays
 // open. Listens for the 'autolead:unauthorized' event the axios client
 // dispatches on any 401, so an expired/invalid session re-locks the UI.
+//
+// In a client workspace (edition 'client') there is no password: the client
+// signs in on the client link's sign-in page, which sends them here with a
+// one-time link (?handoff=…) that this workspace exchanges for a session.
+
+async function clientSignIn() {
+  const params = new URLSearchParams(window.location.search)
+  const handoff = params.get('handoff')
+  if (handoff) {
+    params.delete('handoff')
+    const rest = params.toString()
+    window.history.replaceState(null, '', window.location.pathname + (rest ? `?${rest}` : '') + window.location.hash)
+    try {
+      const { token } = await authApi.handoff(handoff)
+      setSessionToken(token)
+      return true
+    } catch {
+      setSessionToken('')
+    }
+  }
+  if (getSessionToken()) return true
+  window.location.replace(CLIENT_SIGN_IN)
+  return false
+}
 export default function AuthGate({ children }) {
   const [status, setStatus] = useState('checking') // checking | locked | open
   const [password, setPassword] = useState('')
@@ -15,7 +40,12 @@ export default function AuthGate({ children }) {
 
   async function checkStatus() {
     try {
-      const { password_set } = await authApi.status()
+      const { password_set, edition } = await authApi.status()
+      setEdition(edition)
+      if (edition === 'client') {
+        if (await clientSignIn()) setStatus('open')
+        return
+      }
       if (!password_set) {
         setStatus('open')
         return
@@ -28,7 +58,10 @@ export default function AuthGate({ children }) {
 
   useEffect(() => {
     checkStatus()
-    const onUnauthorized = () => setStatus('locked')
+    const onUnauthorized = () => {
+      if (isClientEdition()) { window.location.replace(CLIENT_SIGN_IN); return }
+      setStatus('locked')
+    }
     window.addEventListener('autolead:unauthorized', onUnauthorized)
     return () => window.removeEventListener('autolead:unauthorized', onUnauthorized)
   }, [])

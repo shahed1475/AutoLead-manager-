@@ -461,6 +461,29 @@ async def send_followup_email(lead: Dict[str, Any]) -> None:
         raise RuntimeError(f"Follow-up email failed for {to_email}")
 
 
+async def send_system_email(to_email: str, subject: str, body: str,
+                            reply_to: Optional[str] = None) -> bool:
+    """Send a transactional message (e.g. a client-portal sign-in code) from
+    the configured account. Not outreach: no lead, no campaign — but it still
+    goes through send_email(), the single SMTP path. Returns False when email
+    isn't set up or sending fails."""
+    cfg_dict = await _smtp_cfg()
+    if not _smtp_ready(cfg_dict):
+        logger.warning("send_system_email: SMTP is not configured")
+        return False
+    return await asyncio.to_thread(send_email, to_email, subject, body, cfg_dict, None, reply_to)
+
+
+def _smtp_ready(cfg_dict: Dict[str, Any]) -> bool:
+    return (cfg_dict.get("username", "") not in _PLACEHOLDER_USERS
+            and cfg_dict.get("password", "") not in _PLACEHOLDER_PWDS)
+
+
+async def system_email_ready() -> bool:
+    """True when an email account is set up, so sign-in codes can go out."""
+    return _smtp_ready(await _smtp_cfg())
+
+
 async def send_reply_email(to_email: str, subject: str, body: str) -> None:
     """Send an approved auto-reply draft (see reply_detector.py's draft-and-approve flow)."""
     if not to_email:

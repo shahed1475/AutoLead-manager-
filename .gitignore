@@ -9,6 +9,7 @@ venv/
 # Node
 node_modules/
 dist/
+dist-portal/
 build/
 *.js.map
 
@@ -49,5 +50,6 @@ Thumbs.db
 
 # One-click server runtime state (share link, tunnel pid, logs)
 .run/
+workspaces/
 # Permanent-link tunnel token — secret, never commit
 deploy/tunnel.env

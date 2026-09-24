@@ -207,6 +207,7 @@ export const authApi = {
   setPassword:   (password, currentPassword) =>
     api.post('/auth/set-password', { password, current_password: currentPassword }).then((r) => r.data),
   clearPassword: (password) => api.post('/auth/clear-password', { password }).then((r) => r.data),
+  handoff:       (token)   => api.post('/auth/handoff', { token }).then((r) => r.data),
 }
 
 export const followupsApi = {
@@ -223,6 +224,21 @@ export const discoveryApi = {
   cancel:  (runId)   => api.post(`/discovery/search/${runId}/cancel`).then((r) => r.data),
   // Reconnect to an in-flight (or just-finished) run after a navigation/refresh.
   active:  ()        => api.get('/discovery/search/active').then((r) => r.data),
+}
+
+// Client portal — the owner's side (clients, their requests, delivery).
+export const clientsApi = {
+  setup:         ()             => api.get('/clients/setup').then((r) => r.data),
+  add:           (data)         => api.post('/clients', data).then((r) => r.data),
+  update:        (id, data)     => api.patch(`/clients/${id}`, data).then((r) => r.data),
+  settings:      ()             => api.get('/clients/portal-settings').then((r) => r.data),
+  saveSettings:  (data)         => api.put('/clients/portal-settings', data).then((r) => r.data),
+  testEmail:     (to)           => api.post('/clients/portal-settings/test-email', { to }).then((r) => r.data),
+  list:          ()             => api.get('/clients').then((r) => r.data),
+  setStatus:     (id, status)   => api.patch(`/clients/${id}`, { status }).then((r) => r.data),
+  workspace:     (id, action, confirmEmail) => api.post(`/clients/${id}/workspace`, { action, confirm_email: confirmEmail }).then((r) => r.data),
+  release:       ()             => api.get('/clients/release').then((r) => r.data),
+  publish:       ()             => api.post('/clients/release/publish').then((r) => r.data),
 }
 
 // Find leads runs — chain collect -> deep research -> draft outreach over one

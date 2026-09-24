@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="Request leads and download your results." />
+    <meta name="theme-color" content="#121211" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Inter is only a fallback (system fonts come first), so it must never
+         block the page: slow or blocked Google Fonts (some networks) would
+         otherwise stall the whole app. -->
+    <link rel="stylesheet" media="print" onload="this.media='all'"
+          href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300..800&display=swap" />
+    <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300..800&display=swap" /></noscript>
+    <title>HOM · Client portal</title>
+    <script>
+      // Apply the saved day/night theme before first paint (see src/lib/theme.js).
+      (function () {
+        var t = null
+        try { t = localStorage.getItem('autolead_theme') } catch (e) {}
+        if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+        document.documentElement.setAttribute('data-theme', t)
+        document.querySelector('meta[name="theme-color"]').setAttribute('content', t === 'light' ? '#F6F5F1' : '#121211')
+      })()
+    </script>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/portal/main.jsx"></script>
+  </body>
+</html>

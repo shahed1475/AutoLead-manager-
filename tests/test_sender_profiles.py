@@ -203,3 +203,15 @@ async def test_default_endpoint(enabled):
         await c.post(f"/api/email-senders/{b}/default")
         senders_ = (await c.get("/api/email-senders")).json()["senders"]
     assert [s["id"] for s in senders_ if s["is_default"]] == [b]
+
+
+async def test_new_password_clears_an_error_so_it_can_be_retested(enabled):
+    db = enabled
+    async with _client() as c:
+        pid = (await c.post("/api/email-senders", json=SMTP_BODY)).json()["id"]
+        await db.update_sender_profile(pid, {"status": "error", "last_error": "bad password"})
+        await c.patch(f"/api/email-senders/{pid}", json={"name": "Renamed"})
+        assert (await db.get_sender_profile(pid))["status"] == "error"      # no new password, no change
+        await c.patch(f"/api/email-senders/{pid}", json={"smtp_password": "NEW-APP-PW"})
+        p = await db.get_sender_profile(pid)
+    assert p["status"] == "connected" and p["last_error"] is None

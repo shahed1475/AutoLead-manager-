@@ -1,0 +1,52 @@
+# ─── One client's private HOM workspace ───────────────────────────────────────
+# Started by scripts/hom_supervisor.py as project "hom-ws-<id>" — never by hand.
+# Each workspace has its own containers, its own Docker network (so workspaces
+# can't reach each other) and its own data folder (workspaces/ws-<id>/).
+# Images are the LAST PUBLISHED release (hom-client-*:current), run in the
+# client edition: sign-in only via the client link, no WhatsApp desktop,
+# no private-network access. Only the web port is published, on 127.0.0.1.
+#
+# Variables (set by the supervisor): WS_ID WS_PORT WS_DIR WS_SECRET WS_AI_URL WS_AI_MODEL
+# (WS_IMAGE_TAG / WS_PROJECT_PREFIX only differ for an isolated test copy)
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+  backend:
+    image: hom-client-backend:${WS_IMAGE_TAG:-current}
+    restart: unless-stopped
+    labels:
+      hom.workspace: "${WS_ID}"
+      hom.project_prefix: "${WS_PROJECT_PREFIX:-hom-ws-}"
+    environment:
+      HOM_EDITION: client
+      HOM_WORKSPACE_ID: "${WS_ID}"
+      HOM_HANDOFF_SECRET: "${WS_SECRET}"
+      OLLAMA_BASE_URL: "${WS_AI_URL}"
+      OLLAMA_MODEL: "${WS_AI_MODEL:-}"
+    volumes:
+      - ${WS_DIR}/data:/app/backend/data
+      - ${WS_DIR}/company_dna.txt:/app/backend/company_dna.txt
+    shm_size: "1gb"            # headless Chromium needs more than Docker's 64MB
+    mem_limit: 2g              # one workspace can never take the whole machine
+    cpus: 2.0
+    pids_limit: 1024
+    security_opt:
+      - no-new-privileges:true
+
+  frontend:
+    image: hom-client-frontend:${WS_IMAGE_TAG:-current}
+    restart: unless-stopped
+    labels:
+      hom.workspace: "${WS_ID}"
+      hom.project_prefix: "${WS_PROJECT_PREFIX:-hom-ws-}"
+    environment:
+      NGINX_PORT: "80"
+      PORTAL_PORT: "81"         # the image's client-portal block; unused here and not published
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "127.0.0.1:${WS_PORT}:80"
+    depends_on:
+      - backend
+    mem_limit: 128m
+    security_opt:
+      - no-new-privileges:true

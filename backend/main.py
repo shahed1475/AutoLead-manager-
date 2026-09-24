@@ -9,7 +9,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-from . import auth
+from . import auth, edition
 from .config import get_settings
 from .rate_limit import limiter
 from .database import (
@@ -32,6 +32,8 @@ from .routers import research_agent as research_agent_router
 from .routers import automation as automation_router
 from .routers import lead_search as lead_search_router
 from .routers import lead_runs as lead_runs_router
+from .routers import portal as portal_router
+from .routers import portal_admin as portal_admin_router
 from .routers import email_campaigns as email_campaigns_router
 from .routers import email_senders as email_senders_router
 from .routers.campaigns import get_campaign_state
@@ -125,6 +127,10 @@ async def lifespan(app: FastAPI):
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
+if edition.is_client():
+    # A client workspace may reach the internet, never private addresses.
+    edition.install_egress_guard()
+
 app = FastAPI(
     title=settings.app_name,
     version="2.0.0",
@@ -164,6 +170,11 @@ app.include_router(research_agent_router.router, dependencies=_authed)
 app.include_router(automation_router.router, dependencies=_authed)
 app.include_router(lead_search_router.router, dependencies=_authed)
 app.include_router(lead_runs_router.router, dependencies=_authed)
+if not edition.is_client():
+    # Owner only. A client workspace has no portal and no Clients admin.
+    app.include_router(portal_admin_router.router, dependencies=_authed)   # owner's view of the client portal
+    # Client portal API: public, but protected by its own client sessions.
+    app.include_router(portal_router.router)
 app.include_router(email_campaigns_router.router, dependencies=_authed)  # feature-flagged (email_campaigns_enabled, default OFF)
 app.include_router(email_senders_router.router)  # per-route session/flag deps (Gmail OAuth callback must stay public)
 

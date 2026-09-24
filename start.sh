@@ -2,17 +2,19 @@
 # ══════════════════════════════════════════════════════════════════════════════
 #  HOM · Sales Growth Engine — one-click server (Linux)
 #
-#    ./start.sh              start the app + a public link you can share
-#    ./start.sh local        start the app on this computer only (no link)
-#    ./start.sh stop         stop the app and the public link
-#    ./start.sh status       show what is running and the current link
-#    ./start.sh link         print (and copy) the current share link
+#    ./start.sh              start the app + your dashboard link + the client link
+#    ./start.sh local        start the app on this computer only (no links)
+#    ./start.sh stop         stop the app and close both links
+#    ./start.sh status       show what is running and the current links
+#    ./start.sh link         print (and copy) your dashboard link
+#    ./start.sh client-link  print (and copy) the link you give to clients
 #    ./start.sh install-button   add the HOM button to the desktop + app menu
 #
 #  The app runs in Docker on this machine (it needs the local AI model, the
-#  research browser and WhatsApp desktop). The public link is a Cloudflare
-#  Tunnel: HTTPS, no router changes, your IP stays private.
-#  Before any link is opened the app must be protected by a password.
+#  research browser and WhatsApp desktop). Public links are Cloudflare
+#  Tunnels: HTTPS, no router changes, your IP stays private.
+#  Your dashboard link opens only once the app has a password. The client
+#  link reaches the client portal only — never your dashboard or data.
 #  Developer mode (venv + Vite dev server) lives in scripts/dev.sh.
 # ══════════════════════════════════════════════════════════════════════════════
 set -uo pipefail
@@ -23,16 +25,25 @@ RUN_DIR="$ROOT/.run"
 mkdir -p "$RUN_DIR"
 
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+PORTAL_PORT="${PORTAL_PORT:-5174}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 LOCAL_URL="http://localhost:${FRONTEND_PORT}"
 API="http://127.0.0.1:${BACKEND_PORT}/api"
 TUNNEL_PID="$RUN_DIR/tunnel.pid"
 TUNNEL_LOG="$RUN_DIR/tunnel.log"
 LINK_FILE="$RUN_DIR/share-link.txt"
+# The client portal has its own link (its own port: only the portal is there).
+PORTAL_TUNNEL_PID="$RUN_DIR/portal-tunnel.pid"
+PORTAL_TUNNEL_LOG="$RUN_DIR/portal-tunnel.log"
+PORTAL_LINK_FILE="$RUN_DIR/portal-link.txt"
 MIN_PASSWORD=10
-# Optional permanent link: deploy/tunnel.env with TUNNEL_TOKEN=... and
-# PUBLIC_URL=https://app.yourdomain.com (see docs/SHARING.md). Git-ignored.
+# Optional permanent links: deploy/tunnel.env with TUNNEL_TOKEN=...,
+# PUBLIC_URL=https://app.yourdomain.com and (optional) PORTAL_PUBLIC_URL=
+# https://clients.yourdomain.com (see docs/SHARING.md). Git-ignored.
 TUNNEL_ENV="$ROOT/deploy/tunnel.env"
+# HTTP/2 over TCP, not QUIC (UDP): home routers often drop idle UDP flows,
+# which cuts the link ("no recent network activity" → Cloudflare error 530).
+TUNNEL_PROTOCOL="${TUNNEL_PROTOCOL:-http2}"
 
 # Always the system Docker engine (Docker Desktop, if installed, is a
 # separate engine in a VM and can't reach the local AI model).
@@ -91,6 +102,43 @@ app_up() { curl -fsS -o /dev/null --max-time 3 "$API/health" 2>/dev/null; }
 tunnel_alive() {
   [[ -f "$TUNNEL_PID" ]] && kill -0 "$(cat "$TUNNEL_PID")" 2>/dev/null
 }
+
+portal_tunnel_alive() {
+  [[ -f "$PORTAL_TUNNEL_PID" ]] && kill -0 "$(cat "$PORTAL_TUNNEL_PID")" 2>/dev/null
+}
+
+# ── Client workspaces (scripts/hom_supervisor.py) ─────────────────────────────
+SUPERVISOR_PID="$RUN_DIR/supervisor.pid"
+
+supervisor_alive() {
+  [[ -f "$SUPERVISOR_PID" ]] && kill -0 "$(cat "$SUPERVISOR_PID")" 2>/dev/null
+}
+
+start_supervisor() {
+  if supervisor_alive; then ok "Client workspaces service is running"; return 0; fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    warn "python3 is missing — client workspaces can't run"; return 1
+  fi
+  mkdir -p "$RUN_DIR/workspaces"
+  setsid nohup python3 "$ROOT/scripts/hom_supervisor.py" >>"$RUN_DIR/supervisor.log" 2>&1 </dev/null &
+  sleep 1
+  if supervisor_alive; then ok "Client workspaces service started"; else warn "Client workspaces service didn't start — see $RUN_DIR/supervisor.log"; fi
+}
+
+stop_supervisor() {
+  if supervisor_alive; then
+    kill "$(cat "$SUPERVISOR_PID")" 2>/dev/null || true
+    ok "Client workspaces service stopped"
+  fi
+  local ids
+  ids="$("${DOCKER[@]}" ps -q --filter label=hom.workspace 2>/dev/null)"
+  if [[ -n "$ids" ]]; then
+    # shellcheck disable=SC2086
+    "${DOCKER[@]}" stop $ids >/dev/null 2>&1 && ok "Client workspaces paused (they start again with HOM)"
+  fi
+}
+
+portal_up() { curl -fsS -o /dev/null --max-time 3 "http://127.0.0.1:${PORTAL_PORT}/" 2>/dev/null; }
 
 copy_to_clipboard() {
   local text="$1" q
@@ -247,46 +295,102 @@ start_tunnel() {
       return 1
     fi
     say "Opening your permanent link…"
-    TUNNEL_TOKEN="$TUNNEL_TOKEN" setsid nohup "$bin" tunnel --no-autoupdate run \
+    TUNNEL_TOKEN="$TUNNEL_TOKEN" setsid nohup "$bin" tunnel --no-autoupdate --protocol "$TUNNEL_PROTOCOL" run \
       >"$TUNNEL_LOG" 2>&1 </dev/null &
     echo $! >"$TUNNEL_PID"
     url="$PUBLIC_URL"
   else
-    say "Opening a share link…"
-    setsid nohup "$bin" tunnel --no-autoupdate --url "http://127.0.0.1:${FRONTEND_PORT}" \
-      >"$TUNNEL_LOG" 2>&1 </dev/null &
-    echo $! >"$TUNNEL_PID"
-    local deadline=$((SECONDS + 45))
-    while (( SECONDS < deadline )) && [[ -z "$url" ]]; do
-      url="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | grep -v '://api\.' | head -n1 || true)"
-      tunnel_alive || break
-      [[ -z "$url" ]] && sleep 1
-    done
+    say "Opening your dashboard link…"
+    url="$(quick_tunnel "$bin" "$FRONTEND_PORT" "$TUNNEL_PID" "$TUNNEL_LOG")" || url=""
   fi
   if [[ -z "$url" ]] || ! tunnel_alive; then
     fail "The share link could not be opened. Details: $TUNNEL_LOG"
     stop_tunnel quiet
     return 1
   fi
-  # A new link takes a few seconds to become reachable worldwide: wait for
-  # Cloudflare to register the connection, then for the link to answer.
+  wait_live "$url" "$TUNNEL_LOG"
+  printf '%s\n' "$url" >"$LINK_FILE"
+  ok "Dashboard link is open"
+}
+
+# Start a free Cloudflare quick tunnel to a local port; prints its URL.
+quick_tunnel() {  # bin port pidfile logfile
+  local bin="$1" port="$2" pidfile="$3" log="$4" url=""
+  setsid nohup "$bin" tunnel --no-autoupdate --protocol "$TUNNEL_PROTOCOL" --url "http://127.0.0.1:${port}" \
+    >"$log" 2>&1 </dev/null &
+  echo $! >"$pidfile"
+  local deadline=$((SECONDS + 45))
+  while (( SECONDS < deadline )) && [[ -z "$url" ]]; do
+    url="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$log" 2>/dev/null | grep -v '://api\.' | head -n1 || true)"
+    kill -0 "$(cat "$pidfile")" 2>/dev/null || break
+    [[ -z "$url" ]] && sleep 1
+  done
+  [[ -n "$url" ]] && printf '%s' "$url"
+}
+
+# A new link takes a few seconds to become reachable worldwide: wait for
+# Cloudflare to register the connection, then for the link to answer.
+wait_live() {  # url logfile
   say "Waiting for the link to go live…"
   local reg_deadline=$((SECONDS + 30))
-  while (( SECONDS < reg_deadline )) && ! grep -q "Registered tunnel connection" "$TUNNEL_LOG" 2>/dev/null; do
+  while (( SECONDS < reg_deadline )) && ! grep -q "Registered tunnel connection" "$2" 2>/dev/null; do
     sleep 1
   done
-  if ! wait_public "$url" 60; then
+  if ! wait_public "$1" 60; then
     warn "The link was created but isn't answering yet — give it a minute."
   fi
-  printf '%s\n' "$url" >"$LINK_FILE"
-  ok "Share link is open"
+}
+
+# The client link: only the client portal (sign-up, requests, results) is
+# reachable through it — never the dashboard, settings or your leads.
+start_portal_tunnel() {
+  if portal_tunnel_alive && [[ -s "$PORTAL_LINK_FILE" ]]; then
+    ok "Client link is already open"
+    return 0
+  fi
+  stop_portal_tunnel quiet
+  if ! portal_up; then
+    warn "The client portal isn't running — rebuild once with: HOM_REBUILD=1 ./start.sh"
+    return 1
+  fi
+  if [[ -f "$TUNNEL_ENV" ]]; then
+    # shellcheck disable=SC1090
+    source "$TUNNEL_ENV"
+    if [[ -n "${PORTAL_PUBLIC_URL:-}" ]]; then
+      # Served by the same named tunnel (a second hostname → localhost:$PORTAL_PORT).
+      printf '%s\n' "$PORTAL_PUBLIC_URL" >"$PORTAL_LINK_FILE"
+      ok "Client link is open"
+      return 0
+    fi
+  fi
+  local bin url
+  bin="$(cloudflared_bin)" || return 1
+  say "Opening your client link…"
+  url="$(quick_tunnel "$bin" "$PORTAL_PORT" "$PORTAL_TUNNEL_PID" "$PORTAL_TUNNEL_LOG")" || url=""
+  if [[ -z "$url" ]] || ! portal_tunnel_alive; then
+    fail "The client link could not be opened. Details: $PORTAL_TUNNEL_LOG"
+    stop_portal_tunnel quiet
+    return 1
+  fi
+  wait_live "$url" "$PORTAL_TUNNEL_LOG"
+  printf '%s\n' "$url" >"$PORTAL_LINK_FILE"
+  ok "Client link is open"
+}
+
+stop_portal_tunnel() {
+  local quiet="${1:-}"
+  if portal_tunnel_alive; then
+    kill "$(cat "$PORTAL_TUNNEL_PID")" 2>/dev/null || true
+    [[ -z "$quiet" ]] && ok "Client link closed"
+  fi
+  rm -f "$PORTAL_TUNNEL_PID" "$PORTAL_LINK_FILE"
 }
 
 stop_tunnel() {
   local quiet="${1:-}"
   if tunnel_alive; then
     kill "$(cat "$TUNNEL_PID")" 2>/dev/null || true
-    [[ -z "$quiet" ]] && ok "Share link closed"
+    [[ -z "$quiet" ]] && ok "Dashboard link closed"
   fi
   rm -f "$TUNNEL_PID" "$LINK_FILE"
 }
@@ -297,15 +401,24 @@ open_browser() {
 }
 
 summary() {
-  local link=""
+  local link="" plink=""
   [[ -s "$LINK_FILE" ]] && link="$(cat "$LINK_FILE")"
+  [[ -s "$PORTAL_LINK_FILE" ]] && plink="$(cat "$PORTAL_LINK_FILE")"
   printf '\n  %s──────────────────────────────────────────────────────────%s\n' "$DIM" "$X"
   printf '  %sHOM is running%s\n\n' "$B" "$X"
   printf '  On this computer   %s%s%s\n' "$C" "$LOCAL_URL" "$X"
   if [[ -n "$link" ]]; then
-    printf '  Share this link    %s%s%s\n' "$C$B" "$link" "$X"
-    if copy_to_clipboard "$link"; then printf '  %s(copied to your clipboard)%s\n' "$DIM" "$X"; fi
-    [[ -f "$TUNNEL_ENV" ]] || printf '\n  %sThis link changes each time the link is reopened.%s\n' "$DIM" "$X"
+    printf '  Your dashboard     %s%s%s   %s(only for you — password)%s\n' "$C$B" "$link" "$X" "$DIM" "$X"
+  fi
+  if [[ -n "$plink" ]]; then
+    printf '  Client link        %s%s%s   %s(share this with clients)%s\n' "$C$B" "$plink" "$X" "$DIM" "$X"
+    if copy_to_clipboard "$plink"; then printf '  %s(client link copied to your clipboard)%s\n' "$DIM" "$X"; fi
+    printf '  %sClients sign in with a code sent from your Gmail (Settings → Email).%s\n' "$DIM" "$X"
+  elif [[ -n "$link" ]]; then
+    copy_to_clipboard "$link" && printf '  %s(dashboard link copied to your clipboard)%s\n' "$DIM" "$X"
+  fi
+  if [[ -n "$link$plink" && ! -f "$TUNNEL_ENV" ]]; then
+    printf '\n  %sThese links change each time they are reopened.%s\n' "$DIM" "$X"
   fi
   printf '\n  %sStop everything:%s  ./start.sh stop   %s(or right-click the HOM button → Stop)%s\n' "$DIM" "$X" "$DIM" "$X"
   printf '  %s──────────────────────────────────────────────────────────%s\n' "$DIM" "$X"
@@ -329,7 +442,7 @@ Terminal=true
 Categories=Office;
 Keywords=leads;sales;crm;
 StartupNotify=false
-Actions=local;status;link;stop;
+Actions=local;status;clientlink;link;stop;
 
 [Desktop Action local]
 Name=Start on this computer only
@@ -339,8 +452,12 @@ Exec=env HOM_FROM_LAUNCHER=1 "$ROOT/start.sh" local
 Name=Status
 Exec=env HOM_FROM_LAUNCHER=1 "$ROOT/start.sh" status
 
+[Desktop Action clientlink]
+Name=Copy client link
+Exec=env HOM_FROM_LAUNCHER=1 "$ROOT/start.sh" client-link
+
 [Desktop Action link]
-Name=Copy share link
+Name=Copy dashboard link
 Exec=env HOM_FROM_LAUNCHER=1 "$ROOT/start.sh" link
 
 [Desktop Action stop]
@@ -365,14 +482,17 @@ cmd_start() {
   check_docker
   check_ai
   start_app
+  start_supervisor
   if [[ "$share" == "yes" ]]; then
     if ensure_password; then
       if start_tunnel; then
         notify "HOM is online" "$(cat "$LINK_FILE")"
       else
-        warn "The app works on this computer, but the share link isn't available right now."
+        warn "The app works on this computer, but the dashboard link isn't available right now."
       fi
     fi
+    # The client link doesn't depend on your password: nothing of yours is on it.
+    start_portal_tunnel || warn "The client link isn't available right now."
   fi
   open_browser
   summary
@@ -383,6 +503,8 @@ cmd_stop() {
   banner
   step "Stopping"
   stop_tunnel
+  stop_portal_tunnel
+  stop_supervisor
   if "${COMPOSE[@]}" stop >"$RUN_DIR/docker.log" 2>&1; then ok "App stopped"; else warn "Docker reported a problem — see $RUN_DIR/docker.log"; fi
   finish 0
 }
@@ -394,17 +516,25 @@ cmd_status() {
   if app_up; then
     if password_is_set; then ok "Protected by a password"; else warn "No password yet — the share link stays closed until one is set"; fi
   fi
-  if tunnel_alive && [[ -s "$LINK_FILE" ]]; then ok "Share link: $(cat "$LINK_FILE")"; else say "No share link is open."; fi
+  if tunnel_alive && [[ -s "$LINK_FILE" ]]; then ok "Dashboard link: $(cat "$LINK_FILE")"; else say "No dashboard link is open."; fi
+  if [[ -s "$PORTAL_LINK_FILE" ]] && { portal_tunnel_alive || [[ -f "$TUNNEL_ENV" ]]; }; then ok "Client link: $(cat "$PORTAL_LINK_FILE")"; else say "No client link is open."; fi
+  if supervisor_alive; then
+    ok "Client workspaces service is running ($("${DOCKER[@]}" ps -q --filter label=hom.workspace --filter label=com.docker.compose.service=backend 2>/dev/null | wc -l) running)"
+  else
+    say "Client workspaces service is not running."
+  fi
   finish 0
 }
 
-cmd_link() {
-  if tunnel_alive && [[ -s "$LINK_FILE" ]]; then
-    local link; link="$(cat "$LINK_FILE")"
-    printf '\n  %s\n' "$link"
+cmd_link() {  # which: dashboard | client
+  local file="$LINK_FILE" name="dashboard link" alive=tunnel_alive
+  if [[ "$1" == "client" ]]; then file="$PORTAL_LINK_FILE"; name="client link"; alive=portal_tunnel_alive; fi
+  if [[ -s "$file" ]] && { $alive || [[ -f "$TUNNEL_ENV" ]]; }; then
+    local link; link="$(cat "$file")"
+    printf '\n  Your %s:\n  %s\n' "$name" "$link"
     copy_to_clipboard "$link" && printf '  %s(copied to your clipboard)%s\n' "$DIM" "$X"
   else
-    printf '\n  No share link is open. Start one with ./start.sh\n'
+    printf '\n  No %s is open. Start HOM with ./start.sh\n' "$name"
   fi
   finish 0
 }
@@ -417,8 +547,9 @@ case "${1:-start}" in
   local)            cmd_start no ;;
   stop)             cmd_stop ;;
   status)           cmd_status ;;
-  link)             cmd_link ;;
+  link)             cmd_link dashboard ;;
+  client-link)      cmd_link client ;;
   install-button)   banner; install_button; finish 0 ;;
-  -h|--help|help)   sed -n '3,17p' "$0" | sed 's/^#  \{0,1\}//' ;;
-  *)                fail "Unknown command: $1"; sed -n '3,17p' "$0" | sed 's/^#  \{0,1\}//'; exit 2 ;;
+  -h|--help|help)   sed -n '3,18p' "$0" | sed 's/^# \{0,2\}//' ;;
+  *)                fail "Unknown command: $1"; sed -n '3,18p' "$0" | sed 's/^# \{0,2\}//'; exit 2 ;;
 esac

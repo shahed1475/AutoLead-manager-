@@ -3,7 +3,8 @@
 # install), so containers on the bridge network can't reach it. Both services
 # share the host's network stack instead:
 #   backend  → 127.0.0.1:8000 (loopback only), talks to Ollama on 127.0.0.1
-#   frontend → nginx on :${FRONTEND_PORT:-5173}, proxies /api to the backend
+#   frontend → nginx on :${FRONTEND_PORT:-5173}, proxies /api to the backend,
+#              and the client portal on :${PORTAL_PORT:-5174} (only /api/portal/)
 #
 #   docker compose -f docker-compose.yml -f docker-compose.host.yml --profile full up -d --build
 # ──────────────────────────────────────────────────────────────────────────────
@@ -22,4 +23,5 @@ services:
     ports: !reset []
     environment:
       NGINX_PORT:  ${FRONTEND_PORT:-5173}
+      PORTAL_PORT: ${PORTAL_PORT:-5174}
       BACKEND_URL: http://127.0.0.1:${BACKEND_PORT:-8000}

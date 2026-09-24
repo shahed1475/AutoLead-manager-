@@ -35,6 +35,7 @@ services:
     volumes:
       - ./backend/data:/app/backend/data
       - ./backend/company_dna.txt:/app/backend/company_dna.txt
+      - ./.run:/app/.run:ro      # start.sh's current client link, shown on the Clients page
     shm_size: "1gb"   # headless Chromium crashes with Docker's 64MB default
     profiles:
       - full     # only starts with: docker compose --profile full up
@@ -47,6 +48,7 @@ services:
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-5173}:80"
+      - "${PORTAL_PORT:-5174}:81"      # client portal (the link you share with clients)
     depends_on:
       - backend
     profiles:

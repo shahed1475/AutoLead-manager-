@@ -20,6 +20,7 @@ const EmailCampaigns = lazy(() => import('./pages/EmailCampaigns'))
 const AILab      = lazy(() => import('./pages/AILab'))
 const Inbox      = lazy(() => import('./pages/Inbox'))
 const Settings   = lazy(() => import('./pages/Settings'))
+const Clients    = lazy(() => import('./pages/Clients'))
 // ActivityLogs is added in Group G once backend log filtering/export exists.
 
 function RoutedContent() {
@@ -45,6 +46,7 @@ function RoutedContent() {
           <Route path="/ai-lab"    element={<AILab />} />
           <Route path="/inbox"     element={<Inbox />} />
           <Route path="/settings"  element={<Settings />} />
+          <Route path="/clients"   element={<Clients />} />
         </Routes>
         </div>
       </Suspense>

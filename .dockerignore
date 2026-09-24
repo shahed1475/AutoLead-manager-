@@ -13,3 +13,5 @@ venv
 backend/data
 tests
 docs
+workspaces
+.run

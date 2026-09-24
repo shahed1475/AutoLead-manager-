@@ -9,6 +9,7 @@ import clsx from 'clsx'
 import { leadRunsApi, engineApi, automationApi } from '../api/client'
 import TargetTitlesInput from '../components/TargetTitlesInput'
 import { stepsLabel } from '../lib/leadRuns'
+import { isClientEdition } from '../lib/edition'
 
 // Find leads — the one place to start. The user picks niche, place and count,
 // then any combination of steps; one run chains them over the same leads
@@ -60,6 +61,10 @@ function ChannelPicker({ email, whatsapp, onChange }) {
     </button>
   )
   const both = email && whatsapp
+  // Client workspaces send email only (WhatsApp desktop belongs to the owner's computer).
+  if (isClientEdition()) {
+    return <div className="flex flex-wrap items-center gap-1.5">{chip(true, 'Email', Mail, { email: true, whatsapp: false })}</div>
+  }
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {chip(email, 'Email', Mail, email && !whatsapp ? { email, whatsapp } : { email: !email, whatsapp })}

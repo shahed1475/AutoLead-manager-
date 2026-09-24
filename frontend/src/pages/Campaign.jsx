@@ -14,6 +14,7 @@ import BackToFindLeads from '../components/BackToFindLeads'
 import CampaignHistoryTable from '../components/CampaignHistoryTable'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
+import { isClientEdition } from '../lib/edition'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -607,7 +608,7 @@ export default function Campaign() {
 
           <FormSection title="Channel">
             <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-secondary" role="radiogroup" aria-label="Outreach channel">
-              {CHANNELS.map(({ id, label, icon: ChannelIcon }) => (
+              {CHANNELS.filter((c) => !isClientEdition() || c.id === 'EMAIL').map(({ id, label, icon: ChannelIcon }) => (
                 <button
                   key={id}
                   type="button"

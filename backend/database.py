@@ -706,6 +706,64 @@ CREATE TABLE IF NOT EXISTS lead_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_lead_runs_status ON lead_runs (status);
 
+-- Client portal (separate link for clients): accounts signed in with an
+-- emailed code, their lead requests, and what the owner delivers. Kept apart
+-- from the owner's own tables; clients never read leads/settings directly.
+CREATE TABLE IF NOT EXISTS portal_clients (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    email          TEXT NOT NULL UNIQUE,
+    name           TEXT,
+    company        TEXT,
+    status         TEXT DEFAULT 'ACTIVE',      -- ACTIVE | BLOCKED
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_login_at  TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS portal_login_codes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    email       TEXT NOT NULL,
+    code_hash   TEXT NOT NULL,
+    attempts    INTEGER DEFAULT 0,
+    expires_at  TIMESTAMP NOT NULL,
+    used_at     TIMESTAMP,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_portal_codes_email ON portal_login_codes (email, created_at);
+CREATE TABLE IF NOT EXISTS portal_sessions (
+    token_hash  TEXT PRIMARY KEY,
+    client_id   INTEGER NOT NULL REFERENCES portal_clients(id) ON DELETE CASCADE,
+    expires_at  TIMESTAMP NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS portal_requests (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id     INTEGER NOT NULL REFERENCES portal_clients(id) ON DELETE CASCADE,
+    niche         TEXT NOT NULL,
+    location      TEXT NOT NULL,
+    target_count  INTEGER NOT NULL,
+    details       TEXT,
+    status        TEXT DEFAULT 'NEW',          -- NEW | IN_PROGRESS | DELIVERED | CLOSED
+    admin_note    TEXT,
+    lead_run_id   INTEGER REFERENCES lead_runs(id) ON DELETE SET NULL,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    delivered_at  TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_portal_requests_client ON portal_requests (client_id);
+
+-- One private HOM workspace per client (its own containers, network and data,
+-- run by scripts/hom_supervisor.py). port = the workspace's local web port
+-- (127.0.0.1 only; the client link routes to it). Deleted workspaces keep
+-- their row (desired DELETED, port NULL) so the supervisor archives the data.
+CREATE TABLE IF NOT EXISTS portal_workspaces (
+    id          INTEGER   PRIMARY KEY AUTOINCREMENT,
+    client_id   INTEGER   NOT NULL REFERENCES portal_clients(id) ON DELETE CASCADE,
+    port        INTEGER   UNIQUE,
+    desired     TEXT      NOT NULL DEFAULT 'RUNNING',   -- RUNNING | STOPPED | DELETED
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_portal_workspaces_client ON portal_workspaces (client_id);
+
 -- ── Lead Search Automation (Phase 1 — single config + single queue) ──────────
 -- See docs/superpowers/specs/2026-08-30-lead-search-automation-design.md
 -- Discovery-only: collects deduplicated leads, never sends outreach.
@@ -3397,6 +3455,31 @@ async def list_interrupted_lead_runs() -> List[Dict[str, Any]]:
             "SELECT * FROM lead_runs WHERE status IN ('QUEUED', 'RUNNING', 'CANCEL_REQUESTED') ORDER BY id ASC"
         )
     return [_lead_run_row(r) for r in rows]
+
+
+# ── Client portal ────────────────────────────────────────────────────────────
+
+async def portal_fetchrow(sql: str, *args) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow(sql, *args)
+    return dict(row) if row else None
+
+
+async def portal_fetch(sql: str, *args) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await conn.fetch(sql, *args)
+    return [dict(r) for r in rows]
+
+
+async def portal_execute(sql: str, *args) -> int:
+    async with get_db() as conn:
+        result = await conn.execute(sql, *args)
+    return _rows_affected(result)
+
+
+async def portal_insert(sql: str, *args) -> int:
+    async with get_db() as conn:
+        return await conn.fetchval(sql, *args)
 
 
 async def save_research_result(

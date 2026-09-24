@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Send, RefreshCw, MailOpen, MessageSquare, Users, CheckCircle2 } from 'lucide-react'
 import { campaignApi, aiApi } from '../api/client'
 import toast from 'react-hot-toast'
+import { isClientEdition } from '../lib/edition'
 
 export default function CampaignControls({ selectedIds = [], onComplete }) {
   const [loading, setLoading] = useState(null)
@@ -61,6 +62,7 @@ export default function CampaignControls({ selectedIds = [], onComplete }) {
           Send Emails
         </button>
 
+        {!isClientEdition() && (<>
         <button
           disabled={noSelection || loading !== null}
           onClick={() => run('Send WhatsApp', () => campaignApi.bulkSend(selectedIds, 'WHATSAPP'))}
@@ -86,6 +88,7 @@ export default function CampaignControls({ selectedIds = [], onComplete }) {
           )}
           Send Both
         </button>
+        </>)}
 
         <button
           disabled={noSelection || loading !== null}

@@ -101,7 +101,8 @@ async def require_session(
       - ?token=<token> query param      (SSE — native EventSource can't set
         custom headers, so /api/logs/stream is unlocked via query param)
     """
-    if not await is_password_set():
+    from . import edition
+    if not edition.is_client() and not await is_password_set():
         return
 
     token = None

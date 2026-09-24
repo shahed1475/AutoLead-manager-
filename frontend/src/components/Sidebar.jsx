@@ -2,12 +2,13 @@ import { useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  LayoutDashboard, Users, GitBranch, Sparkles, Settings, Inbox, Search, Mail, X,
+  LayoutDashboard, Users, GitBranch, Sparkles, Settings, Inbox, Search, Mail, X, Briefcase,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { inboxApi } from '../api/client'
+import { inboxApi, clientsApi } from '../api/client'
 import Logo from './Logo'
 import InstallApp from './InstallApp'
+import { isClientEdition } from '../lib/edition'
 
 // Grouped by what the user is doing, not by how the backend is built.
 const groups = [
@@ -17,7 +18,8 @@ const groups = [
     { to: '/lead-search',     icon: Search,          label: 'Find leads', also: ['/research-agent', '/campaign'] },
     { to: '/leads',           icon: Users,           label: 'Leads' },
     { to: '/pipeline',        icon: GitBranch,       label: 'Pipeline' },
-    { to: '/inbox',           icon: Inbox,           label: 'Inbox', badge: true },
+    { to: '/inbox',           icon: Inbox,           label: 'Inbox', badge: 'inbox' },
+    { to: '/clients',         icon: Briefcase,       label: 'Clients', badge: 'clients', ownerOnly: true },
   ] },
   { label: 'Engage', items: [
     { to: '/email-campaigns', icon: Mail,            label: 'Email Campaigns' },
@@ -25,7 +27,8 @@ const groups = [
   ] },
 ]
 
-function NavItem({ to, icon: Icon, label, badge, unread, also }) {
+function NavItem({ to, icon: Icon, label, badge, counts = {}, also }) {
+  const unread = badge ? (counts[badge] || 0) : 0
   const { pathname } = useLocation()
   const alsoActive = (also || []).some((p) => pathname === p || pathname.startsWith(`${p}/`))
   return (
@@ -62,7 +65,12 @@ export default function Sidebar({ open, onClose }) {
     refetchInterval: 60_000,
     retry: false,
   })
-  const unread = inboxStats?.unread ?? 0
+  // Clients waiting for a workspace (owner only — a client workspace has no Clients page).
+  const { data: setup } = useQuery({
+    queryKey: ['clients-setup'], queryFn: clientsApi.setup, refetchInterval: 60_000, retry: false,
+    enabled: !isClientEdition(),
+  })
+  const counts = { inbox: inboxStats?.unread ?? 0, clients: setup?.waiting ?? 0 }
 
   // Close the mobile drawer after navigating.
   useEffect(() => { onClose?.() }, [pathname]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -94,7 +102,8 @@ export default function Sidebar({ open, onClose }) {
             <div key={g.label}>
               <p className="px-2.5 pb-1.5 text-2xs font-semibold text-muted-foreground/80">{g.label}</p>
               <div className="space-y-0.5">
-                {g.items.map((item) => <NavItem key={item.to} {...item} unread={unread} />)}
+                {g.items.filter((item) => !(item.ownerOnly && isClientEdition()))
+                  .map((item) => <NavItem key={item.to} {...item} counts={counts} />)}
               </div>
             </div>
           ))}

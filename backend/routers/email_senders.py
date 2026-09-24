@@ -152,6 +152,9 @@ async def patch_sender(profile_id: int, payload: SenderPatch):
     # secret: never persist the redaction mask / empty over a real password
     if "smtp_password" in data and data["smtp_password"] not in (None, "", _MASKED):
         patch["smtp_password_enc"] = encrypt(data["smtp_password"])
+        # a new password gets a fresh chance: the next test decides the status
+        if p.get("provider") == "smtp" and p.get("status") == "error":
+            patch["status"], patch["last_error"] = "connected", None
 
     if "is_default" in data and data["is_default"]:
         await db.set_default_sender_profile(profile_id)

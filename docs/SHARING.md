@@ -10,14 +10,15 @@ Click the **HOM** button on the desktop (or in the app menu), or run:
 
 | Command | What it does |
 |---|---|
-| `./start.sh` | Start the app, open a share link, copy it to the clipboard, open the browser |
+| `./start.sh` | Start the app, open your dashboard link and the client link, open the browser |
 | `./start.sh local` | Start the app on this computer only |
-| `./start.sh status` | Show whether it is running and the current share link |
-| `./start.sh link` | Print and copy the current share link |
-| `./start.sh stop` | Close the share link and stop the app |
+| `./start.sh status` | Show whether it is running and both current links |
+| `./start.sh link` | Print and copy your dashboard link |
+| `./start.sh client-link` | Print and copy the link you give to clients |
+| `./start.sh stop` | Close both links and stop the app |
 | `./start.sh install-button` | (Re)create the desktop / app-menu button |
 
-Right-click the button for Stop, Status, Copy share link and Start on this
+Right-click the button for Stop, Status, Copy client link, Copy dashboard link and Start on this
 computer only. After you pull new code, start with `HOM_REBUILD=1 ./start.sh`
 so the app is rebuilt. Developer mode (venv + Vite dev server) is
 `scripts/dev.sh`.
@@ -28,6 +29,41 @@ already built on this computer instead.
 The app itself keeps running in Docker after the window closes and comes back
 after a reboot. The share link also keeps running until `./start.sh stop` or a
 reboot; after a reboot, click the button again for a new link.
+
+## Two links: yours and your clients'
+
+| Link | Who | What is on it |
+|---|---|---|
+| **Your dashboard** (port 5173) | only you — needs your password | everything, incl. the Clients page |
+| **Client link** (port 5174) | clients | sign-in, then **their own private HOM** |
+
+**Every client gets their own workspace**: the same app as yours, without the
+Clients page, owner settings (App Lock, AI model, Cloud LLM, WhatsApp) and
+WhatsApp sending. Each workspace has its own containers, network, database and
+sign-in key, so clients never see your data or each other's. A client signs in
+on the client link with their Gmail (6-digit code) and lands in their own
+dashboard; their outreach goes from the email account they connect themselves.
+A workspace can reach the internet (search, websites, email) and your local AI
+model — never this computer's other services or your home network.
+
+Workspaces are created automatically at sign-up, up to the limit you set
+(Clients → Portal → Workspaces; ~1 GB memory each). Beyond it clients wait in
+line. On the Clients tab you can create, pause, resume and delete a workspace
+(deleted data is moved to `workspaces/_deleted/`, never erased) and block a
+client.
+
+**Your release flow:** build and test new features in your own dashboard (it
+always runs your latest code) → commit → Clients → **Publish to clients**. The
+workspace service builds that *commit* (never uncommitted changes; `.env` files
+and your company profile are stripped) and moves every workspace to it. Client
+workspaces only start after your first publish.
+
+The workspace service (`scripts/hom_supervisor.py`) starts and stops with
+`./start.sh`; `./start.sh status` shows it. Its files: `workspaces/` (client
+data), `.run/workspaces/status.json`, `.run/supervisor.log`, `.run/release/`.
+
+**Sign-in codes are emailed from your account** — Clients → Portal → Sign-in
+email (add a Gmail with an app password, then "Send test").
 
 ## Use HOM on a phone or as a desktop app
 
@@ -60,8 +96,12 @@ address never changes.
 - Everyone with the link and password has full access, including sending
   email from your account. Share both only with people you trust. Change the
   password in Settings if someone should lose access.
-- The instant link changes each time it is reopened, and anyone who has an old
-  link can no longer use it.
+- The instant links change each time they are reopened, and anyone who has an
+  old link can no longer use it. Send clients the new client link after a
+  restart (or use a permanent domain, below).
+- Anyone can sign up on the client link. Sign-in codes are limited (one a
+  minute and five an hour per address, 200 a day in total), expire after 10
+  minutes and lock after 5 wrong tries; a client can have 10 open requests.
 
 ## Instant link limits
 
@@ -81,6 +121,9 @@ but the Outreach campaign page's live log feed does not stream through it
    ```
    TUNNEL_TOKEN=<the token from step 2>
    PUBLIC_URL=https://app.yourdomain.com
+   # optional: a second public hostname on the same tunnel,
+   # e.g. clients.yourdomain.com -> http://localhost:5174
+   PORTAL_PUBLIC_URL=https://clients.yourdomain.com
    ```
 
 5. `./start.sh stop && ./start.sh` — the launcher now uses your permanent link,
