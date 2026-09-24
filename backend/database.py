@@ -754,6 +754,50 @@ CREATE INDEX IF NOT EXISTS idx_portal_requests_client ON portal_requests (client
 -- run by scripts/hom_supervisor.py). port = the workspace's local web port
 -- (127.0.0.1 only; the client link routes to it). Deleted workspaces keep
 -- their row (desired DELETED, port NULL) so the supervisor archives the data.
+-- ── WhatsApp Campaigns (backend/whatsapp/) ────────────────────────────────────
+-- Owner-only. Messages go out through whatsapp_sender.send_whatsapp (the one
+-- WhatsApp send path) using the self-hosted WhatsApp Web engine (WAHA).
+CREATE TABLE IF NOT EXISTS whatsapp_campaigns (
+    id             INTEGER   PRIMARY KEY AUTOINCREMENT,
+    name           TEXT      NOT NULL,
+    template       TEXT,                                   -- NULL = each lead's approved WhatsApp draft
+    use_ai_drafts  INTEGER   NOT NULL DEFAULT 0,
+    status         TEXT      NOT NULL DEFAULT 'DRAFT',     -- DRAFT | RUNNING | PAUSED | DONE | CANCELLED
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at     TIMESTAMP,
+    finished_at    TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS whatsapp_campaign_recipients (
+    id           INTEGER   PRIMARY KEY AUTOINCREMENT,
+    campaign_id  INTEGER   NOT NULL REFERENCES whatsapp_campaigns(id) ON DELETE CASCADE,
+    lead_id      INTEGER   NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    phone        TEXT      NOT NULL,
+    status       TEXT      NOT NULL DEFAULT 'PENDING',     -- PENDING | SENT | FAILED | SKIPPED | REPLIED
+    message      TEXT,
+    error        TEXT,
+    sent_at      TIMESTAMP,
+    UNIQUE (campaign_id, lead_id)
+);
+CREATE INDEX IF NOT EXISTS idx_wa_recipients_status ON whatsapp_campaign_recipients (campaign_id, status);
+CREATE TABLE IF NOT EXISTS whatsapp_messages (
+    id             INTEGER   PRIMARY KEY AUTOINCREMENT,
+    lead_id        INTEGER   REFERENCES leads(id) ON DELETE SET NULL,
+    chat_id        TEXT      NOT NULL,
+    direction      TEXT      NOT NULL,                     -- IN | OUT
+    body           TEXT      NOT NULL,
+    source         TEXT,                                   -- campaign | auto_reply | manual | inbound
+    wa_message_id  TEXT      UNIQUE,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_wa_messages_chat ON whatsapp_messages (chat_id, created_at);
+CREATE TABLE IF NOT EXISTS whatsapp_activity (
+    id          INTEGER   PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT      NOT NULL,     -- sent | received | auto_reply | opt_out | skipped | error | info
+    lead_id     INTEGER,
+    text        TEXT      NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- (portal_login_codes.payload: a sign-up's details, applied once the code is confirmed)
 CREATE TABLE IF NOT EXISTS portal_workspaces (
     id          INTEGER   PRIMARY KEY AUTOINCREMENT,
@@ -1171,6 +1215,9 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
     await _add_col_if_missing(raw, "email_campaigns", "sender_profile_id", "INTEGER")
     await _add_col_if_missing(raw, "email_campaigns", "reply_to", "TEXT")
 
+    # The person to address at a lead (e.g. from an uploaded WhatsApp contact file).
+    await _add_col_if_missing(raw, "leads", "contact_name", "TEXT")
+
     # Client passwords (website sign-up / log-in). Only a bcrypt hash is kept.
     for col, typedef in (("password_hash", "TEXT"), ("email_verified_at", "TIMESTAMP"),
                          ("failed_logins", "INTEGER NOT NULL DEFAULT 0"), ("locked_until", "TIMESTAMP"),
@@ -1248,7 +1295,7 @@ _TS_COLS = frozenset({
 })
 
 _LEAD_WRITABLE = frozenset({
-    "business_name", "phone", "email", "website", "address",
+    "business_name", "phone", "email", "website", "address", "contact_name",
     "niche", "city", "country", "rating", "reviews_count", "review_count",
     "source", "status", "channel",
     "source_type", "research_status", "email_status", "last_research_session_id",

@@ -109,6 +109,36 @@ portal_tunnel_alive() {
   [[ -f "$PORTAL_TUNNEL_PID" ]] && kill -0 "$(cat "$PORTAL_TUNNEL_PID")" 2>/dev/null
 }
 
+# ── WhatsApp engine + HOM's n8n (deploy/whatsapp-compose.yml) ─────────────────
+WA_COMPOSE=("${DOCKER[@]}" compose -p hom-wa -f "$ROOT/deploy/whatsapp-compose.yml")
+export HOM_TZ="${HOM_TZ:-$(timedatectl show -p Timezone --value 2>/dev/null || echo UTC)}"
+
+whatsapp_secrets() {   # created once; never committed (whatsapp/ is git-ignored)
+  mkdir -p "$ROOT/whatsapp/config" "$ROOT/whatsapp/sessions" "$ROOT/whatsapp/n8n"
+  chmod 777 "$ROOT/whatsapp/n8n" 2>/dev/null || true
+  if [[ ! -s "$ROOT/whatsapp/config/secrets.env" ]]; then
+    ( umask 077
+      printf 'WAHA_API_KEY=%s\nHOM_WA_SECRET=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" \
+        >"$ROOT/whatsapp/config/secrets.env" )
+  fi
+}
+
+start_whatsapp() {
+  if ! "${DOCKER[@]}" image inspect devlikeapro/waha:latest >/dev/null 2>&1; then
+    say "WhatsApp engine isn't downloaded yet — it downloads once (about 4 GB)…"
+  fi
+  whatsapp_secrets
+  if "${WA_COMPOSE[@]}" up -d >>"$RUN_DIR/docker.log" 2>&1; then
+    ok "WhatsApp engine and automation are running"
+  else
+    warn "WhatsApp engine didn't start — see $RUN_DIR/docker.log"
+  fi
+}
+
+stop_whatsapp() {
+  "${WA_COMPOSE[@]}" stop >>"$RUN_DIR/docker.log" 2>&1 && ok "WhatsApp engine stopped"
+}
+
 # ── Client workspaces (scripts/hom_supervisor.py) ─────────────────────────────
 SUPERVISOR_PID="$RUN_DIR/supervisor.pid"
 
@@ -483,7 +513,9 @@ cmd_start() {
   step "Starting"
   check_docker
   check_ai
+  whatsapp_secrets        # the app mounts these; they must exist before it starts
   start_app
+  start_whatsapp
   start_supervisor
   if [[ "$share" == "yes" ]]; then
     if ensure_password; then
@@ -507,6 +539,7 @@ cmd_stop() {
   stop_tunnel
   stop_portal_tunnel
   stop_supervisor
+  stop_whatsapp
   if "${COMPOSE[@]}" stop >"$RUN_DIR/docker.log" 2>&1; then ok "App stopped"; else warn "Docker reported a problem — see $RUN_DIR/docker.log"; fi
   finish 0
 }

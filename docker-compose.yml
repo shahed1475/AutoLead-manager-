@@ -30,12 +30,14 @@ services:
     environment:
       # Container → host Ollama by default; override for the bundled service.
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      TZ: ${HOM_TZ:-UTC}          # sending hours etc. follow your local time (start.sh sets it)
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./backend/data:/app/backend/data
       - ./backend/company_dna.txt:/app/backend/company_dna.txt
       - ./.run:/app/.run:ro      # start.sh's current client link, shown on the Clients page
+      - ./whatsapp/config:/app/whatsapp-config:ro   # WhatsApp engine + n8n secrets (start.sh)
     shm_size: "1gb"   # headless Chromium crashes with Docker's 64MB default
     profiles:
       - full     # only starts with: docker compose --profile full up

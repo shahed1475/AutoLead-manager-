@@ -241,6 +241,27 @@ export const clientsApi = {
   publish:       ()             => api.post('/clients/release/publish').then((r) => r.data),
 }
 
+// WhatsApp Campaigns (owner only) — backend/routers/whatsapp.py
+export const whatsappApi = {
+  status:       ()              => api.get('/whatsapp/status').then((r) => r.data),
+  connect:      ()              => api.post('/whatsapp/session/start').then((r) => r.data),
+  unlink:       ()              => api.post('/whatsapp/session/logout').then((r) => r.data),
+  image:        (which)         => api.get(`/whatsapp/${which}.png`, { responseType: 'blob', params: { t: Date.now() } }).then((r) => r.data),
+  activity:     ()              => api.get('/whatsapp/activity').then((r) => r.data.activity),
+  conversation: (leadId)        => api.get(`/whatsapp/conversation/${leadId}`).then((r) => r.data.messages),
+  chats:        ()              => api.get('/whatsapp/chats').then((r) => r.data.chats),
+  saveSettings: (data)          => api.put('/whatsapp/settings', data).then((r) => r.data),
+  audience:     (q)             => api.post('/whatsapp/audience', q).then((r) => r.data),
+  uploadContacts: (file, countryCode, save) => {
+    const fd = new FormData()
+    fd.append('file', file); fd.append('country_code', countryCode || ''); fd.append('save', save ? 'true' : 'false')
+    return api.post('/whatsapp/contacts', fd).then((r) => r.data)
+  },
+  campaigns:    ()              => api.get('/whatsapp/campaigns').then((r) => r.data.campaigns),
+  create:       (data)          => api.post('/whatsapp/campaigns', data).then((r) => r.data),
+  action:       (id, action)    => api.post(`/whatsapp/campaigns/${id}/${action}`).then((r) => r.data),
+}
+
 // Find leads runs — chain collect -> deep research -> draft outreach over one
 // set of leads. Drafts only: sending stays in AI Lab.
 export const leadRunsApi = {

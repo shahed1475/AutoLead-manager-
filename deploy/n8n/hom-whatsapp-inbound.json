@@ -1,0 +1,37 @@
+{
+  "id": "HOMwaInbound0001",
+  "name": "HOM · WhatsApp inbound",
+  "active": true,
+  "settings": { "executionOrder": "v1" },
+  "nodes": [
+    {
+      "id": "b1c0e0a1-0001-4a51-9c0d-000000000001",
+      "name": "WhatsApp event (from WAHA)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "hom-whatsapp-events",
+      "parameters": { "httpMethod": "POST", "path": "hom-whatsapp-events", "responseMode": "onReceived", "options": {} }
+    },
+    {
+      "id": "b1c0e0a1-0002-4a51-9c0d-000000000002",
+      "name": "Send to HOM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [300, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HOM_API }}/whatsapp/hooks/event",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "X-HOM-Secret", "value": "={{ $env.HOM_WA_SECRET }}" } ] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": { "timeout": 30000 }
+      }
+    }
+  ],
+  "connections": {
+    "WhatsApp event (from WAHA)": { "main": [ [ { "node": "Send to HOM", "type": "main", "index": 0 } ] ] }
+  }
+}

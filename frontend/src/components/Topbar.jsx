@@ -22,6 +22,7 @@ const PAGE_TITLES = {
   '/inbox':     'Inbox',
   '/settings':  'Settings',
   '/clients':   'Clients',
+  '/whatsapp':  'WhatsApp',
 }
 
 function EngineStatus({ status }) {

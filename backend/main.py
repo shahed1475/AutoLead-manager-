@@ -34,6 +34,7 @@ from .routers import lead_search as lead_search_router
 from .routers import lead_runs as lead_runs_router
 from .routers import portal as portal_router
 from .routers import portal_admin as portal_admin_router
+from .routers import whatsapp as whatsapp_router
 from .routers import email_campaigns as email_campaigns_router
 from .routers import email_senders as email_senders_router
 from .routers.campaigns import get_campaign_state
@@ -175,6 +176,9 @@ if not edition.is_client():
     app.include_router(portal_admin_router.router, dependencies=_authed)   # owner's view of the client portal
     # Client portal API: public, but protected by its own client sessions.
     app.include_router(portal_router.router)
+    # WhatsApp Campaigns: yours (session), and the n8n hooks (shared secret).
+    app.include_router(whatsapp_router.router, dependencies=_authed)
+    app.include_router(whatsapp_router.hooks)
 app.include_router(email_campaigns_router.router, dependencies=_authed)  # feature-flagged (email_campaigns_enabled, default OFF)
 app.include_router(email_senders_router.router)  # per-route session/flag deps (Gmail OAuth callback must stay public)
 

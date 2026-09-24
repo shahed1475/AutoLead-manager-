@@ -1,0 +1,33 @@
+{
+  "id": "HOMwaPacer000001",
+  "name": "HOM · WhatsApp campaign pacer",
+  "active": true,
+  "settings": { "executionOrder": "v1", "saveDataSuccessExecution": "none" },
+  "nodes": [
+    {
+      "id": "c2d0e0a1-0001-4a51-9c0d-000000000001",
+      "name": "Every minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0],
+      "parameters": { "rule": { "interval": [ { "field": "minutes", "minutesInterval": 1 } ] } }
+    },
+    {
+      "id": "c2d0e0a1-0002-4a51-9c0d-000000000002",
+      "name": "Ask HOM to send the next message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [300, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.HOM_API }}/whatsapp/hooks/tick",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "X-HOM-Secret", "value": "={{ $env.HOM_WA_SECRET }}" } ] },
+        "options": { "timeout": 60000 }
+      }
+    }
+  ],
+  "connections": {
+    "Every minute": { "main": [ [ { "node": "Ask HOM to send the next message", "type": "main", "index": 0 } ] ] }
+  }
+}

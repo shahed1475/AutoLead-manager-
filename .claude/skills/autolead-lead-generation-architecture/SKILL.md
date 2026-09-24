@@ -146,3 +146,6 @@ Cheap-first ordering matters: discovery → dedup → basic validation → websi
 Version: 1.1
 Scope: AutoLead-manager
 Last reviewed: 2026-08-30 (Discovery Planner, Quick Search, Lead Search Campaign, Browser Research Agent all now built in the working tree)
+
+
+**WhatsApp Campaigns (added 2026-09-24, owner only):** `backend/whatsapp/` (engine.py → self-hosted WAHA WhatsApp Web engine; service.py → campaigns, pacing tick, inbound events, opt-outs, automatic AI replies, activity log), `routers/whatsapp.py` (`/api/whatsapp/*` behind the app password; `/api/whatsapp/hooks/{event,tick}` for n8n with `X-HOM-Secret`), tables `whatsapp_campaigns`, `whatsapp_campaign_recipients`, `whatsapp_messages`, `whatsapp_activity`. `whatsapp_sender.send_whatsapp` stays the single send path and uses WAHA when linked. Infra: `deploy/whatsapp-compose.yml` (project hom-wa: waha 127.0.0.1:3100, HOM's own n8n 127.0.0.1:5679 with `deploy/n8n/*.json` imported + published on start). Page `pages/WhatsAppCampaigns.jsx` (Engage → WhatsApp). Tests: `tests/test_whatsapp_campaigns.py`. See `docs/WHATSAPP.md`.

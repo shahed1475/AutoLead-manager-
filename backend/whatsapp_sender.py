@@ -276,7 +276,9 @@ def _send_whatsapp_desktop(phone: str, message: str, config: Dict[str, Any]) -> 
 
 async def send_whatsapp(phone_number: str, message: str, config: Dict[str, Any]) -> bool:
     """
-    Send a WhatsApp message via WhatsApp Desktop automation.
+    Send a WhatsApp message — THE one WhatsApp send path. Uses the linked
+    WhatsApp Web engine (backend/whatsapp/engine.py) when available, otherwise
+    WhatsApp Desktop automation (Windows).
 
     Acquires a process-wide lock so only one automation runs at a time
     (pyautogui controls the global keyboard/focus — concurrent calls would conflict).
@@ -302,8 +304,22 @@ async def send_whatsapp(phone_number: str, message: str, config: Dict[str, Any])
         _emit("ERROR", "WHATSAPP", "send_whatsapp called with empty message")
         return False
 
+    # WhatsApp Web engine (self-hosted WAHA, any OS) — used whenever it is linked.
+    from .whatsapp import engine as wa_engine
+    if await wa_engine.ready():
+        normalized = _normalize_phone(phone_number)
+        async with _wa_lock:
+            try:
+                await wa_engine.send_text(normalized, message)
+                _emit("INFO", "WHATSAPP", f"Sent to {normalized} (WhatsApp Web)")
+                return True
+            except wa_engine.EngineError as exc:
+                logger.error("send_whatsapp (web) failed for %s: %s", normalized, exc)
+                _emit("ERROR", "WHATSAPP", str(exc))
+                return False
+
     if sys.platform != "win32":
-        msg = "WhatsApp Desktop automation is Windows-only — use EMAIL on this machine"
+        msg = "WhatsApp isn't linked — scan the QR code in Engage → WhatsApp (desktop automation is Windows-only)"
         logger.warning(msg)
         _emit("ERROR", "WHATSAPP", msg)
         return False

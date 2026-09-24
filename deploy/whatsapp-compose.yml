@@ -1,0 +1,52 @@
+# ─── WhatsApp Campaigns engine (owner only) ──────────────────────────────────
+# Started by ./start.sh as project "hom-wa". Free, self-hosted, no paid API:
+#   waha  — WhatsApp engine (WAHA Core, GOWS: no browser — the WEBJS browser
+#           engine broke with WhatsApp Web updates): QR login, incoming-message
+#           webhooks, send text. Port 127.0.0.1:3100 only.
+#   n8n   — HOM's own n8n (separate from any other n8n on this machine):
+#           forwards incoming messages to HOM and triggers the paced campaign
+#           sender every minute. Port 127.0.0.1:5679 only.
+# HOM's backend does the thinking and all sending (whatsapp_sender.send_whatsapp).
+# Secrets: whatsapp/config/secrets.env (created by start.sh, git-ignored).
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+  waha:
+    image: devlikeapro/waha:latest
+    restart: unless-stopped
+    env_file: ../whatsapp/config/secrets.env
+    environment:
+      WHATSAPP_DEFAULT_ENGINE: GOWS
+      WHATSAPP_RESTART_ALL_SESSIONS: "True"
+      WAHA_PRINT_QR: "False"
+      WAHA_LOG_LEVEL: warn
+    ports:
+      - "127.0.0.1:3100:3000"
+    volumes:
+      - ../whatsapp/sessions:/app/.sessions
+    mem_limit: 700m
+
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    env_file: ../whatsapp/config/secrets.env
+    environment:
+      N8N_PORT: "5678"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_SECURE_COOKIE: "false"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      N8N_RUNNERS_ENABLED: "true"
+      GENERIC_TIMEZONE: ${HOM_TZ:-UTC}
+      TZ: ${HOM_TZ:-UTC}
+      HOM_API: http://host.docker.internal:5173/api
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:5679:5678"
+    volumes:
+      - ../whatsapp/n8n:/home/node/.n8n
+      - ./n8n:/workflows:ro
+    # Load HOM's two workflows on every start, publish them, then run n8n.
+    entrypoint: ["sh", "-c", "n8n import:workflow --separate --input=/workflows >/dev/null 2>&1; for id in HOMwaInbound0001 HOMwaPacer000001; do n8n publish:workflow --id=$$id >/dev/null 2>&1; done; exec n8n start"]
+    mem_limit: 700m
