@@ -366,6 +366,17 @@ def publish(status: Dict[str, Any], write: Callable[[], None], runner: Runner = 
             if r.returncode != 0:
                 tail = (r.stderr or r.stdout).decode(errors="replace").strip().splitlines()[-8:]
                 raise RuntimeError("build failed: " + " / ".join(tail)[-600:])
+        # Smoke test: the client app must start (import) before any workspace
+        # moves to it — a broken release fails here and clients keep the old one.
+        status["publish"]["step"] = "Checking the new version starts"
+        write()
+        r = runner(DOCKER + ["run", "--rm", "--entrypoint", "python", "-e", "HOM_EDITION=client",
+                             "-e", "DATABASE_PATH=/tmp/smoke.db", f"{IMAGE_BACKEND}:{short}",
+                             "-c", "import backend.main"], timeout=300)
+        logf.write(r.stdout + r.stderr)
+        if r.returncode != 0:
+            tail = (r.stderr or r.stdout).decode(errors="replace").strip().splitlines()[-3:]
+            raise RuntimeError("the new version doesn't start — clients stay on the current one: " + " / ".join(tail)[-500:])
         for name in (IMAGE_BACKEND, IMAGE_FRONTEND):
             runner(DOCKER + ["tag", f"{name}:{short}", f"{name}:current"], timeout=60)
     subject = git("log", "-1", "--format=%s|%cI", sha, runner=runner).split("|", 1)

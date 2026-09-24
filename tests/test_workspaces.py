@@ -523,3 +523,29 @@ def test_workspace_engine_posts_events_straight_to_its_app_with_the_secret(monke
     finally:
         monkeypatch.delenv("HOM_WA_EVENTS_WEBHOOK")
         importlib.reload(engine)
+
+
+def test_publish_refuses_a_version_that_does_not_start(sup, tmp_path, monkeypatch):
+    """A release whose app can't even import must never become :current."""
+    monkeypatch.setattr(sup, "RELEASE_DIR", tmp_path / "release")
+    calls = []
+
+    def runner(cmd, timeout=120, env=None, input_bytes=None):
+        calls.append(cmd)
+        if cmd[:3] == ["git", "-C", str(sup.ROOT)] and "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, b"abc1234567890\n", b"")
+        if "archive" in cmd:
+            import io, tarfile
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tf:
+                data = (ROOT / "backend" / "edition.py").read_bytes()
+                info = tarfile.TarInfo("backend/edition.py"); info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+            return subprocess.CompletedProcess(cmd, 0, buf.getvalue(), b"")
+        if "run" in cmd and "import backend.main" in cmd:
+            return subprocess.CompletedProcess(cmd, 1, b"", b"ModuleNotFoundError: No module named 'backend.whatsapp'")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+    status = {"publish": {}}
+    with pytest.raises(RuntimeError, match="doesn't start"):
+        sup.publish(status, lambda: None, runner)
+    assert not any("tag" in c for c in calls)                  # never tagged :current
