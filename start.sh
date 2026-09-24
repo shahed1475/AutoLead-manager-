@@ -70,6 +70,8 @@ banner() {
 finish() {
   local code="${1:-0}"
   if [[ "${HOM_FROM_LAUNCHER:-}" == "1" && -t 0 ]]; then
+    # Ctrl+C here just closes the window (a non-zero exit shows as a "crash" in KDE).
+    trap 'printf "\n"; exit "$code"' INT
     printf '\n  %sPress Enter to close this window.%s' "$DIM" "$X"
     read -r _ || true
   fi

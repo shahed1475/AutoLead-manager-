@@ -12,6 +12,7 @@ import clsx from 'clsx'
 import EmailSendersSection from '../components/settings/EmailSendersSection'
 import { isClientEdition } from '../lib/edition'
 import SearchProvidersSection from '../components/settings/SearchProvidersSection'
+import CompanyDnaEditor from '../components/settings/CompanyDnaEditor'
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
@@ -395,10 +396,9 @@ export default function Settings() {
 
   const ollamaConnected = ollamaStatus?.connected
   const ollamaModel = ollamaStatus?.model || values.ollama_model
-  const dnaWords = dna.trim() ? dna.trim().split(/\s+/).length : 0
 
   return (
-    <div className="p-6 space-y-6 max-w-2xl">
+    <div className="p-4 sm:p-6 space-y-6 max-w-4xl">
       {/* ─── Header ─── */}
       <div className="flex items-center justify-between">
         <div>
@@ -767,43 +767,22 @@ export default function Settings() {
         />
       </SectionCard>
 
-      <SearchProvidersSection />
+      {!isClientEdition() && <SearchProvidersSection />}
 
       {/* ─── Company DNA ─── */}
       <SectionCard
         title="Company DNA"
-        description="Tell the AI about your business — injected into every prompt."
+        description="Your company profile. The AI reads it before every search, research and message it writes."
         icon={FileText}
         iconColor="text-rose-400"
-        actions={
-          <span className="text-xs text-slate-500 tabular-nums">
-            {dnaWords} words · {dna.length} chars
-          </span>
-        }
       >
-        <textarea
-          className="input font-mono text-xs leading-relaxed resize-none h-44"
+        <CompanyDnaEditor
           value={dna}
-          onChange={(e) => {
-            setDna(e.target.value)
-            setDnaDirty(e.target.value !== dnaOrigRef.current)
-          }}
-          placeholder={
-            'We are [Company Name], a [type of business] based in [city].\n' +
-            'We help [target customers] with [service or product].\n' +
-            'Our tone is [professional/friendly/casual].'
-          }
-          spellCheck={false}
+          onChange={(v) => { setDna(v); setDnaDirty(v !== dnaOrigRef.current) }}
+          dirty={dnaDirty}
+          saving={saveDnaMut.isPending}
+          onSave={() => saveDnaMut.mutate()}
         />
-        <button
-          onClick={() => saveDnaMut.mutate()}
-          disabled={saveDnaMut.isPending || !dnaDirty}
-          className={clsx('btn-primary w-full justify-center text-sm', !dnaDirty && 'opacity-50 cursor-not-allowed')}
-        >
-          {saveDnaMut.isPending
-            ? <><RefreshCw size={13} className="animate-spin" /> Saving…</>
-            : <><Save size={13} /> Save DNA</>}
-        </button>
       </SectionCard>
 
       <AppLockCard />

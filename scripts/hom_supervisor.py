@@ -167,7 +167,7 @@ def prepare_dir(ws_id: int) -> Path:
     (d / "data").mkdir(parents=True, exist_ok=True)
     dna = d / "company_dna.txt"
     if not dna.exists():
-        dna.write_text(DNA_TEMPLATE)
+        dna.write_text("")        # empty: Settings shows the guided outline to fill in
     return d
 
 

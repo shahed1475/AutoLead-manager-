@@ -340,7 +340,7 @@ def test_supervisor_starts_a_workspace_with_its_own_secret(sup):
     assert out["1"]["state"] == "STARTING" and "up" in cmd and "hom-ws-1" in cmd
     assert env["WS_PORT"] == "7001" and env["WS_SECRET"] == sup.workspace_secret(b"k" * 64, 1)
     assert env["WS_AI_MODEL"] == "qwen3:8b" and (sup.WS_ROOT / "ws-1" / "data").is_dir()
-    assert "Describe your company" in (sup.WS_ROOT / "ws-1" / "company_dna.txt").read_text()
+    assert (sup.WS_ROOT / "ws-1" / "company_dna.txt").read_text() == ""     # starts empty: the editor guides them
 
 
 def test_supervisor_leaves_healthy_workspaces_alone(sup):
@@ -393,3 +393,9 @@ def test_publish_refuses_a_commit_without_client_mode(sup, tmp_path):
         sup.check_release_source(src)
     (src / "backend" / "edition.py").write_text((ROOT / "backend" / "edition.py").read_text())
     sup.check_release_source(src)
+
+
+async def test_client_edition_hides_search_providers(clean_db, client_edition):
+    h = {"Authorization": f"Bearer {auth.issue_session()}"}
+    async with await _client() as c:
+        assert (await c.get("/api/lead-search/providers", headers=h)).status_code == 404
