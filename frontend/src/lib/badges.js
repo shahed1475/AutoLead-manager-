@@ -32,6 +32,8 @@ export const SOURCE_BADGE = {
   GENERIC_DIR:   'badge bg-slate-500/20 text-slate-400 border border-slate-500/30',
   BROWSER_RESEARCH_AGENT: 'badge bg-indigo-500/20 text-indigo-400 border border-indigo-500/30',
   AUTOMATION:    'badge bg-cyan-500/20 text-cyan-400 border border-cyan-500/30',
+  FACEBOOK:      'badge bg-blue-600/20 text-blue-400 border border-blue-600/30',
+  INSTAGRAM:     'badge bg-fuchsia-500/20 text-fuchsia-400 border border-fuchsia-500/30',
 }
 
 export const SOURCE_LABEL = {
@@ -46,6 +48,8 @@ export const SOURCE_LABEL = {
   GENERIC_DIR:   'Dir',
   BROWSER_RESEARCH_AGENT: 'Research',
   AUTOMATION:    'Auto',
+  FACEBOOK:      'Facebook',
+  INSTAGRAM:     'Instagram',
 }
 
 // leads.research_status — small inline text colors (not full badges)

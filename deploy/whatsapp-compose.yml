@@ -4,8 +4,8 @@
 #           engine broke with WhatsApp Web updates): QR login, incoming-message
 #           webhooks, send text. Port 127.0.0.1:3100 only.
 #   n8n   — HOM's own n8n (separate from any other n8n on this machine):
-#           forwards incoming messages to HOM and triggers the paced campaign
-#           sender every minute. Port 127.0.0.1:5679 only.
+#           forwards incoming messages to HOM, triggers the paced campaign
+#           sender and the social media publisher every minute. Port 127.0.0.1:5679 only.
 # HOM's backend does the thinking and all sending (whatsapp_sender.send_whatsapp).
 # Secrets: whatsapp/config/secrets.env (created by start.sh, git-ignored).
 # ──────────────────────────────────────────────────────────────────────────────
@@ -48,5 +48,5 @@ services:
       - ../whatsapp/n8n:/home/node/.n8n
       - ./n8n:/workflows:ro
     # Load HOM's two workflows on every start, publish them, then run n8n.
-    entrypoint: ["sh", "-c", "n8n import:workflow --separate --input=/workflows >/dev/null 2>&1; for id in HOMwaInbound0001 HOMwaPacer000001; do n8n publish:workflow --id=$$id >/dev/null 2>&1; done; exec n8n start"]
+    entrypoint: ["sh", "-c", "n8n import:workflow --separate --input=/workflows >/dev/null 2>&1; for id in HOMwaInbound0001 HOMwaPacer000001 HOMsocialPub0001; do n8n publish:workflow --id=$$id >/dev/null 2>&1; done; exec n8n start"]
     mem_limit: 700m

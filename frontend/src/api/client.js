@@ -266,6 +266,39 @@ export const whatsappApi = {
   action:       (id, action)    => api.post(`/whatsapp/campaigns/${id}/${action}`).then((r) => r.data),
 }
 
+// Social media automation — backend/routers/social.py
+export const socialApi = {
+  accounts:   ()            => api.get('/social/accounts').then((r) => r.data.accounts),
+  discover:   (token)       => api.post('/social/accounts/meta/discover', { token }).then((r) => r.data.found),
+  connect:    (token, pick) => api.post('/social/accounts/meta', { token, pick }).then((r) => r.data.accounts),
+  check:      (id)          => api.post(`/social/accounts/${id}/check`).then((r) => r.data),
+  remove:     (id)          => api.delete(`/social/accounts/${id}`),
+  compose:    (data)        => api.post('/social/compose', data, { timeout: 300000 }).then((r) => r.data.captions),
+  upload:     (file)        => { const fd = new FormData(); fd.append('file', file); return api.post('/social/media', fd).then((r) => r.data.media_name) },
+  posts:      ()            => api.get('/social/posts').then((r) => r.data),
+  create:     (data)        => api.post('/social/posts', data).then((r) => r.data),
+  update:     (id, data)    => api.put(`/social/posts/${id}`, data).then((r) => r.data),
+  schedule:   (id, when)    => api.post(`/social/posts/${id}/schedule`, { when }).then((r) => r.data),
+  publish:    (id)          => api.post(`/social/posts/${id}/publish`, null, { timeout: 180000 }).then((r) => r.data),
+  unschedule: (id)          => api.post(`/social/posts/${id}/unschedule`).then((r) => r.data),
+  remove_post: (id)         => api.delete(`/social/posts/${id}`),
+  activity:   ()            => api.get('/social/activity').then((r) => r.data.activity),
+  connectLinkedin: (data)   => api.post('/social/accounts/linkedin', data).then((r) => r.data.accounts),
+  connectX:   (data)        => api.post('/social/accounts/x', data).then((r) => r.data.accounts),
+  addBrowser: (data)        => api.post('/social/accounts/browser', data).then((r) => r.data),
+  browserOpen: (id)         => api.post(`/social/accounts/${id}/browser/open`, null, { timeout: 60000 }).then((r) => r.data),
+  browserScreen: (id)       => api.get(`/social/accounts/${id}/browser/screen`, { responseType: 'blob' }).then((r) => r.data),
+  browserAct: (id, action)  => api.post(`/social/accounts/${id}/browser/act`, action, { timeout: 60000 }).then((r) => r.data),
+  browserDone: (id)         => api.post(`/social/accounts/${id}/browser/done`, null, { timeout: 60000 }).then((r) => r.data),
+  inbox:      ()            => api.get('/social/inbox').then((r) => r.data),
+  inboxSettings: (patch)    => api.put('/social/inbox/settings', patch).then((r) => r.data),
+  inboxSync:  ()            => api.post('/social/inbox/sync', null, { timeout: 600000 }).then((r) => r.data),
+  thread:     (id)          => api.get(`/social/inbox/${id}`).then((r) => r.data.messages),
+  draft:      (id)          => api.post(`/social/inbox/${id}/draft`, null, { timeout: 300000 }).then((r) => r.data.text),
+  reply:      (id, text)    => api.post(`/social/inbox/${id}/reply`, { text }).then((r) => r.data),
+  mark:       (id, status)  => api.post(`/social/inbox/${id}/mark`, { status }).then((r) => r.data),
+}
+
 // Find leads runs — chain collect -> deep research -> draft outreach over one
 // set of leads. Drafts only: sending stays in AI Lab.
 export const leadRunsApi = {

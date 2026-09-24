@@ -798,6 +798,64 @@ CREATE TABLE IF NOT EXISTS whatsapp_activity (
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- ── Social media (backend/social/) — owner dashboard first ──────────────────
+CREATE TABLE IF NOT EXISTS social_accounts (
+    id            INTEGER   PRIMARY KEY AUTOINCREMENT,
+    platform      TEXT      NOT NULL,                  -- facebook | instagram
+    transport     TEXT      NOT NULL DEFAULT 'api',    -- api | browser (later)
+    external_id   TEXT      NOT NULL,                  -- Page id / Instagram user id
+    name          TEXT,
+    token_enc     TEXT,                                -- encrypted access token
+    status        TEXT      NOT NULL DEFAULT 'connected',
+    last_error    TEXT,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (platform, external_id)
+);
+CREATE TABLE IF NOT EXISTS social_posts (
+    id            INTEGER   PRIMARY KEY AUTOINCREMENT,
+    text          TEXT      NOT NULL DEFAULT '',
+    captions      TEXT,                                -- JSON {platform: text} (per-platform versions)
+    media_name    TEXT,                                -- file in data/social_media/
+    status        TEXT      NOT NULL DEFAULT 'DRAFT',  -- DRAFT | SCHEDULED | PUBLISHING | PUBLISHED | PARTIAL | FAILED
+    scheduled_at  TIMESTAMP,                           -- UTC
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    published_at  TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS social_post_targets (
+    id            INTEGER   PRIMARY KEY AUTOINCREMENT,
+    post_id       INTEGER   NOT NULL REFERENCES social_posts(id) ON DELETE CASCADE,
+    account_id    INTEGER   NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+    status        TEXT      NOT NULL DEFAULT 'PENDING', -- PENDING | PUBLISHED | FAILED
+    external_id   TEXT,
+    url           TEXT,
+    error         TEXT,
+    published_at  TIMESTAMP,
+    UNIQUE (post_id, account_id)
+);
+CREATE TABLE IF NOT EXISTS social_messages (
+    id            INTEGER   PRIMARY KEY AUTOINCREMENT,
+    account_id    INTEGER   NOT NULL REFERENCES social_accounts(id) ON DELETE CASCADE,
+    kind          TEXT      NOT NULL,                  -- comment | dm
+    external_id   TEXT      NOT NULL,                  -- Meta comment / message id
+    thread_id     TEXT,                                -- post id (comments) / conversation id (DMs)
+    author_id     TEXT,
+    author_name   TEXT,
+    text          TEXT      NOT NULL DEFAULT '',
+    direction     TEXT      NOT NULL DEFAULT 'IN',     -- IN | OUT
+    status        TEXT      NOT NULL DEFAULT 'NEW',    -- IN: NEW|SEEN|REPLIED|OPTOUT|SKIPPED|FAILED  OUT: SENT (you)|AUTO (automatic)
+    lead_id       INTEGER,
+    created_at    TIMESTAMP,                           -- when it was written (UTC)
+    handled_at    TIMESTAMP,
+    UNIQUE (account_id, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_social_messages_thread ON social_messages (account_id, thread_id);
+CREATE TABLE IF NOT EXISTS social_activity (
+    id          INTEGER   PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT      NOT NULL,     -- published | scheduled | failed | info
+    text        TEXT      NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- (portal_login_codes.payload: a sign-up's details, applied once the code is confirmed)
 CREATE TABLE IF NOT EXISTS portal_workspaces (
     id          INTEGER   PRIMARY KEY AUTOINCREMENT,
@@ -1217,7 +1275,11 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
 
     # The person to address at a lead (e.g. from an uploaded WhatsApp contact file).
     await _add_col_if_missing(raw, "leads", "contact_name", "TEXT")
-    await _add_col_if_missing(raw, "whatsapp_campaigns", "meta_template", "TEXT")   # Meta API: approved template + variables
+    await _add_col_if_missing(raw, "whatsapp_campaigns", "meta_template", "TEXT")
+    # Social accounts: per-account options (JSON: org id, profile URL…) and inbox sync state.
+    await _add_col_if_missing(raw, "social_accounts", "extra", "TEXT")
+    await _add_col_if_missing(raw, "social_accounts", "inbox_synced_at", "TIMESTAMP")
+    await _add_col_if_missing(raw, "social_accounts", "inbox_error", "TEXT")   # Meta API: approved template + variables
 
     # Client passwords (website sign-up / log-in). Only a bcrypt hash is kept.
     for col, typedef in (("password_hash", "TEXT"), ("email_verified_at", "TIMESTAMP"),

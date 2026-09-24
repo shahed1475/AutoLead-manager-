@@ -35,6 +35,7 @@ from .routers import lead_runs as lead_runs_router
 from .routers import portal as portal_router
 from .routers import portal_admin as portal_admin_router
 from .routers import whatsapp as whatsapp_router
+from .routers import social as social_router
 from .routers import email_campaigns as email_campaigns_router
 from .routers import email_senders as email_senders_router
 from .routers.campaigns import get_campaign_state
@@ -118,17 +119,19 @@ async def lifespan(app: FastAPI):
             logger.warning("Startup discovery-run reconcile failed: %s", exc)
         await _reconcile_automation(queue)
     asyncio.create_task(_reconcile_interrupted_jobs())
-    wa_pacer = None
+    loops = []
     if edition.is_client():
-        # Workspaces have no n8n: pace WhatsApp campaigns here (one step a minute).
+        # Workspaces have no n8n: pace WhatsApp campaigns and publish due social
+        # posts / check the social inbox here (one step a minute).
         from .whatsapp.service import pacer_loop
-        wa_pacer = asyncio.create_task(pacer_loop())
+        from .social.service import tick_loop as social_tick_loop
+        loops = [asyncio.create_task(pacer_loop()), asyncio.create_task(social_tick_loop())]
 
     yield
 
     await queue.stop()
-    if wa_pacer:
-        wa_pacer.cancel()
+    for task in loops:
+        task.cancel()
     stop_scheduler()
     await close_db()
 
@@ -183,6 +186,10 @@ if not edition.is_client():
     app.include_router(portal_admin_router.router, dependencies=_authed)   # owner's view of the client portal
     # Client portal API: public, but protected by its own client sessions.
     app.include_router(portal_router.router)
+# Social media automation (both editions; workspaces connect with their own
+# API keys only — no browser posting) and its public image/tick routes.
+app.include_router(social_router.router, dependencies=_authed)
+app.include_router(social_router.public)
 # WhatsApp Campaigns (both editions; workspaces use their own Meta API) and
 # Meta's signed webhook (public).
 app.include_router(whatsapp_router.router, dependencies=_authed)

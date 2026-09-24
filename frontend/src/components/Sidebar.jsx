@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  LayoutDashboard, Users, GitBranch, Sparkles, Settings, Inbox, Search, Mail, X, Briefcase, MessageCircle,
+  LayoutDashboard, Users, GitBranch, Sparkles, Settings, Inbox, Search, Mail, X, Briefcase, MessageCircle, Share2,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { inboxApi, clientsApi } from '../api/client'
@@ -24,6 +24,7 @@ const groups = [
   { label: 'Engage', items: [
     { to: '/email-campaigns', icon: Mail,            label: 'Email Campaigns' },
     { to: '/whatsapp',        icon: MessageCircle,   label: 'WhatsApp' },
+    { to: '/social',          icon: Share2,          label: 'Social media' },
     { to: '/ai-lab',          icon: Sparkles,        label: 'AI Lab' },
   ] },
 ]

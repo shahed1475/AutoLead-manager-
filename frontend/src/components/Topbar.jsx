@@ -23,6 +23,7 @@ const PAGE_TITLES = {
   '/settings':  'Settings',
   '/clients':   'Clients',
   '/whatsapp':  'WhatsApp',
+  '/social':    'Social media',
 }
 
 function EngineStatus({ status }) {

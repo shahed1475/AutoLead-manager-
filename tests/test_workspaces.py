@@ -246,7 +246,8 @@ def test_client_app_has_no_portal_or_clients_routes():
     code = ("from backend.main import app\n"
             "paths = set(app.openapi()['paths'])\n"
             "assert not any(p.startswith('/api/portal') or p.startswith('/api/clients') for p in paths), paths\n"
-            "assert '/api/auth/handoff' in paths\n")
+            "assert '/api/auth/handoff' in paths\n"
+            "assert '/api/social/accounts' in paths and '/api/social/media/{name}' in paths\n")
     r = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=120,
                        env={**__import__('os').environ, "HOM_EDITION": "client",
                             "DATABASE_PATH": str(ROOT / "tests" / ".client-edition-test.db")})
@@ -463,6 +464,21 @@ def test_supervisor_fills_only_an_empty_company_dna(sup):
     assert dna.read_text() == "Sector: Dental\n\nWe help clinics.\n" and dna.stat().st_ino == inode   # same file (mounted)
     dna.write_text("The client's own edited profile")
     assert sup.seed_company_dna(ws) is False and dna.read_text() == "The client's own edited profile"
+
+
+def test_supervisor_shares_the_client_link_with_workspaces(sup, tmp_path, monkeypatch):
+    monkeypatch.setattr(sup, "RUN", tmp_path / "run")
+    sup.RUN.mkdir()
+    target = sup.WS_ROOT / "ws-4" / "data" / "client-link.txt"
+    assert sup.share_client_link(4) is False                    # no workspace folder yet
+    target.parent.mkdir(parents=True)
+    (sup.RUN / "portal-link.txt").write_text("https://abc.trycloudflare.com\n")
+    assert sup.share_client_link(4) is True and target.read_text() == "https://abc.trycloudflare.com\n"
+    assert sup.share_client_link(4) is False                    # unchanged: not rewritten
+    (sup.RUN / "portal-link.txt").write_text("https://new.trycloudflare.com\n")
+    assert sup.share_client_link(4) is True and target.read_text().startswith("https://new.")
+    (sup.RUN / "portal-link.txt").unlink()                      # client link closed
+    assert sup.share_client_link(4) is True and not target.exists()
 
 
 def test_each_workspace_gets_its_own_whatsapp_engine_and_keys(sup):

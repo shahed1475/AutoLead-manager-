@@ -22,6 +22,7 @@ const Inbox      = lazy(() => import('./pages/Inbox'))
 const Settings   = lazy(() => import('./pages/Settings'))
 const Clients    = lazy(() => import('./pages/Clients'))
 const WhatsAppCampaigns = lazy(() => import('./pages/WhatsAppCampaigns'))
+const Social     = lazy(() => import('./pages/Social'))
 // ActivityLogs is added in Group G once backend log filtering/export exists.
 
 function RoutedContent() {
@@ -49,6 +50,7 @@ function RoutedContent() {
           <Route path="/settings"  element={<Settings />} />
           <Route path="/clients"   element={<Clients />} />
           <Route path="/whatsapp"  element={<WhatsAppCampaigns />} />
+          <Route path="/social"    element={<Social />} />
         </Routes>
         </div>
       </Suspense>

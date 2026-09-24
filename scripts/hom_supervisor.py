@@ -191,6 +191,35 @@ def seed_company_dna(ws: Dict[str, Any]) -> bool:
         return False
 
 
+def share_client_link(ws_id: int) -> bool:
+    """Tell the workspace its public client link (start.sh writes it; it
+    changes with each quick tunnel): Instagram fetches post images through
+    <client link>/social-media/<port>/. Only rewritten when it changed."""
+    target = ws_dir(ws_id) / "data" / "client-link.txt"
+    try:
+        link = (RUN / "portal-link.txt").read_text().strip()
+    except OSError:
+        link = ""
+    if not target.parent.exists():
+        return False
+    if not link.startswith("https://"):         # the client link is closed
+        if target.exists():
+            try:
+                target.unlink()
+            except OSError:
+                pass
+            return True
+        return False
+    try:
+        if target.exists() and target.read_text().strip() == link:
+            return False
+        target.write_text(link + "\n")
+        return True
+    except OSError as exc:
+        log(f"workspace {ws_id}: could not write the client link: {exc}")
+        return False
+
+
 def derived(key: bytes, purpose: str, ws_id: int) -> str:
     """A per-workspace secret for one purpose (never the same across workspaces)."""
     import hashlib
@@ -238,6 +267,7 @@ def reconcile(control: Dict[str, Any], status: Dict[str, Any], key: bytes, runne
         wid = int(ws["id"])
         if seed_company_dna(ws):
             log(f"workspace {wid}: Company DNA filled in from the set-up answers")
+        share_client_link(wid)
         have = containers.get(wid, {})
         be, fe = have.get("backend", {}), have.get("frontend", {})
         running = be.get("state") == "running" and fe.get("state") == "running"
@@ -259,6 +289,7 @@ def reconcile(control: Dict[str, Any], status: Dict[str, Any], key: bytes, runne
         else:
             prepare_dir(wid)
             seed_company_dna(ws)
+            share_client_link(wid)
             args = ["up", "-d", "--remove-orphans"] + (["--force-recreate"] if force_recreate or (be and not on_current) else [])
             r = compose(ws, args, key, control, runner)
             entry["state"] = "STARTING" if r.returncode == 0 else "ERROR"
