@@ -51,6 +51,6 @@ Thumbs.db
 # One-click server runtime state (share link, tunnel pid, logs)
 .run/
 workspaces/
-whatsapp/
+/whatsapp/
 # Permanent-link tunnel token — secret, never commit
 deploy/tunnel.env
