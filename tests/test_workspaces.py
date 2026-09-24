@@ -37,14 +37,19 @@ async def _client():
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
-async def _sign_in(c, outbox, email):
+async def _sign_in(c, outbox, email, onboard=True):
     await db.portal_execute("UPDATE portal_login_codes SET created_at = datetime(created_at, '-2 minutes') WHERE email = ?", email)
     r = await c.post("/api/portal/auth/signup", json={"email": email, "password": "correct horse battery", "name": "Test"})
     assert r.status_code == 200, r.text
     code = outbox[-1]["subject"].rsplit(" ", 1)[-1]
     r = await c.post("/api/portal/auth/verify", json={"email": email, "code": code})
     assert r.status_code == 200, r.text
-    return {"Authorization": f"Bearer {r.json()['token']}"}, r.json()["client"]
+    h = {"Authorization": f"Bearer {r.json()['token']}"}
+    if onboard:
+        r2 = await c.put("/api/portal/me/onboarding", headers=h, json={
+            "name": "Test", "sector": "Testing", "company_dna": " ".join(["word"] * 25)})
+        assert r2.status_code == 200, r2.text
+    return h, r.json()["client"]
 
 
 def _supervisor_says(states: dict, running=True):
@@ -70,7 +75,8 @@ async def test_first_sign_in_creates_a_private_workspace(clean_db, outbox):
         assert (await c.get("/api/portal/workspace", headers=h)).json()["state"] == "RUNNING"
     assert ws["port"] == 7001 and ws["desired"] == "RUNNING"
     ctl = _control()
-    assert ctl["workspaces"] == [{"id": ws["id"], "port": 7001, "desired": "RUNNING", "email": "a@gmail.com"}]
+    entry = {k: v for k, v in ctl["workspaces"][0].items() if k != "company_dna"}
+    assert entry == {"id": ws["id"], "port": 7001, "desired": "RUNNING", "email": "a@gmail.com"}
     assert ctl["deleted"] == []
 
 
@@ -400,3 +406,46 @@ async def test_client_edition_hides_search_providers(clean_db, client_edition):
     h = {"Authorization": f"Bearer {auth.issue_session()}"}
     async with await _client() as c:
         assert (await c.get("/api/lead-search/providers", headers=h)).status_code == 404
+
+
+# ── First-run set-up ───────────────────────────────────────────────────
+
+DNA = ("We are Bright Dental Marketing, a small agency in Dubai. We help dental clinics win more patients "
+       "with websites, online booking and local search. Our tone is friendly and direct.")
+
+
+async def test_setup_is_required_before_the_dashboard_and_reaches_the_workspace(clean_db, outbox):
+    workspaces.KEY_FILE.write_text("k" * 64)
+    async with await _client() as c:
+        h, client = await _sign_in(c, outbox, "a@gmail.com", onboard=False)
+        assert client["needs_onboarding"] is True
+        ws = await workspaces.workspace_for_client(client["id"])
+        _supervisor_says({ws["id"]: "RUNNING"})
+        r = await c.post("/api/portal/workspace/enter", headers=h)
+        assert r.status_code == 409 and "setting up" in r.json()["detail"]
+        url = "/api/portal/me/onboarding"
+        for bad in ({"name": "", "sector": "Dental", "company_dna": DNA},
+                    {"name": "Sara", "sector": " ", "company_dna": DNA},
+                    {"name": "Sara", "sector": "Dental", "company_dna": "Too short."}):
+            assert (await c.put(url, headers=h, json=bad)).status_code == 400, bad
+        me = (await c.put(url, headers=h, json={"name": "Sara", "company": "Bright Dental Marketing",
+                                                "sector": "Marketing agency", "company_dna": DNA})).json()
+        assert me["needs_onboarding"] is False and me["sector"] == "Marketing agency"
+        assert (await c.post("/api/portal/workspace/enter", headers=h)).status_code == 200
+        listing = (await c.get("/api/clients")).json()["clients"]
+    assert listing[0]["sector"] == "Marketing agency"
+    seeded = json.loads(workspaces.CONTROL_FILE.read_text())["workspaces"][0]["company_dna"]
+    assert seeded.startswith("Company: Bright Dental Marketing\nSector: Marketing agency\n\nWe are Bright Dental")
+
+
+def test_supervisor_fills_only_an_empty_company_dna(sup):
+    d = sup.WS_ROOT / "ws-3"
+    d.mkdir(parents=True)
+    dna = d / "company_dna.txt"
+    dna.write_text("")
+    inode = dna.stat().st_ino
+    ws = {"id": 3, "company_dna": "Sector: Dental\n\nWe help clinics."}
+    assert sup.seed_company_dna(ws) is True
+    assert dna.read_text() == "Sector: Dental\n\nWe help clinics.\n" and dna.stat().st_ino == inode   # same file (mounted)
+    dna.write_text("The client's own edited profile")
+    assert sup.seed_company_dna(ws) is False and dna.read_text() == "The client's own edited profile"

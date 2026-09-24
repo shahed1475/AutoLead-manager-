@@ -56,6 +56,13 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class Onboarding(BaseModel):
+    name: str
+    company: Optional[str] = None
+    sector: str
+    company_dna: str
+
+
 class PasswordChange(BaseModel):
     password: str
     current_password: Optional[str] = None
@@ -194,6 +201,16 @@ async def set_my_password(request: Request, payload: PasswordChange, client=Depe
     return {"ok": True}
 
 
+@router.put("/me/onboarding")
+async def finish_onboarding(payload: Onboarding, client=Depends(current_client)):
+    """First-run setup: name, sector and Company DNA (required before the dashboard)."""
+    try:
+        return await service.complete_onboarding(client["id"], payload.name, payload.company,
+                                                 payload.sector, payload.company_dna)
+    except PortalError as exc:
+        _raise(exc)
+
+
 @router.put("/me")
 async def update_me(payload: ProfileUpdate, client=Depends(current_client)):
     try:
@@ -230,6 +247,8 @@ async def my_workspace(client=Depends(current_client)):
 async def enter_workspace(request: Request, response: Response, client=Depends(current_client)):
     """Open the client's own dashboard: a one-time signed sign-in link for
     THEIR workspace, plus the cookie that routes this browser to it."""
+    if not client.get("onboarded_at"):
+        raise HTTPException(status_code=409, detail="Finish setting up your account first.")
     ws = await workspaces.workspace_for_client(client["id"])
     if not ws or workspaces.view(ws)["state"] != "RUNNING":
         raise HTTPException(status_code=409, detail="Your dashboard isn't ready yet.")
@@ -239,4 +258,4 @@ async def enter_workspace(request: Request, response: Response, client=Depends(c
         raise HTTPException(status_code=exc.status, detail=str(exc))
     response.set_cookie(GATEWAY_COOKIE, workspaces.gateway_cookie_value(ws), max_age=30 * 86400,
                         path="/", httponly=True, samesite="lax", secure=_secure(request))
-    return {"url": f"/?handoff={token}"}
+    return {"url": f"/dashboard?handoff={token}"}

@@ -99,7 +99,7 @@ function EditableName({ c }) {
           <button className="opacity-0 group-hover:opacity-100 focus:opacity-100 [@media(hover:none)]:opacity-100 text-muted-foreground hover:text-foreground"
             aria-label="Edit name and company" onClick={() => { setF({ name: c.name || '', company: c.company || '' }); setEditing(true) }}><Pencil size={12} /></button>
         </p>
-        <p className="text-meta">{c.email}{c.status === 'BLOCKED' && <span className="text-error"> · blocked</span>}</p>
+        <p className="text-meta">{c.email}{c.sector && <> · {c.sector}</>}{!c.onboarded_at && c.last_login_at && <span className="text-warning"> · setting up</span>}{c.status === 'BLOCKED' && <span className="text-error"> · blocked</span>}</p>
       </div>
     )
   }

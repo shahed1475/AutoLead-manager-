@@ -7,6 +7,7 @@ import { portalApi, getToken, setToken } from '../api'
 import { usePortalInfo, useMe } from '../hooks'
 import { Brand, ThemeSwitch } from '../site/SiteLayout'
 import { CodeForm, FormError, Notice, PasswordField } from './fields'
+import Onboarding from './Onboarding'
 
 // Log in, sign up, forgot password, and "opening your dashboard" — the
 // client link's account pages.
@@ -281,32 +282,6 @@ const WAIT_COPY = {
   NONE: ['Setting up your dashboard', 'One moment…'],
 }
 
-function ProfileStep({ me }) {
-  const qc = useQueryClient()
-  const [name, setName] = useState(me.name || '')
-  const [company, setCompany] = useState(me.company || '')
-  const save = useMutation({
-    mutationFn: () => portalApi.updateMe({ name, company }),
-    onSuccess: (c) => qc.setQueryData(['portal-me'], c),
-  })
-  return (
-    <AuthLayout title="Nice to meet you" subtitle="Tell us who we’re working with." back={false}>
-      <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); save.mutate() }}>
-        <FormError message={save.error?.message} />
-        <div>
-          <label htmlFor="p-name" className="label">Your name</label>
-          <input id="p-name" className="input h-11" autoFocus autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} />
-        </div>
-        <div>
-          <label htmlFor="p-company" className="label">Company <span className="font-normal">(optional)</span></label>
-          <input id="p-company" className="input h-11" autoComplete="organization" value={company} onChange={(e) => setCompany(e.target.value)} />
-        </div>
-        <button type="submit" className="btn-primary w-full h-11" disabled={save.isPending || !name.trim()}>Continue</button>
-      </form>
-    </AuthLayout>
-  )
-}
-
 export function Account() {
   const navigate = useNavigate()
   const qc = useQueryClient()
@@ -318,7 +293,7 @@ export function Account() {
     if (me && me.has_password === false) navigate(`/forgot-password?email=${encodeURIComponent(me.email)}`, { replace: true })
   }, [me]) // eslint-disable-line react-hooks/exhaustive-deps
   const ws = useQuery({
-    queryKey: ['portal-workspace'], queryFn: portalApi.workspace, enabled: !!me && !me.needs_profile && me.has_password !== false,
+    queryKey: ['portal-workspace'], queryFn: portalApi.workspace, enabled: !!me && !me.needs_onboarding && me.has_password !== false,
     refetchInterval: (q) => (q.state.data?.state === 'RUNNING' ? false : 4000),
   })
   const enter = useMutation({
@@ -338,7 +313,7 @@ export function Account() {
 
   if (!me) return <div className="min-h-[100dvh] grid place-items-center bg-background"><RefreshCw className="animate-spin text-muted-foreground" size={20} /></div>
   if (me.has_password === false) return null
-  if (me.needs_profile) return <ProfileStep me={me} />
+  if (me.needs_onboarding) return <Onboarding me={me} onSignOut={signOut} />
 
   const [title, text] = !state || state === 'RUNNING' ? ['Opening your dashboard', 'One moment…'] : (WAIT_COPY[state] || WAIT_COPY.NONE)
   const busy = !state || ['RUNNING', 'CREATING', 'STARTING', 'NONE', 'WAITING_FOR_RELEASE'].includes(state)

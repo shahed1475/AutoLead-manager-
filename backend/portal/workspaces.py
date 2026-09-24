@@ -66,7 +66,7 @@ def _ws_status(status: Dict[str, Any], ws_id: int) -> Dict[str, Any]:
 
 async def write_control(publish_requested_at: Optional[str] = None) -> None:
     rows = await db.portal_fetch(
-        """SELECT w.id, w.port, w.desired, c.email FROM portal_workspaces w
+        """SELECT w.id, w.port, w.desired, c.email, c.company, c.sector, c.company_dna FROM portal_workspaces w
            JOIN portal_clients c ON c.id = w.client_id ORDER BY w.id""")
     try:
         previous = json.loads(CONTROL_FILE.read_text())
@@ -79,7 +79,10 @@ async def write_control(publish_requested_at: Optional[str] = None) -> None:
         "written_at": _now_iso(),
         # workspaces use your local AI model through the relay (they can't change it)
         "ai_model": stored.get("ollama_model") or get_settings().ollama_model,
-        "workspaces": [{"id": r["id"], "port": r["port"], "desired": r["desired"], "email": r["email"]}
+        "workspaces": [{"id": r["id"], "port": r["port"], "desired": r["desired"], "email": r["email"],
+                        # set-up answers: the supervisor puts this into an EMPTY
+                        # Company DNA file only (never over the client's own edits)
+                        **({"company_dna": seed_dna(r)} if r.get("company_dna") else {})}
                        for r in rows if r["desired"] in ("RUNNING", "STOPPED")],
         "deleted": [r["id"] for r in rows if r["desired"] == "DELETED"],
         "publish_requested_at": publish_requested_at or previous.get("publish_requested_at"),
@@ -187,6 +190,14 @@ def _master_key() -> bytes:
 def handoff_token(ws: Dict[str, Any], email: str) -> str:
     secret = edition.workspace_secret(_master_key(), ws["id"])
     return edition.sign_handoff(secret, ws["id"], email, secrets.token_urlsafe(16))
+
+
+def seed_dna(client: Dict[str, Any]) -> str:
+    """The Company DNA a new workspace starts with, from the set-up answers."""
+    head = [f"Company: {client['company']}" if client.get("company") else None,
+            f"Sector: {client['sector']}" if client.get("sector") else None]
+    head = "\n".join(h for h in head if h)
+    return f"{head}\n\n{client['company_dna'].strip()}\n" if head else f"{client['company_dna'].strip()}\n"
 
 
 def gateway_cookie_value(ws: Dict[str, Any]) -> str:

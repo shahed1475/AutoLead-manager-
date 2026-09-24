@@ -171,6 +171,25 @@ def prepare_dir(ws_id: int) -> Path:
     return d
 
 
+def seed_company_dna(ws: Dict[str, Any]) -> bool:
+    """Put the client's set-up answers into their Company DNA — only while the
+    file is still empty, so their own edits are never overwritten. Written in
+    place (same file), because the running workspace has this file mounted."""
+    text = (ws.get("company_dna") or "").strip()
+    dna = ws_dir(ws["id"]) / "company_dna.txt"
+    if not text or not dna.parent.exists():
+        return False
+    try:
+        if dna.exists() and dna.read_text().strip():
+            return False
+        with open(dna, "w") as f:
+            f.write(text + "\n")
+        return True
+    except OSError as exc:
+        log(f"workspace {ws['id']}: could not write Company DNA: {exc}")
+        return False
+
+
 def compose(ws: Dict[str, Any], args: List[str], key: bytes, control: Dict[str, Any],
             runner: Runner = run, timeout: int = 300) -> subprocess.CompletedProcess:
     env = dict(os.environ)
@@ -206,6 +225,8 @@ def reconcile(control: Dict[str, Any], status: Dict[str, Any], key: bytes, runne
 
     for ws in wanted:
         wid = int(ws["id"])
+        if seed_company_dna(ws):
+            log(f"workspace {wid}: Company DNA filled in from the set-up answers")
         have = containers.get(wid, {})
         be, fe = have.get("backend", {}), have.get("frontend", {})
         running = be.get("state") == "running" and fe.get("state") == "running"
@@ -226,6 +247,7 @@ def reconcile(control: Dict[str, Any], status: Dict[str, Any], key: bytes, runne
             entry["state"] = "RUNNING" if be.get("health") in ("healthy", "") else "STARTING"
         else:
             prepare_dir(wid)
+            seed_company_dna(ws)
             args = ["up", "-d", "--remove-orphans"] + (["--force-recreate"] if force_recreate or (be and not on_current) else [])
             r = compose(ws, args, key, control, runner)
             entry["state"] = "STARTING" if r.returncode == 0 else "ERROR"

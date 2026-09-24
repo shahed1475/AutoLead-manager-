@@ -34,6 +34,22 @@ We are [Company], a [type of business] based in [city].
 ## Tone of voice
 [Professional / friendly / direct]`
 
+// Words the writer actually wrote — outline headings ("## Who we are") don't count.
+export function countWords(text) {
+  const body = (text || '').replace(/^\s*#+.*$/gm, ' ').trim()
+  return body ? body.split(/\s+/).length : 0
+}
+
+// A section counts as covered once its heading has a few words under it.
+function sectionFilled(text, heading) {
+  const lines = (text || '').split('\n')
+  const at = lines.findIndex((l) => /^\s*#+\s*/.test(l) && l.replace(/^\s*#+\s*/, '').trim().toLowerCase() === heading.toLowerCase())
+  if (at < 0) return false
+  const rest = []
+  for (const l of lines.slice(at + 1)) { if (/^\s*#+\s/.test(l)) break; rest.push(l) }
+  return countWords(rest.join(' ')) >= 3
+}
+
 function lengthHint(words) {
   if (words === 0) return { text: 'Start with the outline above — aim for 150–600 words.', tone: 'muted' }
   if (words < 80) return { text: 'A bit short — more detail helps the AI find and write to the right people.', tone: 'warning' }
@@ -41,26 +57,26 @@ function lengthHint(words) {
   return { text: 'Very long — keep it focused so the AI uses the important parts.', tone: 'warning' }
 }
 
-export default function CompanyDnaEditor({ value, onChange, dirty, saving, onSave }) {
+export default function CompanyDnaEditor({ value, onChange, dirty, saving, onSave, actions, minHeight = 384 }) {
   const ref = useRef(null)
-  const words = value.trim() ? value.trim().split(/\s+/).length : 0
+  const words = countWords(value)
   const hint = lengthHint(words)
-  const has = (heading) => new RegExp(`^#+\\s*${heading.replace(/[.*+?^${}()|[\]\\&]/g, '\\$&')}\\s*$`, 'im').test(value)
+  const has = (heading) => sectionFilled(value, heading)
 
   // Grow with the text (comfortably tall to start, scrolls past ~70% of the screen).
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
     el.style.height = 'auto'
-    el.style.height = `${Math.min(Math.max(el.scrollHeight + 2, 384), window.innerHeight * 0.7)}px`
-  }, [value])
+    el.style.height = `${Math.min(Math.max(el.scrollHeight + 2, minHeight), window.innerHeight * 0.7)}px`
+  }, [value, minHeight])
 
   // Ctrl/Cmd + S saves while editing.
   useEffect(() => {
     const onKey = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && document.activeElement === ref.current) {
         e.preventDefault()
-        if (dirty && !saving) onSave()
+        if (onSave && dirty && !saving) onSave()
       }
     }
     window.addEventListener('keydown', onKey)
@@ -69,6 +85,12 @@ export default function CompanyDnaEditor({ value, onChange, dirty, saving, onSav
 
   function addSection(heading) {
     const el = ref.current
+    const existing = value.split('\n').findIndex((l) => l.replace(/^\s*#+\s*/, '').trim().toLowerCase() === heading.toLowerCase() && /^\s*#/.test(l))
+    if (existing >= 0) {       // heading is there but empty: jump to it
+      const pos = value.split('\n').slice(0, existing + 1).join('\n').length + 1
+      requestAnimationFrame(() => { if (el) { el.focus(); el.setSelectionRange(pos, pos) } })
+      return
+    }
     const base = value.replace(/\s+$/, '')
     const next = `${base}${base ? '\n\n' : ''}## ${heading}\n`
     onChange(next)
@@ -105,7 +127,8 @@ export default function CompanyDnaEditor({ value, onChange, dirty, saving, onSav
       <textarea
         ref={ref}
         aria-label="Company DNA"
-        className="input w-full min-h-96 resize-y px-4 py-3.5 text-sm leading-7 font-sans"
+        style={{ minHeight }}
+        className="input w-full resize-y px-4 py-3.5 text-sm leading-7 font-sans"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={PLACEHOLDER}
@@ -118,12 +141,12 @@ export default function CompanyDnaEditor({ value, onChange, dirty, saving, onSav
           <span className={clsx(hint.tone === 'success' && 'text-success', hint.tone === 'warning' && 'text-warning',
             hint.tone === 'muted' && 'text-muted-foreground')}>{hint.text}</span>
         </p>
-        <div className="flex items-center gap-3">
+        {actions || <div className="flex items-center gap-3">
           {dirty && <span className="text-xs text-muted-foreground flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-warning" />Unsaved changes</span>}
           <button type="button" onClick={onSave} disabled={saving || !dirty} className="btn-primary h-9 px-4 text-sm">
             {saving ? <><RefreshCw size={14} className="animate-spin" /> Saving…</> : <><Save size={14} /> Save</>}
           </button>
-        </div>
+        </div>}
       </div>
     </div>
   )

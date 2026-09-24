@@ -35,6 +35,7 @@ export const portalApi = {
   signOut: () => api.post('/auth/sign-out').then((r) => r.data),
   me: () => api.get('/me').then((r) => r.data),
   updateMe: (data) => api.put('/me', data).then((r) => r.data),
+  onboarding: (data) => api.put('/me/onboarding', data).then((r) => r.data),
   workspace: () => api.get('/workspace').then((r) => r.data),
   enter: () => api.post('/workspace/enter').then((r) => r.data),
 }

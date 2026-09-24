@@ -307,7 +307,8 @@ async def end_session(token: str) -> None:
 
 def public_client(c: Dict[str, Any]) -> Dict[str, Any]:
     return {"id": c["id"], "email": c["email"], "name": c.get("name"), "company": c.get("company"),
-            "needs_profile": not (c.get("name") or "").strip(), "has_password": bool(c.get("password_hash"))}
+            "needs_profile": not (c.get("name") or "").strip(), "has_password": bool(c.get("password_hash")),
+            "sector": c.get("sector"), "needs_onboarding": not c.get("onboarded_at")}
 
 
 async def update_profile(client_id: int, name: str, company: Optional[str]) -> Dict[str, Any]:
@@ -331,3 +332,34 @@ async def add_client(email: str, name: Optional[str], company: Optional[str]) ->
         "INSERT INTO portal_clients (email, name, company) VALUES (?, ?, ?) RETURNING id",
         email, (name or "").strip()[:120] or None, (company or "").strip()[:160] or None)
     return await db.portal_fetchrow("SELECT * FROM portal_clients WHERE id = ?", cid)
+
+
+# ── First-run setup ──────────────────────────────────────────────────────────
+
+ONBOARDING_MIN_WORDS = 20
+DNA_MAX_CHARS = 20000
+
+
+async def complete_onboarding(client_id: int, name: str, company: Optional[str], sector: str,
+                              company_dna: str) -> Dict[str, Any]:
+    """Save the client's name, sector and company profile (Company DNA). The
+    profile is copied into their workspace by the workspace service."""
+    name = (name or "").strip()[:120]
+    sector = (sector or "").strip()[:80]
+    dna = (company_dna or "").strip()
+    if not name:
+        raise PortalError("Tell us your name.")
+    if not sector:
+        raise PortalError("Choose your sector.")
+    written = re.sub(r"(?m)^\s*#+.*$", " ", dna)          # outline headings don't count
+    if len(written.split()) < ONBOARDING_MIN_WORDS:
+        raise PortalError(f"Tell us a bit more about your company — at least {ONBOARDING_MIN_WORDS} words.")
+    if len(dna) > DNA_MAX_CHARS:
+        raise PortalError("Your company profile is too long — keep it under 20,000 characters.")
+    await db.portal_execute(
+        """UPDATE portal_clients SET name = ?, company = ?, sector = ?, company_dna = ?,
+           onboarded_at = COALESCE(onboarded_at, ?) WHERE id = ?""",
+        name, (company or "").strip()[:160] or None, sector, dna, _iso(_now()), client_id)
+    from . import workspaces
+    await workspaces.write_control()
+    return public_client(await db.portal_fetchrow("SELECT * FROM portal_clients WHERE id = ?", client_id))

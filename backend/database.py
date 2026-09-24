@@ -1173,7 +1173,9 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
 
     # Client passwords (website sign-up / log-in). Only a bcrypt hash is kept.
     for col, typedef in (("password_hash", "TEXT"), ("email_verified_at", "TIMESTAMP"),
-                         ("failed_logins", "INTEGER NOT NULL DEFAULT 0"), ("locked_until", "TIMESTAMP")):
+                         ("failed_logins", "INTEGER NOT NULL DEFAULT 0"), ("locked_until", "TIMESTAMP"),
+                         # First-run setup (name, sector, company profile) before the dashboard
+                         ("sector", "TEXT"), ("company_dna", "TEXT"), ("onboarded_at", "TIMESTAMP")):
         await _add_col_if_missing(raw, "portal_clients", col, typedef)
     # Sessions opened with an emailed code may set a new password for a short while.
     await _add_col_if_missing(raw, "portal_sessions", "via_code_at", "TIMESTAMP")
