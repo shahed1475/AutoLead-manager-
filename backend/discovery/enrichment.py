@@ -180,6 +180,14 @@ async def maybe_auto_handoff(lead_ids: List[int], log_fn: Optional[Any] = None) 
     return out
 
 
+def _queue_reports(ids: List[int]) -> None:
+    try:
+        from ..audit import lead_audit
+        lead_audit.queue_audits(ids)
+    except Exception:  # noqa: BLE001 — reports are a bonus; never break discovery
+        logger.debug("queueing lead reports failed", exc_info=True)
+
+
 async def enrich_and_score(
     lead_ids: List[int], *, campaign: Optional[Dict[str, Any]] = None,
     log_fn: Optional[Any] = None,
@@ -188,8 +196,12 @@ async def enrich_and_score(
     {emails_found, enriched, scored, skipped}. No-op when disabled or empty."""
     ids = [i for i in dict.fromkeys(lead_ids) if i]
     stats: Dict[str, Any] = {"emails_found": 0, "enriched": 0, "scored": 0, "skipped": False}
-    if not ids or not await _enrichment_enabled():
+    if not ids:
         stats["skipped"] = True
+        return stats
+    if not await _enrichment_enabled():
+        stats["skipped"] = True
+        _queue_reports(ids)
         return stats
 
     try:
@@ -238,5 +250,7 @@ async def enrich_and_score(
         stats["auto_queued"] = handoff["auto_queued"]
     except Exception:
         logger.warning("discovery enrich_and_score failed", exc_info=True)
+    # 5. a business report for every new lead (people appear in it once research finishes)
+    _queue_reports(ids)
 
     return stats

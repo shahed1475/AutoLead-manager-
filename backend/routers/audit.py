@@ -2,7 +2,6 @@
 routers/audit.py — run and read a lead's audit (audit/lead_audit.py).
 Read-only intelligence: nothing here drafts or sends a message.
 """
-import asyncio
 from typing import List
 
 from fastapi import APIRouter, HTTPException
@@ -19,12 +18,10 @@ class AuditBatch(BaseModel):
 
 @router.post("/audit-batch", status_code=202)
 async def start_audit_batch(payload: AuditBatch):
-    """Audit many leads in the background; one batch at a time."""
-    if lead_audit.batch_status()["running"]:
-        raise HTTPException(409, "An audit batch is already running")
-    asyncio.create_task(lead_audit.run_batch(payload.lead_ids))
-    await asyncio.sleep(0)                      # let it register as running
-    return {**lead_audit.batch_status(), "total": len(set(payload.lead_ids))}
+    """Audit many leads in the background. Joins the running queue if there
+    is one (new leads are audited automatically too); duplicates are skipped."""
+    queued = lead_audit.queue_audits(payload.lead_ids)
+    return {**lead_audit.batch_status(), "queued": queued}
 
 
 @router.get("/audit-batch")

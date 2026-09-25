@@ -124,7 +124,8 @@ async def test_report_without_research_says_so(clean_db, monkeypatch):
     lid = await clean_db.create_lead({"business_name": "Plain Co"})
     r = await la.build_audit(lid)
     assert r["contacts"] == {"researched": False, "people": [], "primary": None,
-                             "business_email": None, "business_email_note": None}
+                             "business_email": None, "business_email_note": None,
+                             "research_status": "NOT_STARTED"}
     assert r["details"]["technology"] == []
 
 
@@ -138,7 +139,44 @@ async def test_batch_audits_every_lead_once(clean_db, monkeypatch):
         assert (await clean_db.get_latest_lead_audit(i)) is not None
     async with _client() as c:
         r = await c.post("/api/leads/audit-batch", json={"lead_ids": ids[:1]})
-        assert r.status_code == 202 and r.json()["total"] == 1
+        assert r.status_code == 202 and r.json()["queued"] == 1 and r.json()["total"] == 1
+        await la.run_batch([])                  # let it finish
         assert (await c.post("/api/leads/audit-batch", json={"lead_ids": []})).status_code == 422
         progress = await c.get("/api/leads/audit-batch")
         assert progress.status_code == 200 and set(progress.json()) == {"running", "done", "total", "failed"}
+
+
+# ── Automatic reports for new leads ──────────────────────────────────────
+
+async def test_queue_audits_drains_everything_once(clean_db):
+    import asyncio
+    ids = [await clean_db.create_lead({"business_name": f"Q{i}", "phone": f"q{i}"}) for i in range(4)]
+    la.queue_audits(ids[:2])
+    la.queue_audits(ids[1:])                     # overlaps and arrives while running
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if not la.batch_status()["running"]:
+            break
+    for i in ids:
+        assert await clean_db.get_latest_lead_audit(i) is not None
+    async with clean_db.get_db() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM lead_audits") == 4   # no duplicates
+
+
+async def test_new_discovery_leads_get_reports(clean_db, monkeypatch):
+    from backend.discovery import enrichment
+    queued = []
+    monkeypatch.setattr(la, "queue_audits", lambda ids: queued.extend(ids))
+    async def no_op(*a, **k):
+        return None
+    monkeypatch.setattr(enrichment, "_run_website_ai", no_op)
+    lid = await clean_db.create_lead({"business_name": "New Co", "phone": "n1"})
+    await enrichment.enrich_and_score([lid])
+    assert queued == [lid]
+
+
+async def test_report_says_research_is_running(clean_db):
+    lid = await clean_db.create_lead({"business_name": "Busy Co", "phone": "b1"})
+    await clean_db.update_lead(lid, {"research_status": "QUEUED"})
+    r = await la.build_audit(lid)
+    assert r["contacts"]["researched"] is False and r["contacts"]["research_status"] == "QUEUED"

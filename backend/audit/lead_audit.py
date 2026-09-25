@@ -8,13 +8,17 @@ problem it didn't see. No AI, no guessing.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from .. import database as db
 from ..enrichment.website_analyzer import analyze_website
+
+logger = logging.getLogger(__name__)
 
 PASS, ISSUE, UNKNOWN = "pass", "issue", "unknown"
 GOOD_RATING = 4.0
@@ -158,10 +162,11 @@ def _business(lead: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _contacts(bundle: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _contacts(bundle: Optional[Dict[str, Any]], research_status: Optional[str] = None) -> Dict[str, Any]:
     if not bundle:
         return {"researched": False, "people": [], "primary": None,
-                "business_email": None, "business_email_note": None}
+                "business_email": None, "business_email_note": None,
+                "research_status": research_status or "NOT_STARTED"}
     r = bundle["result"]
     people = [{"name": p["name"], "title": p.get("title"), "source_url": p.get("source_url"),
                "is_primary": bool(p.get("is_primary"))} for p in bundle["people"]]
@@ -196,7 +201,7 @@ async def _report(row: Dict[str, Any], lead: Dict[str, Any]) -> Dict[str, Any]:
     return {"id": row["id"], "lead_id": row["lead_id"], "created_at": row["created_at"],
             "business_name": lead.get("business_name"), "website": lead.get("website"),
             "city": lead.get("city"), "niche": lead.get("niche"),
-            "business": _business(lead), "contacts": _contacts(await db.get_lead_research_bundle(lead["id"])),
+            "business": _business(lead), "contacts": _contacts(await db.get_lead_research_bundle(lead["id"]), lead.get("research_status")),
             "details": details, "summary": summary or None,       # summary is AI-written: the page labels it
             "checks": checks, **summarize(checks)}
 
@@ -220,25 +225,53 @@ async def latest_audit(lead_id: int) -> Optional[Dict[str, Any]]:
     return await _report(row, lead) if row else None
 
 
-# ── Audit many leads (Leads table "Audit" button) ─────────────────────────
+# ── Audit many leads: the Leads "Audit" button and every newly found lead ──
 MAX_BATCH = 100
 _batch = {"running": False, "done": 0, "total": 0, "failed": 0}
+_pending: List[int] = []          # waiting, in order
+_seen: set = set()                # waiting or done in the current run (no duplicates)
+_task: Optional["asyncio.Task"] = None
 
 
 def batch_status() -> Dict[str, Any]:
     return dict(_batch)
 
 
-async def run_batch(lead_ids: List[int]) -> None:
-    """Audit the leads one after another (each fetches one homepage)."""
-    ids = list(dict.fromkeys(int(i) for i in lead_ids))[:MAX_BATCH]
-    _batch.update(running=True, done=0, total=len(ids), failed=0)
+def queue_audits(lead_ids: List[int]) -> int:
+    """Add leads to the background audit queue (one homepage at a time).
+    Returns how many were newly queued. Safe to call while a run is going."""
+    global _task
+    if not _batch["running"]:                 # a finished run's leads can be audited again
+        _seen.clear()
+    new = [i for i in dict.fromkeys(int(x) for x in lead_ids if x) if i not in _seen][:MAX_BATCH]
+    if not new:
+        return 0
+    if not _batch["running"]:
+        _batch.update(running=True, done=0, total=0, failed=0)
+    _seen.update(new)
+    _pending.extend(new)
+    _batch["total"] += len(new)
+    if _task is None or _task.done():
+        _task = asyncio.get_running_loop().create_task(_drain())
+    return len(new)
+
+
+async def _drain() -> None:
     try:
-        for lid in ids:
+        while _pending:
+            lid = _pending.pop(0)
             try:
                 await build_audit(lid)
-            except Exception:  # noqa: BLE001 — one bad site mustn't stop the batch
+            except Exception:  # noqa: BLE001 — one bad site mustn't stop the rest
+                logger.warning("audit failed for lead %s", lid, exc_info=True)
                 _batch["failed"] += 1
             _batch["done"] += 1
     finally:
         _batch["running"] = False
+
+
+async def run_batch(lead_ids: List[int]) -> None:
+    """Queue the leads and wait until the queue is empty."""
+    queue_audits(lead_ids)
+    if _task is not None:
+        await _task

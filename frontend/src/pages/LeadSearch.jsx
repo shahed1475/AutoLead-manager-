@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
-import { leadRunsApi, engineApi, automationApi } from '../api/client'
+import { leadRunsApi, engineApi, automationApi, settingsApi } from '../api/client'
 import TargetTitlesInput from '../components/TargetTitlesInput'
 import { stepsLabel } from '../lib/leadRuns'
 import { isClientEdition } from '../lib/edition'
@@ -127,6 +127,7 @@ export default function FindLeads() {
   const [channels, setChannels] = useState({ email: true, whatsapp: false })
   const [hotWarmOnly, setHotWarmOnly] = useState(true)
   const [dailyOpen, setDailyOpen] = useState(false)
+  const [dailyContacts, setDailyContacts] = useState(true)   // research every new lead's owner + contacts
   const channel = channels.email && channels.whatsapp ? 'BOTH' : channels.whatsapp ? 'WHATSAPP' : 'EMAIL'
   const n = Math.max(1, Math.min(MAX_LEADS, Number(count) || 20))
   const selected = { collect: true, research, outreach }
@@ -153,6 +154,12 @@ export default function FindLeads() {
   const schedule = useMutation({
     mutationFn: async () => {
       await automationApi.saveSettings({ automation_enabled: true, automation_daily_limit: n })
+      if (dailyContacts) {
+        // Nobody is there to pick leads for research: send every new lead,
+        // with the usual management titles for the niche.
+        await settingsApi.update('research_handoff_mode', 'automatic')
+        await settingsApi.update('research_handoff_min_score', '0')
+      }
       await automationApi.confirmImport({
         locations: splitList(where).map((city) => ({ city, state: null })),
         niches: splitList(what), filename: 'Find leads', layout: 'combined',
@@ -337,6 +344,13 @@ export default function FindLeads() {
                     up to <span className="font-semibold tabular">{n}</span> new leads a day.</>
                 : <span className="text-muted-foreground">Fill in who and where above first.</span>}
             </p>
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input type="checkbox" className="size-4 mt-0.5 accent-[rgb(var(--primary))]" checked={dailyContacts}
+                onChange={(e) => setDailyContacts(e.target.checked)} />
+              <span className="text-sm">Find the owner and contacts for every new lead
+                <span className="block text-meta">Researches each lead's website and listings for the owner, managers, their titles, phone and email. Each lead also gets its business report.</span>
+              </span>
+            </label>
             {existingQueue > 0 && (
               <p className="text-sm text-warning">This replaces your current daily list of {existingQueue} search{existingQueue === 1 ? '' : 'es'}.</p>
             )}

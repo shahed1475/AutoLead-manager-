@@ -60,6 +60,17 @@ const Missing = ({ children }) => <span className="text-muted-foreground">{child
 // ── People & contacts ────────────────────────────────────────────────────
 function Contacts({ report, onResearch, researching }) {
   const c = report.contacts
+  if (!c.researched && ['QUEUED', 'RESEARCHING'].includes(c.research_status)) {
+    return (
+      <div className="rounded-xl border border-dashed border-border p-5 flex items-start gap-3">
+        <Loader2 size={16} className="animate-spin text-primary mt-0.5 shrink-0 print:hidden" />
+        <div>
+          <p className="text-sm text-foreground font-medium">Looking up the owner and contacts now</p>
+          <p className="text-sm text-muted-foreground mt-1">Research is reading their website and listings. This section fills in by itself when it finishes.</p>
+        </div>
+      </div>
+    )
+  }
   if (!c.researched) {
     return (
       <div className="rounded-xl border border-dashed border-border p-5 print:hidden">
@@ -183,6 +194,8 @@ export default function LeadAudit() {
     queryKey: ['lead-audit', id],
     queryFn: () => auditApi.get(id),
     retry: false,
+    // While research runs, keep the People section current.
+    refetchInterval: (q) => (['QUEUED', 'RESEARCHING'].includes(q.state.data?.contacts?.research_status) ? 20_000 : false),
   })
   const run = useMutation({
     mutationFn: () => auditApi.run(id),
@@ -191,7 +204,7 @@ export default function LeadAudit() {
   })
   const research = useMutation({
     mutationFn: () => leadsApi.researchOne(Number(id)),
-    onSuccess: () => toast.success('Research started. Come back in a few minutes and press Check again.'),
+    onSuccess: () => { toast.success('Research started. The People section fills in when it finishes.'); refetch() },
     onError: (e) => toast.error(e.message || "Research couldn't start"),
   })
   const missing = isError && error?.status === 404   // api/client.js puts the HTTP status on e.status
