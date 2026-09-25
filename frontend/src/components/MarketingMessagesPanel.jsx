@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Mail, MessageCircle, Megaphone, Loader2, Sparkles, Check, X, Pencil, RotateCcw,
-  ChevronDown, ChevronUp,
+  ChevronDown, ChevronUp, ExternalLink, ShieldCheck, AlertTriangle,
 } from 'lucide-react'
 import { marketingApi } from '../api/client'
 
@@ -126,6 +126,33 @@ function ChannelRow({ leadId, msg, onChanged }) {
   )
 }
 
+// The fact this draft relies on, where it was seen and when — so the reviewer
+// can check it before approving. Inferred facts are flagged, never hidden.
+function ProofLine({ msg }) {
+  const observed = msg.evidence_kind === 'observed'
+  const checked = msg.evidence_checked_at ? String(msg.evidence_checked_at).slice(0, 10) : null
+  return (
+    <div className="space-y-1">
+      <p><span className="text-slate-500 font-semibold">Proof:</span> {msg.evidence}</p>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        {msg.evidence_kind && (
+          <span className={`inline-flex items-center gap-1 font-semibold ${observed ? 'text-emerald-400' : 'text-amber-400'}`}>
+            {observed ? <ShieldCheck size={11} /> : <AlertTriangle size={11} />}
+            {observed ? 'Seen on their site' : 'Inferred: check before approving'}
+          </span>
+        )}
+        {msg.evidence_url && (
+          <a href={msg.evidence_url} target="_blank" rel="noopener noreferrer"
+             className="inline-flex items-center gap-1 text-brand-400 hover:underline">
+            Source <ExternalLink size={10} />
+          </a>
+        )}
+        {checked && <span className="text-slate-500">Checked {checked}</span>}
+      </div>
+    </div>
+  )
+}
+
 function VariantGroup({ leadId, variant, messages, onChanged }) {
   const [open, setOpen] = useState(variant === 'PRIMARY')
   const shared = messages[0]
@@ -147,7 +174,7 @@ function VariantGroup({ leadId, variant, messages, onChanged }) {
       {open && (
         <div className="px-2.5 pb-2.5 space-y-2.5">
           <div className="grid grid-cols-1 gap-1 text-[10px] text-slate-400 bg-slate-900/40 rounded-lg p-2">
-            {shared.evidence && <p><span className="text-slate-500 font-semibold">Evidence:</span> {shared.evidence}</p>}
+            {shared.evidence && <ProofLine msg={shared} />}
             {shared.business_impact && <p><span className="text-slate-500 font-semibold">Impact:</span> {shared.business_impact}</p>}
             {shared.solution && <p><span className="text-slate-500 font-semibold">Solution:</span> {shared.solution}</p>}
             {shared.business_benefit && <p><span className="text-slate-500 font-semibold">Benefit:</span> {shared.business_benefit}</p>}

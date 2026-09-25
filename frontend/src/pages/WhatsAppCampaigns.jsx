@@ -230,6 +230,25 @@ function Conversation({ lead, onClose }) {
   )
 }
 
+// How risky today's sending is for the number (advisory unless Safe mode is on).
+function NumberSafety({ p }) {
+  const r = p?.safety
+  if (!r) return null
+  const tone = { low: 'text-success', medium: 'text-warning', high: 'text-error' }[r.level] || 'text-muted-foreground'
+  const label = { low: 'Low risk', medium: 'Medium risk', high: 'High risk' }[r.level] || r.level
+  return (
+    <div className="border-t border-border pt-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold">Number safety: <span className={tone}>{label}</span></p>
+        <span className="text-meta">{p.safe_mode ? 'Safe mode on' : 'Safe mode off'}</span>
+      </div>
+      <ul className="mt-1.5 space-y-1">
+        {r.reasons.map((reason) => <li key={reason} className="text-meta">{reason}</li>)}
+      </ul>
+    </div>
+  )
+}
+
 function Today({ status, campaigns }) {
   const p = status?.pacing
   const running = campaigns.filter((c) => c.status === 'RUNNING')
@@ -245,6 +264,7 @@ function Today({ status, campaigns }) {
           <p className="text-sm mt-2">{p?.state || '–'}</p>
         </div>
       </div>
+      <NumberSafety p={p} />
       {running.map((c) => {
         const done = (c.counts.SENT || 0) + (c.counts.REPLIED || 0) + (c.counts.SKIPPED || 0) + (c.counts.FAILED || 0)
         return (
@@ -598,7 +618,10 @@ function PaceSettings({ settings }) {
         <p className="text-support -mt-2">Steady and low volume protects your number. One message goes out per pause, only in sending hours.</p>
         <div className="grid gap-4 sm:grid-cols-2">
           {num('wa_daily_limit', 'Messages per day', 'Start low (20–40) with a new number.')}
-          <div />
+          <label className="flex items-start gap-3 cursor-pointer sm:mt-6">
+            <input type="checkbox" className="size-4 mt-0.5 accent-[rgb(var(--primary))]" checked={!!f.wa_safe_mode} onChange={(e) => setF({ ...f, wa_safe_mode: e.target.checked })} />
+            <span className="text-sm">Safe mode<span className="block text-meta">Keeps a new number to a slow warm-up: 15 a day in week 1, 30 in week 2, 50 until week 4, then up to 100.</span></span>
+          </label>
           {num('wa_min_gap', 'Shortest pause (seconds)')}
           {num('wa_max_gap', 'Longest pause (seconds)')}
           {num('wa_hours_start', 'Send from (hour, 0–23)')}

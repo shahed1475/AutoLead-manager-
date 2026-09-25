@@ -49,7 +49,7 @@ _HEADERS = {
     ),
     "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Encoding": "gzip, deflate",   # only what httpx decodes without extra packages (no brotli here)
 }
 
 # ── Compiled patterns ─────────────────────────────────────────────────────────

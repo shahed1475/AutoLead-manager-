@@ -127,12 +127,15 @@ export const settingsApi = {
   testSmtp: () => api.post('/settings/test-smtp').then((r) => r.data),
   getDna: () => api.get('/settings/dna').then((r) => r.data),
   saveDna: (content) => api.put('/settings/dna', { content }).then((r) => r.data),
+  industryPresets: () => api.get('/settings/industry-presets').then((r) => r.data),
+  presetDna: (id, body) => api.post(`/settings/industry-presets/${id}/dna`, body).then((r) => r.data),
   resetStats: () => api.post('/settings/reset-stats').then((r) => r.data),
 }
 
 export const statsApi = {
   dashboard: () => api.get('/stats').then((r) => r.data),
   weekly: () => api.get('/stats/weekly').then((r) => r.data),
+  results: (days = 7) => api.get('/stats/results', { params: { days } }).then((r) => r.data),
 }
 
 export const engineApi = {
@@ -192,6 +195,11 @@ export const marketingApi = {
   edit:     (leadId, msgId, fields) => api.put(`/leads/${leadId}/messages/${msgId}`, fields).then((r) => r.data),
   approve:  (leadId, msgId)       => api.post(`/leads/${leadId}/messages/${msgId}/approve`).then((r) => r.data),
   reject:   (leadId, msgId, reason) => api.post(`/leads/${leadId}/messages/${msgId}/reject`, { reason }).then((r) => r.data),
+}
+
+export const auditApi = {
+  get: (leadId) => api.get(`/leads/${leadId}/audit`).then((r) => r.data),
+  run: (leadId) => api.post(`/leads/${leadId}/audit`).then((r) => r.data),
 }
 
 export const pipelineApi = {
@@ -389,6 +397,7 @@ export const emailSendersApi = {
   test:         (id)            => api.post(`/email-senders/${id}/test`).then((r) => r.data),
   disconnect:   (id)            => api.post(`/email-senders/${id}/disconnect`).then((r) => r.data),
   setDefault:   (id)            => api.post(`/email-senders/${id}/default`).then((r) => r.data),
+  deliverability: (id)          => api.get(`/email-senders/${id}/deliverability`).then((r) => r.data),
   gmailConfigStatus: ()         => api.get('/email-senders/gmail/config-status').then((r) => r.data),
   gmailConnect: ()              => api.get('/email-senders/gmail/connect').then((r) => r.data),
 }

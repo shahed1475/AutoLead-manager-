@@ -1,7 +1,8 @@
 import { useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import {
-  X, Sparkles, Eye, AlertTriangle, Globe, Target,
+  X, Sparkles, Eye, AlertTriangle, Globe, Target, ClipboardCheck,
   TrendingUp, Lightbulb, Zap, CheckCircle2,
 } from 'lucide-react'
 import { enrichApi } from '../api/client'
@@ -149,6 +150,15 @@ export default function EnrichmentDrawer({ lead, onClose, onEnrich, onViewMessag
               )}
             </div>
           </div>
+          {lead?.id && (
+            <Link
+              to={`/leads/${lead.id}/audit`}
+              onClick={onClose}
+              className="mr-1 inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold text-slate-300 hover:text-slate-100 hover:bg-slate-800 transition-all shrink-0"
+            >
+              <ClipboardCheck size={13} /> Audit
+            </Link>
+          )}
           <button
             onClick={onClose}
             aria-label="Close details"

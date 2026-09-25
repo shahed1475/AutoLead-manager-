@@ -307,6 +307,10 @@ class MarketingAgent:
                 business_impact=business_impact, solution=solution_desc,
                 business_benefit=benefit_text, cta=fragments["cta"],
                 confidence=base_confidence, variant=label, service_name=service_name,
+                # Proof shown to the reviewer next to the draft.
+                evidence_url=strongest_pp.get("source_url") or None,
+                evidence_checked_at=strongest_pp.get("created_at") or None,
+                evidence_kind="observed" if strongest_pp.get("classification") == "observed" else "inferred",
             )
             messages.append({**common, "channel": "EMAIL", "subject": subject, "message": email_body})
             messages.append({**common, "channel": "WHATSAPP", "subject": None, "message": whatsapp_body})

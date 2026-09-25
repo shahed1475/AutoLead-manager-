@@ -53,9 +53,13 @@ export default function Onboarding({ me, onSignOut }) {
     },
   })
 
-  function next() {
-    if (data.step === 1 && !data.dna.trim()) set({ step: 2, dna: starterDna(data.company, sector) })
-    else set({ step: data.step + 1 })
+  async function next() {
+    if (data.step === 1 && !data.dna.trim()) {
+      // A ready-made draft for known sectors; the blank starter otherwise.
+      let dna = null
+      try { dna = (await portalApi.sectorDna(sector, data.company)).dna } catch { /* offline: blank starter */ }
+      set({ step: 2, dna: dna || starterDna(data.company, sector) })
+    } else set({ step: data.step + 1 })
     window.scrollTo(0, 0)
   }
   const canContinue = [data.name.trim(), sector, ownWords(data.dna) >= MIN_WORDS][data.step]
@@ -138,6 +142,7 @@ export default function Onboarding({ me, onSignOut }) {
               <div className="max-w-2xl">
                 <h1 className="text-2xl sm:text-[1.75rem] font-semibold tracking-tight text-foreground">Your Company DNA</h1>
                 <p className="text-support mt-2">Describe your company in your own words. {product} reads this before every search, research and message — the clearer it is, the better your leads and drafts. You can change it any time in Settings.</p>
+                <p className="text-support mt-2">Add what makes you different under “Why choose us”. The AI never makes that part up.</p>
               </div>
               <FormError message={finish.error?.message} />
               <CompanyDnaEditor value={data.dna} onChange={(v) => set({ dna: v })} minHeight={320}

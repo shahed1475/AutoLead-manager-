@@ -137,3 +137,10 @@
   .pt-safe { padding-top: env(safe-area-inset-top, 0px); }
   .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
 }
+
+/* Lead audit: print only the report (Save as PDF). */
+@media print {
+  body * { visibility: hidden; }
+  .audit-print, .audit-print * { visibility: visible; }
+  .audit-print { position: absolute; inset: 0 auto auto 0; width: 100%; }
+}

@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import {
   AtSign, Plus, Loader2, Trash2, Plug, PlugZap, CheckCircle2, XCircle, Star, Send,
-  Eye, EyeOff, KeyRound, Save,
+  Eye, EyeOff, KeyRound, Save, ShieldCheck,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
@@ -33,6 +33,56 @@ function isDisabled(err) {
   return /not enabled|503/i.test(err?.message || '')
 }
 
+const DNS_TONE = { ok: 'text-emerald-400', weak: 'text-amber-400', missing: 'text-red-400', unknown: 'text-slate-500' }
+const DNS_WORD = { ok: 'OK', weak: 'Weak', missing: 'Missing', unknown: "Couldn't check" }
+
+// SPF / DKIM / DMARC / MX for the sender's domain: inboxes check these
+// before trusting cold email.
+function DeliverabilityReport({ r }) {
+  return (
+    <div className="mt-3 rounded-lg border border-slate-700/60 p-3 space-y-1.5">
+      <p className="text-xs font-semibold text-slate-300">Domain check: {r.domain}</p>
+      {[['spf', 'SPF'], ['dkim', 'DKIM'], ['dmarc', 'DMARC'], ['mx', 'Mail servers']].map(([k, label]) => (
+        <div key={k} className="grid grid-cols-[6.5rem_4.5rem_1fr] gap-2 text-[11px]">
+          <span className="text-slate-400">{label}</span>
+          <span className={`font-semibold ${DNS_TONE[r[k].status]}`}>{DNS_WORD[r[k].status]}</span>
+          <span className="text-slate-500 break-all">{r[k].detail}</span>
+        </div>
+      ))}
+      {r.advice?.length > 0 && (
+        <ul className="pt-1 space-y-1">
+          {r.advice.map((a) => <li key={a} className="text-[11px] text-amber-300/90">{a}</li>)}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function DailyLimit({ s, onSaved }) {
+  const [v, setV] = useState(String(s.daily_limit ?? 0))
+  const save = useMutation({
+    mutationFn: () => emailSendersApi.patch(s.id, { daily_limit: Math.max(0, parseInt(v || '0', 10) || 0) }),
+    onSuccess: () => { toast.success('Daily limit saved'); onSaved() },
+    onError: (e) => toast.error(e.message),
+  })
+  const changed = String(s.daily_limit ?? 0) !== v
+  return (
+    <div className="mt-3 flex flex-wrap items-end gap-2">
+      <div>
+        <label htmlFor={`dl-${s.id}`} className="block text-[11px] text-slate-400 mb-1">Emails per day (0 = no limit)</label>
+        <input id={`dl-${s.id}`} type="number" min="0" max="5000" value={v} onChange={(e) => setV(e.target.value)}
+               className="input w-28 text-xs" />
+      </div>
+      {changed && (
+        <button className="btn-secondary text-xs" disabled={save.isPending} onClick={() => save.mutate()}>
+          {save.isPending ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />} Save
+        </button>
+      )}
+      <p className="text-[11px] text-slate-500 basis-full">A new inbox should start around 20 a day. Campaigns pause when the limit is reached and resume the next day.</p>
+    </div>
+  )
+}
+
 function SenderCard({ s, onChanged }) {
   const qc = useQueryClient()
   const refresh = () => { qc.invalidateQueries({ queryKey: ['email-senders'] }); onChanged?.() }
@@ -50,6 +100,10 @@ function SenderCard({ s, onChanged }) {
   const deleteMut = useMutation({
     mutationFn: () => emailSendersApi.remove(s.id),
     onSuccess: () => { toast.success('Sender removed'); refresh() },
+    onError: (e) => toast.error(e.message),
+  })
+  const dnsMut = useMutation({
+    mutationFn: () => emailSendersApi.deliverability(s.id),
     onError: (e) => toast.error(e.message),
   })
   const defaultMut = useMutation({
@@ -82,6 +136,9 @@ function SenderCard({ s, onChanged }) {
         <button className="btn-secondary text-xs" disabled={testMut.isPending} onClick={() => testMut.mutate()}>
           {testMut.isPending ? <Loader2 size={11} className="animate-spin" /> : <Plug size={11} />} Test
         </button>
+        <button className="btn-secondary text-xs" disabled={dnsMut.isPending} onClick={() => dnsMut.mutate()}>
+          {dnsMut.isPending ? <Loader2 size={11} className="animate-spin" /> : <ShieldCheck size={11} />} Check domain
+        </button>
         {!s.is_default && (
           <button className="btn-secondary text-xs" disabled={defaultMut.isPending} onClick={() => defaultMut.mutate()}>
             <Star size={11} /> Make default
@@ -100,6 +157,8 @@ function SenderCard({ s, onChanged }) {
           {deleteMut.isPending ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />} Delete
         </button>
       </div>
+      <DailyLimit key={s.daily_limit} s={s} onSaved={refresh} />
+      {dnsMut.data && <DeliverabilityReport r={dnsMut.data} />}
     </div>
   )
 }

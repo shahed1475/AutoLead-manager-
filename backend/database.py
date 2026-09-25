@@ -527,9 +527,23 @@ CREATE TABLE IF NOT EXISTS generated_messages (
     approval_status      TEXT DEFAULT 'READY_FOR_REVIEW',      -- READY_FOR_REVIEW | APPROVED | REJECTED
     rejection_reason     TEXT,
     created_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    reviewed_at          TIMESTAMP
+    reviewed_at          TIMESTAMP,
+    evidence_url         TEXT,                                -- where the proof was seen
+    evidence_checked_at  TEXT,                                -- when it was seen
+    evidence_kind        TEXT                                 -- observed | inferred
 );
 CREATE INDEX IF NOT EXISTS idx_generated_messages_lead ON generated_messages (lead_id);
+
+-- Lead audit (audit/lead_audit.py): deterministic checks of a lead's online
+-- presence, each with its source + time. One row per run; the newest is shown.
+CREATE TABLE IF NOT EXISTS lead_audits (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id     INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+    score       INTEGER,                 -- 0-100 over known checks; NULL when nothing could be checked
+    checks_json TEXT    NOT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_lead_audits_lead ON lead_audits (lead_id, id);
 
 CREATE TABLE IF NOT EXISTS lead_stage_history (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1052,10 +1066,19 @@ CREATE TABLE IF NOT EXISTS email_sender_profiles (
     created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_tested_at          TIMESTAMP,
-    last_error              TEXT
+    last_error              TEXT,
+    daily_limit             INTEGER   NOT NULL DEFAULT 0          -- max campaign emails per day; 0 = no limit
 );
 CREATE INDEX IF NOT EXISTS idx_sender_profiles_provider ON email_sender_profiles (provider);
 CREATE INDEX IF NOT EXISTS idx_sender_profiles_default  ON email_sender_profiles (is_default);
+
+-- Addresses that hard-bounced (email_campaigns/bounces.py). A campaign never
+-- mails one again. Lower-cased; one row per address.
+CREATE TABLE IF NOT EXISTS email_bounces (
+    email       TEXT PRIMARY KEY,
+    reason      TEXT,
+    detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 CREATE TABLE IF NOT EXISTS oauth_states (
     state       TEXT      PRIMARY KEY,
@@ -1290,6 +1313,12 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
     # Sessions opened with an emailed code may set a new password for a short while.
     await _add_col_if_missing(raw, "portal_sessions", "via_code_at", "TIMESTAMP")
     await _add_col_if_missing(raw, "portal_login_codes", "payload", "TEXT")
+
+    await _add_col_if_missing(raw, "email_sender_profiles", "daily_limit", "INTEGER NOT NULL DEFAULT 0")
+
+    # Proof-backed messages: the source + date + kind of the fact a draft relies on.
+    for col in ("evidence_url", "evidence_checked_at", "evidence_kind"):
+        await _add_col_if_missing(raw, "generated_messages", col, "TEXT")
 
     # Data normalisation
     # DO_NOT_CONTACT (Phase 4 opt-out) is a terminal, sticky status — must be in
@@ -2605,6 +2634,7 @@ _GENERATED_MESSAGE_WRITABLE = frozenset({
     "company_profile_id", "channel", "variant", "strategy", "pain_point",
     "evidence", "business_impact", "solution", "business_benefit",
     "service_name", "subject", "message", "cta", "confidence",
+    "evidence_url", "evidence_checked_at", "evidence_kind",
 })
 
 _GENERATED_MESSAGE_UPDATABLE = frozenset({
@@ -2627,6 +2657,50 @@ async def replace_generated_messages(lead_id: int, items: List[Dict[str, Any]]) 
             )
             new_ids.append(new_id)
     return new_ids
+
+
+async def get_results_report(days: int = 7) -> Dict[str, Any]:
+    """Outcomes for the last `days` days and the `days` before that, from this
+    workspace's own tables. Messages count every channel (leads' own send,
+    WhatsApp campaign, email campaign)."""
+    async def period(start: str, end: str) -> Dict[str, int]:
+        w = "datetime({c}) >= datetime('now', ?) AND datetime({c}) < datetime('now', ?)"
+        async with get_db() as conn:
+            async def n(sql: str) -> int:
+                row = await conn.fetchrow(sql, start, end)
+                return int((row or {}).get("n") or 0)
+            stage = "SELECT count(DISTINCT lead_id) AS n FROM lead_stage_history WHERE to_status = '{s}' AND " + w.format(c="created_at")
+            return {
+                "leads_found":   await n("SELECT count(*) AS n FROM leads WHERE " + w.format(c="created_at")),
+                "messages_sent": await n("SELECT count(*) AS n FROM leads WHERE sent_at IS NOT NULL AND " + w.format(c="sent_at"))
+                                 + await n("SELECT count(*) AS n FROM whatsapp_messages WHERE direction = 'OUT' AND source = 'campaign' AND " + w.format(c="created_at"))
+                                 + await n("SELECT count(*) AS n FROM email_campaign_leads WHERE status IN ('SENT', 'BOUNCED') AND " + w.format(c="sent_at")),
+                "replies":       await n("SELECT count(*) AS n FROM reply_inbox WHERE " + w.format(c="created_at"))
+                                 + await n("SELECT count(*) AS n FROM whatsapp_messages WHERE direction = 'IN' AND lead_id IS NOT NULL AND " + w.format(c="created_at")),
+                "interested":    await n(stage.format(s="INTERESTED")),
+                "meetings":      await n(stage.format(s="MEETING")),
+                "won":           await n(stage.format(s="WON")),
+            }
+    d = int(days)
+    return {"days": d,
+            "current": await period(f"-{d} days", "+1 seconds"),
+            "previous": await period(f"-{2 * d} days", f"-{d} days")}
+
+
+async def save_lead_audit(lead_id: int, score: Optional[int], checks_json: str) -> Dict[str, Any]:
+    async with transaction() as tx:
+        new_id = await tx.fetchval(
+            "INSERT INTO lead_audits (lead_id, score, checks_json) VALUES (?, ?, ?) RETURNING id",
+            lead_id, score, checks_json)
+    async with get_db() as conn:
+        return dict(await conn.fetchrow("SELECT * FROM lead_audits WHERE id = ?", new_id))
+
+
+async def get_latest_lead_audit(lead_id: int) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM lead_audits WHERE lead_id = ? ORDER BY id DESC LIMIT 1", lead_id)
+    return dict(row) if row else None
 
 
 async def get_generated_messages(lead_id: int) -> List[Dict[str, Any]]:
@@ -3825,7 +3899,7 @@ _SENDER_PROFILE_WRITABLE = frozenset({
     "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_password_enc",
     "oauth_client_id", "oauth_refresh_token_enc", "oauth_access_token_enc",
     "oauth_expires_at", "oauth_scopes",
-    "last_tested_at", "last_error",
+    "last_tested_at", "last_error", "daily_limit",
 })
 _ECL_WRITABLE = frozenset({
     "lead_id", "email", "first_name", "last_name", "company", "raw_json",
@@ -4077,6 +4151,55 @@ async def get_email_campaign_activity(campaign_id: int, limit: int = 200) -> Lis
 # caller (secrets_crypto); this layer never encrypts/decrypts and never logs a
 # secret. Single-operator app — no owner column.
 # ─────────────────────────────────────────────────────────────────────────────
+
+async def record_bounce(email: str, reason: str) -> None:
+    async with transaction() as tx:
+        await tx.execute(
+            "INSERT INTO email_bounces (email, reason) VALUES (?, ?) "
+            "ON CONFLICT(email) DO UPDATE SET reason = excluded.reason",
+            (email or "").strip().lower(), (reason or "")[:300])
+
+
+async def is_email_bounced(email: Optional[str]) -> bool:
+    if not email:
+        return False
+    async with get_db() as conn:
+        row = await conn.fetchrow("SELECT 1 AS x FROM email_bounces WHERE email = ?", email.strip().lower())
+    return bool(row)
+
+
+async def mark_campaign_leads_bounced(email: str, reason: str) -> List[int]:
+    """Flip already-SENT campaign leads for this address to BOUNCED; returns their campaign ids."""
+    addr = (email or "").strip().lower()
+    async with get_db() as conn:
+        rows = await conn.fetch(
+            "SELECT DISTINCT campaign_id FROM email_campaign_leads WHERE LOWER(email) = ? AND status = 'SENT'", addr)
+    async with transaction() as tx:
+        await tx.execute(
+            "UPDATE email_campaign_leads SET status = 'BOUNCED', failure_reason = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE LOWER(email) = ? AND status = 'SENT'", f"bounced: {(reason or '')[:200]}", addr)
+    return [int(r["campaign_id"]) for r in rows]
+
+
+async def email_campaign_bounce_counts(campaign_id: int) -> tuple:
+    """(emails that went out, of which bounced) for one campaign."""
+    async with get_db() as conn:
+        row = await conn.fetchrow(
+            "SELECT SUM(status IN ('SENT', 'BOUNCED')) AS sent, SUM(status = 'BOUNCED') AS bounced "
+            "FROM email_campaign_leads WHERE campaign_id = ?", campaign_id)
+    return int(row["sent"] or 0), int(row["bounced"] or 0)
+
+
+async def sender_sent_today(profile_id: int) -> int:
+    """Campaign emails sent today through one sender profile."""
+    today = _now_naive_iso()[:10]
+    async with get_db() as conn:
+        row = await conn.fetchrow(
+            "SELECT count(*) AS n FROM email_campaign_leads l JOIN email_campaigns c ON c.id = l.campaign_id "
+            "WHERE c.sender_profile_id = ? AND l.status IN ('SENT', 'BOUNCED') AND l.sent_at >= ?",
+            profile_id, today)
+    return int(row["n"] or 0)
+
 
 async def create_sender_profile(data: Dict[str, Any]) -> int:
     cols = [k for k in data if k in _SENDER_PROFILE_WRITABLE]

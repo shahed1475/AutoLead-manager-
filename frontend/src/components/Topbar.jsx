@@ -72,7 +72,9 @@ function ThemeToggle() {
 
 export default function Topbar({ onMenu }) {
   const { pathname } = useLocation()
-  const pageTitle = PAGE_TITLES[pathname] || (pathname.startsWith('/lead-search/runs/') ? 'Find leads' : 'Overview')
+  const pageTitle = PAGE_TITLES[pathname]
+    || (pathname.startsWith('/lead-search/runs/') ? 'Find leads'
+      : /^\/leads\/\d+\/audit$/.test(pathname) ? 'Lead audit' : 'Overview')
 
   const { data: engineStatus } = useQuery({
     queryKey: ['engine-status'],

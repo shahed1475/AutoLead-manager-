@@ -5,6 +5,9 @@ from .. import database as db, edition
 from .. import email_sender
 from ..models import CompanyDnaUpdate, SettingsBulkUpdate, SettingsUpdate
 from ..config import get_settings as _get_cfg
+from .. import industry_presets
+from pydantic import BaseModel, Field
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +116,28 @@ async def reset_stats():
         logger.error("Failed to reset stats: %s", exc, exc_info=True)
         raise HTTPException(500, "Failed to reset stats — see server logs")
     return {"cleared": True}
+
+
+class PresetDnaRequest(BaseModel):
+    business_name: str = Field(min_length=1, max_length=120)
+    city:          str = Field(default="", max_length=120)
+    services:      List[str] = Field(default_factory=list, max_length=20)
+    extra:         str = Field(default="", max_length=4000)
+
+
+@router.get("/industry-presets")
+async def list_industry_presets():
+    """Starting points for Company DNA, by the kind of business using HOM."""
+    return industry_presets.PRESETS
+
+
+@router.post("/industry-presets/{preset_id}/dna")
+async def preview_preset_dna(preset_id: str, payload: PresetDnaRequest):
+    """A Company DNA draft to review — saving still goes through PUT /dna."""
+    if not industry_presets.get_preset(preset_id):
+        raise HTTPException(404, "Unknown business type")
+    services = [s[:120] for s in payload.services]
+    return {"dna": industry_presets.build_dna(preset_id, payload.business_name, payload.city, services, payload.extra)}
 
 
 @router.get("/dna")

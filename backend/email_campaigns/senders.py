@@ -41,7 +41,7 @@ _PUBLIC_PROFILE_FIELDS = (
     "id", "name", "provider", "transport", "email_address", "display_name",
     "reply_to", "status", "is_default", "smtp_host", "smtp_port", "smtp_security",
     "smtp_username", "oauth_client_id", "oauth_scopes",
-    "created_at", "updated_at", "last_tested_at", "last_error",
+    "created_at", "updated_at", "last_tested_at", "last_error", "daily_limit",
 )
 
 

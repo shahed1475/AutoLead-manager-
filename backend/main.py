@@ -14,7 +14,7 @@ from .config import get_settings
 from .rate_limit import limiter
 from .database import (
     init_db, close_db, get_db, get_all_settings,
-    get_dashboard_stats, get_weekly_activity, get_recent_logs,
+    get_dashboard_stats, get_weekly_activity, get_recent_logs, get_results_report,
     get_avg_score,
 )
 from . import intelligence as intelligence_module
@@ -32,6 +32,7 @@ from .routers import research_agent as research_agent_router
 from .routers import automation as automation_router
 from .routers import lead_search as lead_search_router
 from .routers import lead_runs as lead_runs_router
+from .routers import audit as audit_router
 from .routers import portal as portal_router
 from .routers import portal_admin as portal_admin_router
 from .routers import whatsapp as whatsapp_router
@@ -181,6 +182,7 @@ app.include_router(research_agent_router.router, dependencies=_authed)
 app.include_router(automation_router.router, dependencies=_authed)
 app.include_router(lead_search_router.router, dependencies=_authed)
 app.include_router(lead_runs_router.router, dependencies=_authed)
+app.include_router(audit_router.router,    dependencies=_authed)
 if not edition.is_client():
     # Owner only. A client workspace has no portal and no Clients admin.
     app.include_router(portal_admin_router.router, dependencies=_authed)   # owner's view of the client portal
@@ -286,6 +288,13 @@ async def dashboard_stats():
     stats["hot_leads_count"] = stats.get("hot_leads", 0)
     stats["warm_leads_count"]= stats.get("warm_leads", 0)
     return stats
+
+
+@app.get("/api/stats/results", dependencies=_authed)
+async def results_stats(days: int = Query(7, ge=1, le=90)):
+    """Results for the last `days` vs the period before: leads, messages,
+    replies, interested, meetings, won. This workspace's own data only."""
+    return await get_results_report(days)
 
 
 @app.get("/api/stats/weekly", dependencies=_authed)

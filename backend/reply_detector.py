@@ -37,6 +37,7 @@ import httpx
 from . import database as db
 from .config import get_settings
 from .intelligence.reply_intelligence_agent import ReplyIntelligenceAgent
+from .email_campaigns.bounces import handle_bounce, parse_bounce
 
 _reply_intelligence_agent = ReplyIntelligenceAgent()
 
@@ -315,6 +316,18 @@ async def check_for_replies(
         subject    = msg["subject"]
         body_text  = msg["body_text"]
         received   = msg["received_at"]
+
+        # ── Bounce notice: remember the dead address, never store it as a reply ──
+        bounced = parse_bounce(from_email, subject, body_text,
+                               own=(username, config.get("smtp_from_email") or "", config.get("smtp_username") or ""))
+        if bounced:
+            try:
+                paused = await handle_bounce(bounced, subject or "undeliverable")
+                await _log(f"Reply detector: bounce for {', '.join(bounced)}"
+                           + (f" — paused campaign(s) {paused}" if paused else ""))
+            except Exception as exc:  # noqa: BLE001 — a bounce hiccup must not stop reply handling
+                logger.warning("Reply detector: bounce handling failed: %s", exc)
+            continue
 
         # ── Dedup: skip if already stored in reply_inbox ───────────────────────
         already = await db.find_inbox_entry(from_email, subject)

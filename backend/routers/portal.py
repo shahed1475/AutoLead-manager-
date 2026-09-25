@@ -190,6 +190,15 @@ async def me(client=Depends(current_client)):
     return service.public_client(client)
 
 
+@router.get("/sector-dna")
+async def sector_dna(sector: str = "", company: str = "", client=Depends(current_client)):
+    """A Company DNA starting draft for the chosen sector (onboarding), or
+    null when HOM has no preset for it."""
+    from .. import industry_presets
+    p = industry_presets.preset_for_sector(sector[:120])
+    return {"dna": industry_presets.build_dna(p["id"], company[:120]) if p else None}
+
+
 @router.post("/me/password")
 @limiter.limit("10/minute", key_func=visitor_ip)
 async def set_my_password(request: Request, payload: PasswordChange, client=Depends(current_client),

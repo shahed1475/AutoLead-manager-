@@ -34,6 +34,7 @@ export const portalApi = {
   verify: (email, code) => api.post('/auth/verify', { email, code }).then((r) => r.data),
   signOut: () => api.post('/auth/sign-out').then((r) => r.data),
   me: () => api.get('/me').then((r) => r.data),
+  sectorDna: (sector, company) => api.get('/sector-dna', { params: { sector, company } }).then((r) => r.data),
   updateMe: (data) => api.put('/me', data).then((r) => r.data),
   onboarding: (data) => api.put('/me/onboarding', data).then((r) => r.data),
   workspace: () => api.get('/workspace').then((r) => r.data),

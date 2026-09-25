@@ -13,6 +13,7 @@ import EmailSendersSection from '../components/settings/EmailSendersSection'
 import { isClientEdition } from '../lib/edition'
 import SearchProvidersSection from '../components/settings/SearchProvidersSection'
 import CompanyDnaEditor from '../components/settings/CompanyDnaEditor'
+import QuickSetupWizard from '../components/settings/QuickSetupWizard'
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
@@ -776,6 +777,7 @@ export default function Settings() {
         icon={FileText}
         iconColor="text-rose-400"
       >
+        <QuickSetupWizard hasContent={!!dna.trim()} onDraft={(v) => { setDna(v); setDnaDirty(v !== dnaOrigRef.current) }} />
         <CompanyDnaEditor
           value={dna}
           onChange={(v) => { setDna(v); setDnaDirty(v !== dnaOrigRef.current) }}

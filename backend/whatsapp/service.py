@@ -45,6 +45,7 @@ DEFAULTS: Dict[str, Any] = {
     "wa_auto_reply_per_chat": 20,  # automatic answers per chat per day (stops bot-to-bot loops)
     "wa_reply_delay_min": 20,      # seconds before answering (time to read)
     "wa_reply_delay_max": 60,
+    "wa_safe_mode": False,         # cap campaign messages at the warm-up ramp (whatsapp/safety.py)
 }
 _BOUNDS = {"wa_daily_limit": (1, 200), "wa_min_gap": (30, 3600), "wa_max_gap": (30, 7200),
            "wa_hours_start": (0, 23), "wa_hours_end": (1, 24), "wa_auto_reply_per_chat": (0, 50),
@@ -329,18 +330,44 @@ async def pacing(settings: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     s = settings or await get_settings()
     now = _now()
     sent = await _sent_today()
+    risk = await _safety(s, sent)
+    limit = s["wa_daily_limit"]
+    if s.get("wa_safe_mode") and risk["recommended_limit"]:
+        limit = min(limit, risk["recommended_limit"])
     nxt = await _next_send_at()
     utc_now = _utc()
     if not (s["wa_hours_start"] <= now.hour < s["wa_hours_end"]):
         state = f"Outside sending hours ({s['wa_hours_start']:02d}:00–{s['wa_hours_end']:02d}:00)"
-    elif sent >= s["wa_daily_limit"]:
-        state = f"Daily limit reached ({sent}/{s['wa_daily_limit']})"
+    elif sent >= limit:
+        state = f"Daily limit reached ({sent}/{limit})"
     elif nxt and nxt > utc_now:
         state = f"Next message in {int((nxt - utc_now).total_seconds())}s"
     else:
         state = "Ready"
-    return {"sent_today": sent, "daily_limit": s["wa_daily_limit"], "state": state,
-            "next_send_at": _iso(nxt) if nxt else None}
+    return {"sent_today": sent, "daily_limit": limit, "state": state,
+            "next_send_at": _iso(nxt) if nxt else None,
+            "safe_mode": bool(s.get("wa_safe_mode")), "safety": risk}
+
+
+async def _safety(s: Dict[str, Any], sent_today: int) -> Dict[str, Any]:
+    """The number's risk rating (advisory; see whatsapp/safety.py)."""
+    from . import safety
+    first = await db.portal_fetchrow(
+        "SELECT min(created_at) AS t FROM whatsapp_messages WHERE direction = 'OUT'")
+    age = None
+    if first and first["t"]:
+        try:
+            t = datetime.fromisoformat(str(first["t"]).replace(" ", "T").replace("Z", "+00:00"))
+            if t.tzinfo is not None:                 # _utc() is naive UTC, like the DB
+                t = t.astimezone(timezone.utc).replace(tzinfo=None)
+            age = max(0, (_utc() - t).days)
+        except ValueError:
+            age = None
+    auto = await db.portal_fetchrow(
+        "SELECT count(*) AS n FROM whatsapp_messages WHERE direction = 'OUT' AND source = 'auto_reply' AND created_at >= ?",
+        _today_start_utc())
+    return safety.assess(await current_engine(), sent_today, s["wa_daily_limit"], age,
+                         bool(s["wa_auto_reply"]), s["wa_reply_scope"], int(auto["n"]) if auto else 0)
 
 
 async def tick(send=None, is_ready=None) -> Dict[str, Any]:

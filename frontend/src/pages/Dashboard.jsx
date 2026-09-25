@@ -14,6 +14,7 @@ import ErrorState from '../components/ui/ErrorState'
 import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import { useTheme, chartColors } from '../lib/theme'
+import ResultsCard from '../components/ResultsCard'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -329,6 +330,8 @@ export default function Dashboard() {
           </dl>
         </section>
       )}
+
+      <ResultsCard />
 
       {/* Pipeline composition + quality */}
       {stats && (

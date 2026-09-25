@@ -10,6 +10,7 @@ import { PageSkeleton } from './components/ui/Skeleton'
 const Dashboard  = lazy(() => import('./pages/Dashboard'))
 const Leads      = lazy(() => import('./pages/Leads'))
 const Pipeline   = lazy(() => import('./pages/Pipeline'))
+const LeadAudit  = lazy(() => import('./pages/LeadAudit'))
 const LeadSearch    = lazy(() => import('./pages/LeadSearch'))
 const LeadSearchAutomation = lazy(() => import('./pages/LeadSearchAutomation'))
 const LeadSearchManual     = lazy(() => import('./pages/LeadSearchManual'))
@@ -37,6 +38,7 @@ function RoutedContent() {
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/leads"     element={<Leads />} />
+          <Route path="/leads/:id/audit" element={<LeadAudit />} />
           <Route path="/pipeline"  element={<Pipeline />} />
           <Route path="/lead-search" element={<LeadSearch />} />
           <Route path="/lead-search/automation" element={<LeadSearchAutomation />} />

@@ -568,6 +568,11 @@ class EmailCampaignService:
         await db.update_email_campaign_run(run_id, {"status": "SENDING"})
         processed = sent = failed = blocked = 0
 
+        # Per-sender daily limit (0 = none): stop for the day, resume later.
+        profile_id = camp.get("sender_profile_id")
+        profile = await db.get_sender_profile(profile_id) if profile_id else None
+        daily_limit = int((profile or {}).get("daily_limit") or 0)
+
         try:
             att = attachments.read_campaign_attachment(camp)
             att_list = (
@@ -600,9 +605,33 @@ class EmailCampaignService:
                 if not lead or lead["status"] == "SENT":
                     continue
 
+                if daily_limit and await db.sender_sent_today(profile_id) >= daily_limit:
+                    await self._transition(campaign_id, "PAUSED",
+                                           detail=f"sender daily limit of {daily_limit} reached")
+                    await db.log_email_campaign_activity(
+                        campaign_id, "sender_daily_limit",
+                        f"{transport.email_address} sent its {daily_limit} emails for today; "
+                        f"resume the campaign tomorrow",
+                        level="WARNING",
+                    )
+                    break
+
                 processed += 1
                 lead_key = lead["lead_key"]
                 lead_email = lead.get("email")
+
+                # ── never mail an address that already hard-bounced ──
+                if await db.is_email_bounced(lead_email):
+                    blocked += 1
+                    await db.update_email_campaign_lead(
+                        campaign_id, lead_key,
+                        {"status": "SEND_BLOCKED", "failure_reason": "address bounced before"},
+                    )
+                    await db.log_email_campaign_activity(
+                        campaign_id, "send_blocked", f"{lead_email} bounced before",
+                        level="WARNING", lead_key=lead_key,
+                    )
+                    continue
 
                 # ── DO_NOT_CONTACT / terminal re-check against the global lead ──
                 gid = lead.get("lead_id")

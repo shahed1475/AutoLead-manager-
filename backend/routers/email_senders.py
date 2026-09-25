@@ -14,6 +14,7 @@ is protected instead by a one-time, TTL'd, replay-proof `oauth_states` token.
 Responses carry ONLY safe metadata — never a password, token, refresh token,
 client secret, or any *_enc column.
 """
+import asyncio
 import logging
 import secrets as _secrets
 from typing import Optional
@@ -25,7 +26,7 @@ from pydantic import BaseModel, Field
 from .. import auth
 from .. import database as db
 from ..email_campaigns import gmail_oauth
-from ..email_campaigns import senders
+from ..email_campaigns import deliverability, senders
 from ..email_campaigns.service import is_feature_enabled
 from ..secrets_crypto import decrypt, encrypt
 from ..validators import is_valid_email
@@ -74,6 +75,7 @@ class SenderPatch(BaseModel):
     smtp_username: Optional[str] = Field(default=None, max_length=254)
     smtp_password: Optional[str] = Field(default=None, max_length=1024)
     is_default:    Optional[bool] = None
+    daily_limit:   Optional[int] = Field(default=None, ge=0, le=5000)   # 0 = no limit
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -156,6 +158,9 @@ async def patch_sender(profile_id: int, payload: SenderPatch):
         if p.get("provider") == "smtp" and p.get("status") == "error":
             patch["status"], patch["last_error"] = "connected", None
 
+    if "daily_limit" in data and data["daily_limit"] is not None:
+        patch["daily_limit"] = int(data["daily_limit"])
+
     if "is_default" in data and data["is_default"]:
         await db.set_default_sender_profile(profile_id)
 
@@ -196,6 +201,16 @@ async def test_sender(profile_id: int):
         "last_error": None if res.ok else (res.error or "connection failed")[:300],
     })
     return {"ok": res.ok, "message": "Connected successfully" if res.ok else (res.error or "Connection failed")}
+
+
+@router.get("/{profile_id}/deliverability", dependencies=_gated)
+async def sender_deliverability(profile_id: int):
+    """SPF / DMARC / DKIM / MX for the sender's domain (DNS lookups only)."""
+    p = await _get_or_404(profile_id)
+    domain = (p.get("email_address") or "").rpartition("@")[2]
+    if not domain:
+        raise HTTPException(422, "sender has no email domain")
+    return await asyncio.to_thread(deliverability.check_domain, domain)
 
 
 @router.post("/{profile_id}/disconnect", dependencies=_gated)
