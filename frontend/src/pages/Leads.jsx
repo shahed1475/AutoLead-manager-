@@ -2,8 +2,8 @@ import { useEffect, useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { researchSentToast } from '../lib/researchToast'
-import { Plus, Upload, Download, Search, RefreshCw, Sparkles, Trash2, X, Bot, SlidersHorizontal } from 'lucide-react'
-import { leadsApi, aiApi, campaignApi, enrichApi } from '../api/client'
+import { Plus, Upload, Download, Search, RefreshCw, Sparkles, Trash2, X, Bot, SlidersHorizontal, ClipboardCheck } from 'lucide-react'
+import { leadsApi, aiApi, campaignApi, enrichApi, auditApi } from '../api/client'
 import LeadTable from '../components/LeadTable'
 import CampaignControls from '../components/CampaignControls'
 import ViewMessagesModal from '../components/ViewMessagesModal'
@@ -94,6 +94,7 @@ export default function Leads() {
     score_label: searchParams.get('score_label') || '',
     source_type:     searchParams.get('source_type') || '',
     research_status: searchParams.get('research_status') || '',
+    run_id:          searchParams.get('run_id') || '',   // one Find-leads search (LeadRun "See these leads")
   }
 
   function updateParams(patch) {
@@ -145,6 +146,32 @@ export default function Leads() {
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ['leads', params],
     queryFn: () => leadsApi.list(params),
+    // Find-leads runs add leads in the background: always reload on arrival
+    // and keep the list current while the page is open.
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchInterval: 20_000,
+  })
+
+  // Audit the selected leads (background batch; progress polled while running).
+  const auditProgress = useQuery({
+    queryKey: ['audit-batch'],
+    queryFn: auditApi.batchStatus,
+    refetchInterval: (q) => (q.state.data?.running ? 2_000 : false),
+  })
+  const auditRunning = !!auditProgress.data?.running
+  const wasAuditing = useRef(false)
+  useEffect(() => {
+    if (wasAuditing.current && !auditRunning) {
+      toast.success(`Audited ${auditProgress.data?.done ?? 0} lead(s)`)
+      qc.invalidateQueries({ queryKey: ['leads'] })
+    }
+    wasAuditing.current = auditRunning
+  }, [auditRunning]) // eslint-disable-line react-hooks/exhaustive-deps
+  const auditMut = useMutation({
+    mutationFn: () => auditApi.batch(selected),
+    onSuccess: () => { setSelected([]); auditProgress.refetch() },
+    onError: (e) => toast.error(e.message || 'Could not start the audit'),
   })
 
   const statusCounts = (data?.items ?? []).reduce(
@@ -306,6 +333,12 @@ export default function Leads() {
         <div>
           <h1 className="text-xl font-bold text-slate-100">Leads</h1>
           <p className="text-sm text-slate-500 mt-0.5">{data?.total ?? 0} total records</p>
+          {filters.run_id && (
+            <p className="text-xs text-slate-400 mt-1.5">
+              Showing the leads from one Find leads search.{' '}
+              <button type="button" className="text-brand-400 hover:underline" onClick={() => setFilter('run_id', '')}>Show all leads</button>
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => refetch()} className="btn-secondary text-xs">
@@ -324,6 +357,16 @@ export default function Leads() {
             className="hidden"
             onChange={(e) => { if (e.target.files[0]) importMut.mutate(e.target.files[0]) }}
           />
+          <button
+            onClick={() => auditMut.mutate()}
+            disabled={auditRunning || auditMut.isPending || !selected.length}
+            title={selected.length ? 'Audit the selected leads' : 'Select leads to audit them'}
+            className="btn-secondary text-xs"
+          >
+            {auditRunning
+              ? <><RefreshCw size={12} className="animate-spin" /> Auditing {auditProgress.data.done}/{auditProgress.data.total}</>
+              : <><ClipboardCheck size={12} /> Audit{selected.length ? ` ${selected.length}` : ''}</>}
+          </button>
           <button
             onClick={() => scoreAllMut.mutate()}
             disabled={scoreAllMut.isPending}

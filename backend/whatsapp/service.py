@@ -46,6 +46,7 @@ DEFAULTS: Dict[str, Any] = {
     "wa_reply_delay_min": 20,      # seconds before answering (time to read)
     "wa_reply_delay_max": 60,
     "wa_safe_mode": False,         # cap campaign messages at the warm-up ramp (whatsapp/safety.py)
+    "wa_number_established": False,  # owner says the number was in use before HOM (not a new number)
 }
 _BOUNDS = {"wa_daily_limit": (1, 200), "wa_min_gap": (30, 3600), "wa_max_gap": (30, 7200),
            "wa_hours_start": (0, 23), "wa_hours_end": (1, 24), "wa_auto_reply_per_chat": (0, 50),
@@ -363,6 +364,8 @@ async def _safety(s: Dict[str, Any], sent_today: int) -> Dict[str, Any]:
             age = max(0, (_utc() - t).days)
         except ValueError:
             age = None
+    if s.get("wa_number_established"):
+        age = safety.ESTABLISHED_AGE_DAYS
     auto = await db.portal_fetchrow(
         "SELECT count(*) AS n FROM whatsapp_messages WHERE direction = 'OUT' AND source = 'auto_reply' AND created_at >= ?",
         _today_start_utc())

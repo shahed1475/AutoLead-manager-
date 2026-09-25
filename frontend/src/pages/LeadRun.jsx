@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Zap, ScanSearch, PenLine, Check, Square, Download, RefreshCw, Users, Send, Globe } from 'lucide-react'
@@ -86,6 +87,11 @@ export default function LeadRun() {
   })
   const leads = resultsQuery.data?.leads || []
 
+  // New leads land in the Leads list as the run collects them: refresh it.
+  const found = run?.leads_found ?? 0
+  const status = run?.status
+  useEffect(() => { if (found) qc.invalidateQueries({ queryKey: ['leads'] }) }, [found, status]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const cancel = useMutation({
     mutationFn: () => leadRunsApi.cancel(runId),
     onSuccess: () => { toast.success('Stopping after the current step'); qc.invalidateQueries({ queryKey: ['lead-run', runId] }) },
@@ -132,6 +138,11 @@ export default function LeadRun() {
                 : run.status === 'FAILED' ? 'bg-error' : 'bg-slate-500')} />
             <span className="font-semibold">{STATUS_LABEL[run.status] || run.status}</span>
           </p>
+          {run.leads_found > 0 && (
+            <Link to={`/leads?run_id=${run.id}&sort_by=created_at`} className="btn-primary h-9">
+              <Users size={13} /> See these {run.leads_found} leads
+            </Link>
+          )}
           {active && run.status !== 'CANCEL_REQUESTED' && (
             <button className="btn-secondary h-9" onClick={() => cancel.mutate()} disabled={cancel.isPending}>
               <Square size={13} /> Stop

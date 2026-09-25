@@ -4,7 +4,7 @@ import {
   Save, RefreshCw, Eye, EyeOff, Mail, Bot, Globe,
   MessageCircle, FileText, AlertTriangle, Shield, Zap,
   CheckCircle2, XCircle, Trash2, RotateCcw, Inbox,
-  Lock, Unlock,
+  Lock, Unlock, Banknote,
 } from 'lucide-react'
 import { settingsApi, aiApi, leadsApi, authApi, setSessionToken } from '../api/client'
 import toast from 'react-hot-toast'
@@ -14,6 +14,7 @@ import { isClientEdition } from '../lib/edition'
 import SearchProvidersSection from '../components/settings/SearchProvidersSection'
 import CompanyDnaEditor from '../components/settings/CompanyDnaEditor'
 import QuickSetupWizard from '../components/settings/QuickSetupWizard'
+import { CURRENCIES } from '../lib/money'
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
@@ -265,6 +266,8 @@ const DEFAULTS = {
   whatsapp_wait_time: '15',
   whatsapp_close_tab: 'true',
   schedule_hour: '9',
+  revenue_currency: 'USD',
+  avg_deal_value: '',
   daily_email_limit: '50',
   daily_whatsapp_limit: '20',
   followup_delay_days: '3',
@@ -769,6 +772,33 @@ export default function Settings() {
       </SectionCard>
 
       {!isClientEdition() && <SearchProvidersSection />}
+
+      {/* ─── Revenue ─── */}
+      <SectionCard
+        title="Revenue"
+        description="Revenue figures only add up the deal values you enter when a deal is won."
+        icon={Banknote}
+        iconColor="text-emerald-400"
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label htmlFor="revenue_currency" className="label">Currency</label>
+            <select id="revenue_currency" className="input" value={values.revenue_currency || 'USD'}
+              onChange={(e) => set('revenue_currency', e.target.value)}>
+              {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <p className="text-[11px] text-slate-500 mt-1">A label only: amounts you entered aren't converted.</p>
+          </div>
+          <Field
+            label="Typical deal value"
+            name="avg_deal_value"
+            value={values.avg_deal_value}
+            onChange={set}
+            placeholder="e.g. 800"
+            hint="Pre-fills the amount when you mark a deal as won"
+          />
+        </div>
+      </SectionCard>
 
       {/* ─── Company DNA ─── */}
       <SectionCard

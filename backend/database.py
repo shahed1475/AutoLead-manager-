@@ -541,7 +541,8 @@ CREATE TABLE IF NOT EXISTS lead_audits (
     lead_id     INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
     score       INTEGER,                 -- 0-100 over known checks; NULL when nothing could be checked
     checks_json TEXT    NOT NULL,
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    details_json TEXT                     -- page facts, technology, profiles, on-page contacts
 );
 CREATE INDEX IF NOT EXISTS idx_lead_audits_lead ON lead_audits (lead_id, id);
 
@@ -1316,6 +1317,11 @@ async def _run_migrations(conn: _SQLiteConn, raw: aiosqlite.Connection) -> None:
 
     await _add_col_if_missing(raw, "email_sender_profiles", "daily_limit", "INTEGER NOT NULL DEFAULT 0")
 
+    await _add_col_if_missing(raw, "lead_audits", "details_json", "TEXT")
+    # Real revenue: the value the owner records on a deal, and when it was won.
+    await _add_col_if_missing(raw, "leads", "deal_value", "REAL")
+    await _add_col_if_missing(raw, "leads", "won_at", "TIMESTAMP")
+
     # Proof-backed messages: the source + date + kind of the fact a draft relies on.
     for col in ("evidence_url", "evidence_checked_at", "evidence_kind"):
         await _add_col_if_missing(raw, "generated_messages", col, "TEXT")
@@ -1506,15 +1512,24 @@ async def get_dashboard_stats() -> Dict[str, Any]:
             "SELECT COUNT(*) FROM reply_inbox WHERE processed = 0"
         )
 
-        avg_deal_str = await conn.fetchval(
-            "SELECT value FROM app_settings WHERE key = 'avg_deal_value'"
-        )
+        deals = await conn.fetchrow("""
+            SELECT
+                SUM(CASE WHEN status = 'WON' THEN 1 ELSE 0 END)                                AS won,
+                SUM(CASE WHEN status = 'LOST' THEN 1 ELSE 0 END)                               AS lost,
+                COALESCE(SUM(CASE WHEN status = 'WON' THEN deal_value END), 0)                 AS won_value,
+                SUM(CASE WHEN status IN ('INTERESTED','MEETING','PROPOSAL') THEN 1 ELSE 0 END) AS open_deals,
+                COALESCE(SUM(CASE WHEN status IN ('INTERESTED','MEETING','PROPOSAL') THEN deal_value END), 0) AS open_value
+            FROM leads
+        """)
+        currency = await conn.fetchval("SELECT value FROM app_settings WHERE key = 'revenue_currency'")
 
     by_channel  = {r["channel"]: r["cnt"] for r in today_rows}
     email_today = by_channel.get("EMAIL", 0) + by_channel.get("BOTH", 0)
     wa_today    = by_channel.get("WHATSAPP", 0) + by_channel.get("BOTH", 0)
     sent_today  = sum(by_channel.values())
-    avg_deal    = float(avg_deal_str) if avg_deal_str else 500.0
+    won         = int(deals["won"] or 0)
+    lost        = int(deals["lost"] or 0)
+    won_value   = float(deals["won_value"] or 0)
     total       = lead_row["total"]   or 0
     replied     = lead_row["replied"] or 0
 
@@ -1528,7 +1543,15 @@ async def get_dashboard_stats() -> Dict[str, Any]:
         "whatsapp_sent_today": wa_today,
         "sent_today":          sent_today,
         "reply_rate":          round(replied / total * 100, 1) if total > 0 else 0.0,
-        "estimated_revenue":   round(replied * avg_deal, 2),
+        # Money the owner recorded on won deals — never replies × a guess.
+        "estimated_revenue":   round(won_value, 2),       # old key, kept for older screens
+        "revenue_won":         round(won_value, 2),
+        "deals_won":           won,
+        "avg_won_deal":        round(won_value / won, 2) if won else 0,
+        "win_rate":            round(won / (won + lost) * 100, 1) if (won + lost) else None,
+        "open_deals":          int(deals["open_deals"] or 0),
+        "open_pipeline_value": round(float(deals["open_value"] or 0), 2),
+        "currency":            (currency or "USD").upper(),
         "hot_leads":           lead_row["hot_leads"]  or 0,
         "warm_leads":          lead_row["warm_leads"] or 0,
         "cold_leads":          lead_row["cold_leads"] or 0,
@@ -1592,6 +1615,7 @@ async def get_leads(
     source: Optional[str] = None,
     source_type: Optional[str] = None,
     research_status: Optional[str] = None,
+    lead_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     _SORTABLE    = {"business_name", "created_at", "sent_at", "status", "niche", "city", "score"}
     _DATE_FIELDS = {"created_at", "sent_at"}
@@ -1629,6 +1653,9 @@ async def get_leads(
     if source:          conditions.append(f"source = {p(source.upper())}")
     if source_type:     conditions.append(f"source_type = {p(source_type.lower())}")
     if research_status: conditions.append(f"research_status = {p(research_status.upper())}")
+    if lead_ids is not None:        # one Find-leads run's leads; an empty run matches nothing
+        ids = [int(i) for i in lead_ids][:5000]
+        conditions.append(f"id IN ({', '.join(p(i) for i in ids)})" if ids else "0")
 
     where  = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     offset = (page - 1) * page_size
@@ -1638,7 +1665,9 @@ async def get_leads(
             f"SELECT COUNT(*) FROM leads {where}", *params
         ) or 0
         rows = await conn.fetch(
-            f"SELECT * FROM leads {where} ORDER BY {sort_by} {order} LIMIT ? OFFSET ?",
+            f"SELECT leads.*, (SELECT a.score FROM lead_audits a WHERE a.lead_id = leads.id "
+            f"ORDER BY a.id DESC LIMIT 1) AS audit_score FROM leads {where} "
+            f"ORDER BY {sort_by} {order} LIMIT ? OFFSET ?",
             *params, page_size, offset,
         )
 
@@ -1962,7 +1991,10 @@ async def set_lead_stage(
         from_status = current["status"]
         if (from_status or "").upper() == to_status.upper():
             return False
-        await tx.execute("UPDATE leads SET status = $1 WHERE id = $2", to_status, lead_id)
+        # won_at: when the deal was won (revenue by period); cleared if it leaves Won.
+        await tx.execute(
+            "UPDATE leads SET status = ?, won_at = CASE WHEN ? = 'WON' THEN CURRENT_TIMESTAMP ELSE NULL END "
+            "WHERE id = ?", to_status, to_status, lead_id)
         await tx.execute(
             """INSERT INTO lead_stage_history (lead_id, from_status, to_status, changed_by, reason)
                VALUES ($1, $2, $3, $4, $5)""",
@@ -2659,6 +2691,28 @@ async def replace_generated_messages(lead_id: int, items: List[Dict[str, Any]]) 
     return new_ids
 
 
+async def get_revenue_report() -> Dict[str, Any]:
+    """Won revenue by the source the lead came from, and the latest wins."""
+    async with get_db() as conn:
+        by_source = await conn.fetch(
+            "SELECT COALESCE(NULLIF(source, ''), 'UNKNOWN') AS source, COUNT(*) AS deals, "
+            "COALESCE(SUM(deal_value), 0) AS revenue FROM leads WHERE status = 'WON' "
+            "GROUP BY 1 ORDER BY revenue DESC, deals DESC")
+        wins = await conn.fetch(
+            "SELECT id, business_name, deal_value, won_at, source FROM leads WHERE status = 'WON' "
+            "ORDER BY datetime(COALESCE(won_at, created_at)) DESC LIMIT 5")
+        currency = await conn.fetchval("SELECT value FROM app_settings WHERE key = 'revenue_currency'")
+    rows = [{"source": r["source"], "deals": int(r["deals"]), "revenue": float(r["revenue"])} for r in by_source]
+    return {"currency": (currency or "USD").upper(),
+            "won_total": sum(r["revenue"] for r in rows),
+            "by_source": rows, "recent_wins": [dict(w) for w in wins]}
+
+
+async def set_deal_value(lead_id: int, value: Optional[float]) -> None:
+    async with transaction() as tx:
+        await tx.execute("UPDATE leads SET deal_value = ? WHERE id = ?", value, lead_id)
+
+
 async def get_results_report(days: int = 7) -> Dict[str, Any]:
     """Outcomes for the last `days` days and the `days` before that, from this
     workspace's own tables. Messages count every channel (leads' own send,
@@ -2680,6 +2734,9 @@ async def get_results_report(days: int = 7) -> Dict[str, Any]:
                 "interested":    await n(stage.format(s="INTERESTED")),
                 "meetings":      await n(stage.format(s="MEETING")),
                 "won":           await n(stage.format(s="WON")),
+                "revenue_won":   float((await conn.fetchrow(
+                    "SELECT COALESCE(SUM(deal_value), 0) AS n FROM leads WHERE status = 'WON' AND "
+                    + w.format(c="won_at"), start, end))["n"] or 0),
             }
     d = int(days)
     return {"days": d,
@@ -2687,13 +2744,29 @@ async def get_results_report(days: int = 7) -> Dict[str, Any]:
             "previous": await period(f"-{2 * d} days", f"-{d} days")}
 
 
-async def save_lead_audit(lead_id: int, score: Optional[int], checks_json: str) -> Dict[str, Any]:
+async def save_lead_audit(lead_id: int, score: Optional[int], checks_json: str,
+                          details_json: Optional[str] = None) -> Dict[str, Any]:
     async with transaction() as tx:
         new_id = await tx.fetchval(
-            "INSERT INTO lead_audits (lead_id, score, checks_json) VALUES (?, ?, ?) RETURNING id",
-            lead_id, score, checks_json)
+            "INSERT INTO lead_audits (lead_id, score, checks_json, details_json) VALUES (?, ?, ?, ?) RETURNING id",
+            lead_id, score, checks_json, details_json)
     async with get_db() as conn:
         return dict(await conn.fetchrow("SELECT * FROM lead_audits WHERE id = ?", new_id))
+
+
+async def get_lead_research_bundle(lead_id: int) -> Optional[Dict[str, Any]]:
+    """The lead's most recent completed research result with its people
+    (primary first), or None when the lead was never researched."""
+    async with get_db() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM lead_research_results WHERE lead_id = ? "
+            "ORDER BY (research_status = 'COMPLETE') DESC, id DESC LIMIT 1", lead_id)
+        if not row:
+            return None
+        people = await conn.fetch(
+            "SELECT name, title, source_url, snippet, confidence, status, is_primary "
+            "FROM lead_research_decision_makers WHERE result_id = ? ORDER BY is_primary DESC, id", row["id"])
+    return {"result": dict(row), "people": [dict(p) for p in people]}
 
 
 async def get_latest_lead_audit(lead_id: int) -> Optional[Dict[str, Any]]:

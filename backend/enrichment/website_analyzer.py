@@ -150,6 +150,54 @@ def _has_email_on_page(text: str, soup: BeautifulSoup) -> bool:
     return bool(soup.find("a", href=re.compile(r"^mailto:", re.I)))
 
 
+_WHATSAPP_RE = re.compile(
+    r"wa\.me/|api\.whatsapp\.com|whatsapp://|chat\.whatsapp\.com|wa\.link/"
+    r"|plugins/(?:wp-whatsapp|click-to-chat|creame-whatsapp-me|wp-whatsapp-chat|whatsapp-chat)"
+    r"|njt-whatsapp|ht-ctc|joinchat",
+    re.I,
+)
+_BOOKING_SITE_RE = re.compile(r"calendly\.com|setmore\.com|simplybook|acuityscheduling|zocdoc|practo\.com|fresha\.com|booksy\.com", re.I)
+_BOOKING_CTA_RE = re.compile(r"\b(book(ing)?|appointment|reserv(e|ation)|schedule)\b", re.I)
+
+
+def _social_profile_urls(soup: BeautifulSoup, limit: int = 8) -> List[str]:
+    """Profile links (not share buttons), first seen first."""
+    out: List[str] = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if _SOCIAL_RE.search(href) and not re.search(r"/sharer|/share\?|intent/tweet|/shareArticle", href, re.I):
+            if href not in out:
+                out.append(href)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _link_values(soup: BeautifulSoup, scheme: str, limit: int = 5) -> List[str]:
+    """The addresses/numbers in mailto:/tel: links, de-duplicated."""
+    out: List[str] = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if href.lower().startswith(scheme):
+            v = href[len(scheme):].split("?")[0].strip()
+            v = re.sub(r"[^\d+]", "", v) if scheme == "tel:" else v.lower()
+            if v and v not in out:
+                out.append(v)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _has_whatsapp(html: str) -> bool:
+    """A click-to-chat link, or a WhatsApp chat widget whose button is built by
+    JavaScript (its plugin assets are in the page even though the link isn't)."""
+    return bool(_WHATSAPP_RE.search(html or ""))
+
+
+def _has_booking(html: str, ctas: List[str]) -> bool:
+    return bool(_BOOKING_CTA_RE.search(" ".join(ctas or [])) or _BOOKING_SITE_RE.search(html or ""))
+
+
 def _extract_ctas(soup: BeautifulSoup) -> List[str]:
     """Return unique, meaningful CTA labels (buttons, submit inputs, CTA links)."""
     candidates: List[str] = []
@@ -236,6 +284,12 @@ async def analyze_website(url: str, timeout: int = 10) -> Dict[str, Any]:
         "has_phone_on_page": False,
         "has_email_on_page": False,
         "cta_buttons":       [],
+        "social_profiles":   [],           # the profile URLs themselves (max 8)
+        "emails_on_page":    [],           # mailto: addresses (max 5)
+        "phones_on_page":    [],           # tel: numbers (max 5)
+        "technology":        [],           # enrichment/technology.py — read from the full page
+        "has_whatsapp_link": False,        # click-to-chat link or chat-widget plugin, anywhere on the page
+        "has_booking_link":  False,        # booking CTA or a booking-service link
         # Social / trust
         "social_media_links": [],
         # Backward-compat aliases consumed by score_lead() + older callers
@@ -282,7 +336,9 @@ async def analyze_website(url: str, timeout: int = 10) -> Dict[str, Any]:
     result["all_headings"] = _extract_headings(soup)
 
     # ── Body text ──────────────────────────────────────────────────────────────
-    body_text = _clean_text(soup)
+    # _clean_text deletes header/footer/nav/scripts, so it gets its own copy —
+    # the contact, social and CTA checks below need the whole page.
+    body_text = _clean_text(BeautifulSoup(html, "lxml"))
     result["body_text"]  = body_text
     result["page_text"]  = body_text                  # backward-compat
     result["word_count"] = len(body_text.split())
@@ -293,6 +349,13 @@ async def analyze_website(url: str, timeout: int = 10) -> Dict[str, Any]:
     result["has_phone_on_page"]  = _has_phone(body_text, soup)
     result["has_email_on_page"]  = _has_email_on_page(body_text, soup)
     result["cta_buttons"]        = _extract_ctas(soup)
+    result["social_profiles"]    = _social_profile_urls(soup)
+    result["emails_on_page"]     = _link_values(soup, "mailto:")
+    result["phones_on_page"]     = _link_values(soup, "tel:")
+    from .technology import detect as _detect_technology
+    result["technology"]         = _detect_technology(html)
+    result["has_whatsapp_link"]  = _has_whatsapp(html)
+    result["has_booking_link"]   = _has_booking(html, result["cta_buttons"])
 
     # ── Social / trust signals ─────────────────────────────────────────────────
     social                        = _extract_social_links(soup)

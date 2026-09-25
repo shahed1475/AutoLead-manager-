@@ -1,4 +1,4 @@
-from pydantic import BaseModel, field_validator, ConfigDict
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -131,6 +131,9 @@ class Lead(LeadBase):
     model_config = ConfigDict(from_attributes=True)
 
     id:      int
+    audit_score: Optional[int] = None    # latest lead audit (audit/lead_audit.py), if any
+    deal_value:  Optional[float] = None  # money the owner recorded on this deal
+    won_at:      Optional[str]   = None
     status:  LeadStatus  = LeadStatus.PENDING
     channel: Optional[LeadChannel] = None
 
@@ -357,6 +360,11 @@ class StatusUpdate(BaseModel):
 class StageUpdate(BaseModel):
     to_status: LeadStatus
     reason:    Optional[str] = None
+    deal_value: Optional[float] = Field(default=None, ge=0, le=1_000_000_000)   # recorded with the move (e.g. on Won)
+
+
+class DealValueUpdate(BaseModel):
+    deal_value: Optional[float] = Field(default=None, ge=0, le=1_000_000_000)   # null clears it
 
 
 class ScraperRequest(BaseModel):

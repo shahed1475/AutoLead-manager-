@@ -136,6 +136,7 @@ export const statsApi = {
   dashboard: () => api.get('/stats').then((r) => r.data),
   weekly: () => api.get('/stats/weekly').then((r) => r.data),
   results: (days = 7) => api.get('/stats/results', { params: { days } }).then((r) => r.data),
+  revenue: () => api.get('/stats/revenue').then((r) => r.data),
 }
 
 export const engineApi = {
@@ -200,12 +201,18 @@ export const marketingApi = {
 export const auditApi = {
   get: (leadId) => api.get(`/leads/${leadId}/audit`).then((r) => r.data),
   run: (leadId) => api.post(`/leads/${leadId}/audit`).then((r) => r.data),
+  batch: (leadIds) => api.post('/leads/audit-batch', { lead_ids: leadIds }).then((r) => r.data),
+  batchStatus: () => api.get('/leads/audit-batch').then((r) => r.data),
+}
+
+export const dealsApi = {
+  setValue: (leadId, value) => api.put(`/leads/${leadId}/deal`, { deal_value: value }).then((r) => r.data),
 }
 
 export const pipelineApi = {
   board: () => api.get('/pipeline/board').then((r) => r.data),
-  moveStage: (leadId, toStatus, reason) =>
-    api.post(`/leads/${leadId}/stage`, { to_status: toStatus, reason }).then((r) => r.data),
+  moveStage: (leadId, toStatus, reason, dealValue) =>
+    api.post(`/leads/${leadId}/stage`, { to_status: toStatus, reason, ...(dealValue != null ? { deal_value: dealValue } : {}) }).then((r) => r.data),
   stageHistory: (leadId) => api.get(`/leads/${leadId}/stage-history`).then((r) => r.data),
 }
 

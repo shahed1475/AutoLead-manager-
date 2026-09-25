@@ -1,3 +1,4 @@
+import json
 import csv
 import io
 import logging
@@ -6,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import Response
 from pydantic import BaseModel
 from .. import database as db
-from ..models import Lead, LeadCreate, LeadUpdate, LeadListResponse, StatusUpdate, StageUpdate
+from ..models import Lead, LeadCreate, LeadUpdate, LeadListResponse, StatusUpdate, StageUpdate, DealValueUpdate
 from ..queue_worker import get_queue
 from ..research_agent.handoff import handoff_leads
 
@@ -34,9 +35,18 @@ async def list_leads(
     source:          Optional[str]  = None,
     source_type:     Optional[str]  = None,
     research_status: Optional[str]  = None,
+    run_id:          Optional[int]  = None,   # only the leads one Find-leads run saved
 ):
+    lead_ids = None
+    if run_id is not None:
+        run = await db.get_lead_run(run_id)
+        raw = (run or {}).get("lead_ids") or []
+        try:
+            lead_ids = [int(i) for i in (json.loads(raw) if isinstance(raw, str) else raw)]
+        except (TypeError, ValueError):
+            lead_ids = []
     return await db.get_leads(
-        page=page, page_size=page_size,
+        page=page, page_size=page_size, lead_ids=lead_ids,
         status=status, channel=channel,
         niche=niche, city=city, search=search,
         sort_by=sort_by, sort_dir=sort_dir,
@@ -224,7 +234,18 @@ async def move_lead_stage(lead_id: int, payload: StageUpdate):
         raise HTTPException(400, "Lead is marked DO_NOT_CONTACT — cannot move to a pipeline stage")
     if payload.to_status.value not in _MANUAL_STAGE_TARGETS:
         raise HTTPException(400, f"{payload.to_status.value} is not a valid manual stage target")
+    if payload.deal_value is not None:
+        await db.set_deal_value(lead_id, payload.deal_value)
     await db.set_lead_stage(lead_id, payload.to_status.value, "operator", payload.reason)
+    return await db.get_lead_by_id(lead_id)
+
+
+@router.put("/{lead_id}/deal", response_model=Lead)
+async def set_deal_value(lead_id: int, payload: DealValueUpdate):
+    """Record (or clear) what this deal is worth — the only source of revenue figures."""
+    if not await db.get_lead_by_id(lead_id):
+        raise HTTPException(404, "Lead not found")
+    await db.set_deal_value(lead_id, payload.deal_value)
     return await db.get_lead_by_id(lead_id)
 
 

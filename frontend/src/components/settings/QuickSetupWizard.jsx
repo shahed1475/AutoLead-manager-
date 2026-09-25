@@ -7,7 +7,9 @@ import { settingsApi } from '../../api/client'
 // Quick setup: pick the kind of business, add the name, city and services, and
 // get a Company DNA draft in the editor below. Nothing is saved until Save.
 export default function QuickSetupWizard({ onDraft, hasContent }) {
-  const [open, setOpen] = useState(!hasContent)
+  // null = follow the DNA (open only when it's empty); decided after it loads.
+  const [openPref, setOpen] = useState(null)
+  const open = openPref ?? !hasContent
   const [f, setF] = useState({ preset: '', business_name: '', city: '', services: '' })
   const presets = useQuery({ queryKey: ['industry-presets'], queryFn: settingsApi.industryPresets, enabled: open, staleTime: Infinity })
   const chosen = (presets.data || []).find((p) => p.id === f.preset)
@@ -24,7 +26,7 @@ export default function QuickSetupWizard({ onDraft, hasContent }) {
 
   return (
     <div className="mb-4 rounded-lg border border-border">
-      <button type="button" onClick={() => setOpen((o) => !o)} className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left">
+      <button type="button" onClick={() => setOpen(!open)} className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left">
         <span className="inline-flex items-center gap-2 text-sm font-semibold"><Wand2 size={14} /> Quick setup from a template</span>
         {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
       </button>

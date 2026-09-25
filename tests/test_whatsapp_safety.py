@@ -68,3 +68,16 @@ async def test_number_age_comes_from_first_outbound_message(clean_db, monkeypatc
     s = {**service.DEFAULTS, "wa_daily_limit": 120, "wa_safe_mode": True}
     p = await service.pacing(s)
     assert p["safety"]["recommended_limit"] == 100 and p["daily_limit"] == 100
+
+
+async def test_established_number_is_not_rated_by_its_hom_history(clean_db, monkeypatch):
+    """A number used for years before HOM isn't 'new' just because HOM
+    started sending yesterday — the owner can say so."""
+    monkeypatch.setattr(service, "current_engine", _engine("web"))
+    s = {**service.DEFAULTS, "wa_daily_limit": 30}
+    new = await service.pacing(s)
+    assert new["safety"]["level"] == "high"
+    assert any("already in use before HOM" in r for r in new["safety"]["reasons"])
+    old = await service.pacing({**s, "wa_number_established": True})
+    assert old["safety"]["level"] == "low" and old["safety"]["recommended_limit"] == 100
+    assert service.DEFAULTS["wa_number_established"] is False

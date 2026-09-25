@@ -15,6 +15,8 @@ import toast from 'react-hot-toast'
 import clsx from 'clsx'
 import { useTheme, chartColors } from '../lib/theme'
 import ResultsCard from '../components/ResultsCard'
+import RevenueCard from '../components/RevenueCard'
+import { fmtMoney } from '../lib/money'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -27,11 +29,6 @@ function timeAgo(ts) {
   return `${Math.floor(secs / 86400)}d ago`
 }
 
-function fmtCurrency(n) {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency', currency: 'USD', maximumFractionDigits: 0,
-  }).format(n)
-}
 
 // ─── Activity Feed ───────────────────────────────────────────────────────────
 
@@ -285,8 +282,6 @@ export default function Dashboard() {
     retry: false,
   })
 
-  // Est. revenue comes from the backend (avg_deal_value is set in Settings).
-  const estRevenue = stats?.estimated_revenue ?? 0
   const sentToday  = (stats?.email_sent_today || 0) + (stats?.whatsapp_sent_today || 0)
   const conversion = stats?.sent ? `${((stats.replied / stats.sent) * 100).toFixed(1)}%` : '—'
   const pipelineTotal = PIPELINE.reduce((n, p) => n + (stats?.[p.key] || 0), 0)
@@ -326,12 +321,15 @@ export default function Dashboard() {
               detail={`${stats?.email_sent_today ?? 0} email · ${stats?.whatsapp_sent_today ?? 0} WhatsApp`} />
             <Metric label="Reply rate" value={`${stats?.reply_rate ?? 0}%`} detail={`${stats?.replied ?? 0} replies`} />
             <Metric label="Conversion" value={conversion} detail="Replies per message sent" />
-            <Metric label="Est. revenue" value={fmtCurrency(estRevenue)} detail="From replied leads" accent />
+            <Metric label="Revenue won" value={fmtMoney(stats?.revenue_won ?? 0, stats?.currency)}
+              detail={stats?.deals_won ? `${stats.deals_won} deal(s) won, ${fmtMoney(stats.open_pipeline_value, stats.currency)} open` : 'No won deals recorded yet'} accent />
           </dl>
         </section>
       )}
 
-      <ResultsCard />
+      <ResultsCard currency={stats?.currency} />
+
+      <RevenueCard stats={stats} />
 
       {/* Pipeline composition + quality */}
       {stats && (

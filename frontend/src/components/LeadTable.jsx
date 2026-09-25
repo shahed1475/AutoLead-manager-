@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
@@ -15,6 +16,18 @@ import { STATUS_BADGE, CHANNEL_BADGE, SOURCE_BADGE, SOURCE_LABEL, RESEARCH_BADGE
 
 const TABLE_COLS = 9
 const ROW_HEIGHT = 53
+
+// The lead's latest audit score, linking to its report ("Audit" when none yet).
+function AuditLink({ lead }) {
+  const n = lead.audit_score
+  const tone = n == null ? 'text-slate-500' : n >= 80 ? 'text-emerald-400' : n >= 50 ? 'text-amber-400' : 'text-red-400'
+  return (
+    <Link to={`/leads/${lead.id}/audit`} onClick={(e) => e.stopPropagation()}
+      className={`block mt-1 text-[11px] font-semibold hover:underline ${tone}`}>
+      {n == null ? 'Audit' : `Audit ${n}/100`}
+    </Link>
+  )
+}
 
 const DEFAULT_WIDTHS = {
   business: 220, nicheCity: 140, contact: 170,
@@ -42,6 +55,7 @@ function MobileLeadCards({ items, selected, toggleOne, onRowClick, handlers }) {
                 <p className="text-meta truncate">{lead.email || lead.phone || 'No contact found'}</p>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   <ScoreBadge score={lead.score} label={lead.score_label} />
+                  <AuditLink lead={lead} />
                   <span className={STATUS_BADGE[lead.status] || 'badge'}>{lead.status}</span>
                   {lead.channel && <span className={CHANNEL_BADGE[lead.channel] || 'badge'}>{lead.channel}</span>}
                   {lead.research_status && lead.research_status !== 'NOT_STARTED' && (
@@ -252,6 +266,7 @@ export default function LeadTable({
 
                   <td className="py-3 px-4">
                     <ScoreBadge score={lead.score} label={lead.score_label} />
+                    <AuditLink lead={lead} />
                   </td>
 
                   <td className="py-3 px-4">

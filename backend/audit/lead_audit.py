@@ -80,10 +80,10 @@ def run_checks(lead: Dict[str, Any], site: Optional[Dict[str, Any]], checked_at:
     site_check("phone_on_site", "Phone number on site", bool((site or {}).get("has_phone_on_page")),
                "Phone number is shown", "No phone number on the homepage",
                "Customers ready to buy want to call straight away.")
-    site_check("whatsapp_link", "WhatsApp chat link", bool(_WHATSAPP.search(html)),
-               "Has a WhatsApp chat link", "No WhatsApp chat link",
+    site_check("whatsapp_link", "WhatsApp chat link", bool((site or {}).get("has_whatsapp_link") or _WHATSAPP.search(html)),
+               "Has a WhatsApp chat link or chat button", "No WhatsApp chat link",
                "A click-to-chat WhatsApp button turns visitors into conversations.")
-    site_check("online_booking", "Online booking", bool(_BOOKING.search(ctas) or re.search(r"calendly\.com|setmore\.com|simplybook", html, re.I)),
+    site_check("online_booking", "Online booking", bool((site or {}).get("has_booking_link") or _BOOKING.search(ctas)),
                "Visitors can book online", "No way to book online",
                "Online booking saves staff time and captures customers who don't call.")
     social = (site or {}).get("social_media_links") or []
@@ -118,11 +118,86 @@ def summarize(checks: List[Dict[str, Any]]) -> Dict[str, Any]:
             "passed": passed, "issues": issues, "unknown": unknown}
 
 
-def _view(row: Dict[str, Any], lead: Dict[str, Any]) -> Dict[str, Any]:
+# Research statuses (research_agent/evidence.py) in the words a person reads.
+_EMAIL_NOTES = {
+    "SECURE_WEB_FORM": "Uses a contact form on their website; no public email address.",
+    "NOT_FOUND_AFTER_SEARCH": "Not published: searched their website and listings.",
+    "NOT_FOUND": "Not found.",
+    "UNCONFIRMED": "Found but not confirmed yet.",
+}
+
+
+def _email_note(value: Optional[str], status: Optional[str]) -> Optional[str]:
+    if value:
+        return None if (status or "FOUND") == "FOUND" else _EMAIL_NOTES.get(status or "")
+    return _EMAIL_NOTES.get(status or "", "Not published.")
+
+
+def _details(site: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """What the audit read off the homepage, kept with the audit."""
+    site = site or {}
+    return {
+        "final_url": site.get("url"),
+        "page_title": site.get("page_title") or None,
+        "meta_description": site.get("meta_description") or None,
+        "word_count": site.get("word_count") or 0,
+        "image_count": site.get("image_count") or 0,
+        "headings": (site.get("all_headings") or [])[:8],
+        "technology": site.get("technology") or [],
+        "social_profiles": site.get("social_profiles") or [],
+        "emails_on_page": site.get("emails_on_page") or [],
+        "phones_on_page": site.get("phones_on_page") or [],
+    }
+
+
+def _business(lead: Dict[str, Any]) -> Dict[str, Any]:
+    keys = ("business_name", "niche", "address", "city", "country", "phone", "email", "website",
+            "rating", "source", "created_at")
+    out = {k: lead.get(k) for k in keys}
+    out["reviews"] = lead.get("reviews_count") if lead.get("reviews_count") is not None else lead.get("review_count")
+    return out
+
+
+def _contacts(bundle: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not bundle:
+        return {"researched": False, "people": [], "primary": None,
+                "business_email": None, "business_email_note": None}
+    r = bundle["result"]
+    people = [{"name": p["name"], "title": p.get("title"), "source_url": p.get("source_url"),
+               "is_primary": bool(p.get("is_primary"))} for p in bundle["people"]]
+    primary = None
+    if r.get("management_contact_name"):
+        phone = r.get("management_phone")
+        primary = {
+            "name": r["management_contact_name"], "title": r.get("management_title"),
+            "phone": phone,
+            "phone_is_business_line": bool(phone) and (r.get("management_phone_type") == "BUSINESS"
+                                                       or phone == r.get("business_phone")),
+            "email": r.get("management_email"),
+            "email_note": _email_note(r.get("management_email"), r.get("management_email_status")),
+        }
+    return {"researched": True, "people": people, "primary": primary,
+            "business_email": r.get("business_email"),
+            "business_email_note": _email_note(r.get("business_email"), r.get("business_email_status")),
+            "business_phone": r.get("business_phone"), "researched_at": r.get("created_at")}
+
+
+_SUMMARY_KEYS = ("business_summary", "target_audience", "service_level", "brand_positioning", "growth_potential")
+
+
+async def _report(row: Dict[str, Any], lead: Dict[str, Any]) -> Dict[str, Any]:
     checks = json.loads(row["checks_json"] or "[]")
+    try:
+        details = json.loads(row.get("details_json") or "null") or _details(None)
+    except ValueError:
+        details = _details(None)
+    enriched = await db.get_enriched_data(lead["id"]) or {}
+    summary = {k: enriched.get(k) for k in _SUMMARY_KEYS if enriched.get(k)}
     return {"id": row["id"], "lead_id": row["lead_id"], "created_at": row["created_at"],
             "business_name": lead.get("business_name"), "website": lead.get("website"),
             "city": lead.get("city"), "niche": lead.get("niche"),
+            "business": _business(lead), "contacts": _contacts(await db.get_lead_research_bundle(lead["id"])),
+            "details": details, "summary": summary or None,       # summary is AI-written: the page labels it
             "checks": checks, **summarize(checks)}
 
 
@@ -134,11 +209,36 @@ async def build_audit(lead_id: int) -> Optional[Dict[str, Any]]:
     checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     site = await analyze_website(lead["website"]) if (lead.get("website") or "").strip() else None
     checks = run_checks(lead, site, checked_at)
-    row = await db.save_lead_audit(lead_id, summarize(checks)["score"], json.dumps(checks))
-    return _view(row, lead)
+    row = await db.save_lead_audit(lead_id, summarize(checks)["score"], json.dumps(checks),
+                                   json.dumps(_details(site)))
+    return await _report(row, lead)
 
 
 async def latest_audit(lead_id: int) -> Optional[Dict[str, Any]]:
     lead = await db.get_lead_by_id(lead_id)
     row = await db.get_latest_lead_audit(lead_id) if lead else None
-    return _view(row, lead) if row else None
+    return await _report(row, lead) if row else None
+
+
+# ── Audit many leads (Leads table "Audit" button) ─────────────────────────
+MAX_BATCH = 100
+_batch = {"running": False, "done": 0, "total": 0, "failed": 0}
+
+
+def batch_status() -> Dict[str, Any]:
+    return dict(_batch)
+
+
+async def run_batch(lead_ids: List[int]) -> None:
+    """Audit the leads one after another (each fetches one homepage)."""
+    ids = list(dict.fromkeys(int(i) for i in lead_ids))[:MAX_BATCH]
+    _batch.update(running=True, done=0, total=len(ids), failed=0)
+    try:
+        for lid in ids:
+            try:
+                await build_audit(lid)
+            except Exception:  # noqa: BLE001 — one bad site mustn't stop the batch
+                _batch["failed"] += 1
+            _batch["done"] += 1
+    finally:
+        _batch["running"] = False

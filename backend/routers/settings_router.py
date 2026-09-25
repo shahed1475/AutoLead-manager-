@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
+# Currencies the revenue figures can be shown in (labels only — amounts aren't converted).
+REVENUE_CURRENCIES = ("USD", "BDT", "AED", "EUR", "GBP", "INR", "SAR", "CAD", "AUD")
+
 # Keys whose values must never be returned in a GET response — SMTP/IMAP
 # passwords and cloud LLM API keys. Matched by suffix so new provider keys
 # (e.g. "openai_api_key") are covered automatically.
@@ -55,6 +58,14 @@ async def update_setting(payload: SettingsUpdate):
         raise HTTPException(403, "This setting is managed by the workspace owner.")
     if payload.key == "research_handoff_mode" and str(payload.value).strip().lower() not in ("manual", "automatic"):
         raise HTTPException(422, "research_handoff_mode must be 'manual' or 'automatic'")
+    if payload.key == "revenue_currency" and str(payload.value).upper() not in REVENUE_CURRENCIES:
+        raise HTTPException(422, f"Currency must be one of {', '.join(REVENUE_CURRENCIES)}")
+    if payload.key == "avg_deal_value" and str(payload.value).strip():
+        try:
+            if float(payload.value) < 0:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(422, "Typical deal value must be a number, 0 or more")
     if _should_skip_secret_write(payload.key, payload.value):
         return {"key": payload.key, "value": _MASKED, "skipped": "unchanged secret"}
     try:
@@ -76,6 +87,9 @@ async def bulk_update(payload: SettingsBulkUpdate):
                 skipped += 1
                 continue
             if _should_skip_secret_write(str(key), str(value)):
+                skipped += 1
+                continue
+            if key == "revenue_currency" and str(value).upper() not in REVENUE_CURRENCIES:
                 skipped += 1
                 continue
             await db.upsert_setting(str(key), str(value))

@@ -106,3 +106,42 @@ def test_analyzer_only_asks_for_encodings_it_can_decode():
         assert "br" not in offered
     if not importlib.util.find_spec("zstandard"):
         assert "zstd" not in offered
+
+
+FOOTER_SITE = (
+    "<html><head><title>Clinic</title></head><body>"
+    "<header><a href='tel:+971500000000'>Call +971 50 000 0000</a></header>"
+    "<main><p>" + ("We care for your family's teeth every day of the week. " * 20) + "</p></main>"
+    + "<div>" + ("x" * 45_000) + "</div>"                       # footer lands past the 40k snapshot
+    "<footer><a href='https://www.facebook.com/clinic'>Facebook</a>"
+    "<a href='https://wa.me/971500000000'>WhatsApp</a>"
+    "<a href='https://calendly.com/clinic'>Book</a></footer>"
+    "<script src='/wp-content/plugins/wp-whatsapp/assets/dist/js/njt-whatsapp.js'></script>"
+    "</body></html>"
+)
+
+
+async def test_analyzer_keeps_header_and_footer_signals(monkeypatch):
+    """_clean_text used to delete header/footer in place before the social,
+    phone and CTA checks ran — so footer links were never seen."""
+    import httpx
+    import respx
+    from backend.enrichment import website_analyzer as wa
+    wa._analyze_cache.clear()
+    with respx.mock:
+        respx.get("https://clinic.example/").mock(return_value=httpx.Response(200, text=FOOTER_SITE))
+        r = await wa.analyze_website("https://clinic.example/")
+    assert r["social_media_links"] == ["facebook"]
+    assert r["has_phone_on_page"] is True
+    assert r["has_whatsapp_link"] is True and r["has_booking_link"] is True
+    assert "family" in r["body_text"] and "Facebook" not in r["body_text"]   # prose still cleaned
+    assert r["social_profiles"] == ["https://www.facebook.com/clinic"]
+    assert r["phones_on_page"] == ["+971500000000"]
+    assert {t["name"] for t in r["technology"]} >= {"WordPress", "WhatsApp chat widget", "Calendly"}
+
+
+def test_whatsapp_widget_plugin_counts_as_whatsapp():
+    html = "<script src='/wp-content/plugins/wp-whatsapp/assets/js/njt-whatsapp.js'></script>"
+    from backend.enrichment import website_analyzer as wa
+    assert wa._has_whatsapp(html) is True
+    assert wa._has_whatsapp("<i class='fa fa-phone'></i>") is False

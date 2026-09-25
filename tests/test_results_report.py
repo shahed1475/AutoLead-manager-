@@ -32,9 +32,9 @@ async def test_results_split_by_period(clean_db):
     r = await db.get_results_report(7)
     assert r["days"] == 7
     assert r["current"] == {"leads_found": 1, "messages_sent": 2, "replies": 2,
-                            "interested": 1, "meetings": 1, "won": 0}
+                            "interested": 1, "meetings": 1, "won": 0, "revenue_won": 0}
     assert r["previous"] == {"leads_found": 1, "messages_sent": 1, "replies": 0,
-                             "interested": 0, "meetings": 0, "won": 1}
+                             "interested": 0, "meetings": 0, "won": 1, "revenue_won": 0}
 
 
 async def test_results_endpoint_bounds(clean_db):

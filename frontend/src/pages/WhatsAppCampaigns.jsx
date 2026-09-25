@@ -622,6 +622,10 @@ function PaceSettings({ settings }) {
             <input type="checkbox" className="size-4 mt-0.5 accent-[rgb(var(--primary))]" checked={!!f.wa_safe_mode} onChange={(e) => setF({ ...f, wa_safe_mode: e.target.checked })} />
             <span className="text-sm">Safe mode<span className="block text-meta">Keeps a new number to a slow warm-up: 15 a day in week 1, 30 in week 2, 50 until week 4, then up to 100.</span></span>
           </label>
+          <label className="flex items-start gap-3 cursor-pointer sm:col-start-2">
+            <input type="checkbox" className="size-4 mt-0.5 accent-[rgb(var(--primary))]" checked={!!f.wa_number_established} onChange={(e) => setF({ ...f, wa_number_established: e.target.checked })} />
+            <span className="text-sm">This number was in use before HOM<span className="block text-meta">Months of normal chats make a number trusted. Leave off for a new SIM.</span></span>
+          </label>
           {num('wa_min_gap', 'Shortest pause (seconds)')}
           {num('wa_max_gap', 'Longest pause (seconds)')}
           {num('wa_hours_start', 'Send from (hour, 0–23)')}
@@ -696,7 +700,7 @@ export default function WhatsAppCampaigns() {
         ))}
       </div>
       {tab === 'monitor' && (
-        <div className="grid gap-6 lg:grid-cols-[1.35fr_1fr] items-start">
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] items-start">
           <div className="space-y-6"><LivePhone status={s} onSetup={() => setTab('settings')} /><Today status={s} campaigns={camps.data || []} /></div>
           <ActivityFeed />
         </div>

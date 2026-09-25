@@ -14,7 +14,7 @@ from .config import get_settings
 from .rate_limit import limiter
 from .database import (
     init_db, close_db, get_db, get_all_settings,
-    get_dashboard_stats, get_weekly_activity, get_recent_logs, get_results_report,
+    get_dashboard_stats, get_weekly_activity, get_recent_logs, get_results_report, get_revenue_report,
     get_avg_score,
 )
 from . import intelligence as intelligence_module
@@ -168,6 +168,7 @@ app.include_router(auth_router.router)    # public — issues/checks the session
 app.include_router(inbox_router.router,    dependencies=_authed)  # first — static /leads/score-* paths before /{lead_id}
 app.include_router(followups_router.router, dependencies=_authed)
 app.include_router(replies_router.router,  dependencies=_authed)
+app.include_router(audit_router.router,    dependencies=_authed)  # before leads: static /leads/audit-batch before /{lead_id}
 app.include_router(leads.router,           dependencies=_authed)
 app.include_router(campaigns.router,       dependencies=_authed)
 app.include_router(ai.router,              dependencies=_authed)
@@ -182,7 +183,6 @@ app.include_router(research_agent_router.router, dependencies=_authed)
 app.include_router(automation_router.router, dependencies=_authed)
 app.include_router(lead_search_router.router, dependencies=_authed)
 app.include_router(lead_runs_router.router, dependencies=_authed)
-app.include_router(audit_router.router,    dependencies=_authed)
 if not edition.is_client():
     # Owner only. A client workspace has no portal and no Clients admin.
     app.include_router(portal_admin_router.router, dependencies=_authed)   # owner's view of the client portal
@@ -295,6 +295,12 @@ async def results_stats(days: int = Query(7, ge=1, le=90)):
     """Results for the last `days` vs the period before: leads, messages,
     replies, interested, meetings, won. This workspace's own data only."""
     return await get_results_report(days)
+
+
+@app.get("/api/stats/revenue", dependencies=_authed)
+async def revenue_stats():
+    """Won revenue by lead source + latest wins (recorded deal values only)."""
+    return await get_revenue_report()
 
 
 @app.get("/api/stats/weekly", dependencies=_authed)
