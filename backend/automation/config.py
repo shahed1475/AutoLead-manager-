@@ -35,11 +35,26 @@ _DEFAULTS: Dict[str, Any] = {
     "automation_enabled":         False,
     "automation_daily_limit":     500,
     "automation_start_time":      "07:00",
-    "automation_timezone":        "America/New_York",
+    "automation_timezone":        None,   # resolved by _default_timezone(): this machine's zone
     "automation_duration_hours":  4,
     "automation_per_item_target": 40,
     "automation_max_retries":     2,
 }
+
+
+def _default_timezone() -> str:
+    """The zone HOM runs in (start.sh passes the host's as HOM_TZ), so "07:00"
+    means 07:00 where the owner is — not New York."""
+    import os
+    from zoneinfo import ZoneInfo
+    for name in (os.getenv("HOM_TZ"), os.getenv("TZ")):
+        if name:
+            try:
+                ZoneInfo(name)
+                return name
+            except Exception:  # noqa: BLE001 — unknown zone name: try the next
+                continue
+    return "America/New_York"
 
 
 async def get_automation_settings() -> Dict[str, Any]:
@@ -47,6 +62,8 @@ async def get_automation_settings() -> Dict[str, Any]:
     cfg: Dict[str, Any] = {}
     for key, hardcoded in _DEFAULTS.items():
         default = getattr(_env, key, hardcoded)
+        if key == "automation_timezone" and not default:
+            default = _default_timezone()
         raw = stored.get(key)
         if raw is None:
             cfg[key] = default

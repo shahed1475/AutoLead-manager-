@@ -180,3 +180,20 @@ async def test_report_says_research_is_running(clean_db):
     await clean_db.update_lead(lid, {"research_status": "QUEUED"})
     r = await la.build_audit(lid)
     assert r["contacts"]["researched"] is False and r["contacts"]["research_status"] == "QUEUED"
+
+
+async def test_schedule_settings_research_every_new_lead(clean_db, monkeypatch):
+    """What "Find the owner and contacts for every new lead" saves makes even
+    a score-0 lead go to research."""
+    from backend.discovery import enrichment
+    sent = []
+    async def fake_handoff(queue, ids, **kw):
+        sent.extend(ids)
+        return {"queued": len(ids), "session_id": 1}
+    monkeypatch.setattr(enrichment, "_handoff_leads", fake_handoff)
+    monkeypatch.setattr(enrichment, "get_queue", lambda: object())
+    await clean_db.upsert_setting("research_handoff_mode", "automatic")
+    await clean_db.upsert_setting("research_handoff_min_score", "0")
+    lid = await clean_db.create_lead({"business_name": "Zero Score Co", "phone": "z1"})
+    out = await enrichment.maybe_auto_handoff([lid])
+    assert sent == [lid] and out["auto_queued"] == 1

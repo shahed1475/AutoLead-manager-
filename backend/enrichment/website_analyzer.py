@@ -288,6 +288,7 @@ async def analyze_website(url: str, timeout: int = 10) -> Dict[str, Any]:
         "emails_on_page":    [],           # mailto: addresses (max 5)
         "phones_on_page":    [],           # tel: numbers (max 5)
         "technology":        [],           # enrichment/technology.py — read from the full page
+        "structured_data":   {},           # enrichment/structured_data.py — schema.org facts the site publishes
         "has_whatsapp_link": False,        # click-to-chat link or chat-widget plugin, anywhere on the page
         "has_booking_link":  False,        # booking CTA or a booking-service link
         # Social / trust
@@ -354,6 +355,8 @@ async def analyze_website(url: str, timeout: int = 10) -> Dict[str, Any]:
     result["phones_on_page"]     = _link_values(soup, "tel:")
     from .technology import detect as _detect_technology
     result["technology"]         = _detect_technology(html)
+    from .structured_data import extract as _structured
+    result["structured_data"]    = _structured(html)
     result["has_whatsapp_link"]  = _has_whatsapp(html)
     result["has_booking_link"]   = _has_booking(html, result["cta_buttons"])
 

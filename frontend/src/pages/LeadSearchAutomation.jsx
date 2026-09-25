@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { ArrowLeft, Zap } from 'lucide-react'
 import { automationApi } from '../api/client'
 import AutomationUpload from '../components/automation/AutomationUpload'
+import AutomationQuickSetup from '../components/automation/AutomationQuickSetup'
 import AutomationDashboard from '../components/automation/AutomationDashboard'
 import AutomationQueueTable from '../components/automation/AutomationQueueTable'
 import AutomationLog from '../components/automation/AutomationLog'
@@ -24,13 +25,19 @@ export default function LeadSearchAutomation() {
         <BackToFindLeads />
         <h1 className="text-page">Daily automation</h1>
         <p className="text-support mt-1">
-          Import a list of niches and locations, and new leads are found, enriched and scored every day.
-          Qualified leads can go on to deep research.
+          Tell HOM what to look for and where. Every day it finds new leads, scores them, looks up
+          their owner and contacts, and writes each one a business report.
         </p>
       </header>
 
       <div className="space-y-4">
-        {!hasQueue && <AutomationUpload onImported={() => window.location.reload()} />}
+        {!hasQueue && (
+          <>
+            <AutomationQuickSetup />
+            <p className="text-meta text-center">or upload a file with many niches and places</p>
+            <AutomationUpload onImported={() => window.location.reload()} />
+          </>
+        )}
         {hasQueue && (
           <>
             <AutomationDashboard />

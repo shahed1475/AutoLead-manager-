@@ -151,6 +151,7 @@ def _details(site: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "social_profiles": site.get("social_profiles") or [],
         "emails_on_page": site.get("emails_on_page") or [],
         "phones_on_page": site.get("phones_on_page") or [],
+        "structured_data": site.get("structured_data") or {},
     }
 
 

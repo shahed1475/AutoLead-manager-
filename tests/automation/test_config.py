@@ -5,7 +5,9 @@ from backend.automation import config as autocfg
 pytestmark = pytest.mark.asyncio
 
 
-async def test_defaults_when_no_db_override(clean_db):
+async def test_defaults_when_no_db_override(clean_db, monkeypatch):
+    monkeypatch.delenv("HOM_TZ", raising=False)
+    monkeypatch.delenv("TZ", raising=False)
     cfg = await autocfg.get_automation_settings()
     assert cfg["automation_enabled"] is False
     assert cfg["automation_daily_limit"] == 500
@@ -72,3 +74,13 @@ async def test_bad_numeric_override_falls_back_to_default(clean_db):
     await db.upsert_setting("automation_daily_limit", "not-a-number")
     cfg = await autocfg.get_automation_settings()
     assert cfg["automation_daily_limit"] == 500
+
+
+async def test_timezone_defaults_to_this_machines_zone(clean_db, monkeypatch):
+    monkeypatch.setenv("HOM_TZ", "Asia/Dhaka")
+    assert (await autocfg.get_automation_settings())["automation_timezone"] == "Asia/Dhaka"
+    monkeypatch.setenv("HOM_TZ", "Not/AZone")
+    monkeypatch.setenv("TZ", "Asia/Dubai")
+    assert (await autocfg.get_automation_settings())["automation_timezone"] == "Asia/Dubai"
+    await clean_db.upsert_setting("automation_timezone", "Europe/London")     # a saved choice wins
+    assert (await autocfg.get_automation_settings())["automation_timezone"] == "Europe/London"

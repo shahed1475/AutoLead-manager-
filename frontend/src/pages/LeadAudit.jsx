@@ -118,6 +118,33 @@ function Contacts({ report, onResearch, researching }) {
   )
 }
 
+// People and contacts the business publishes in its own website code
+// (schema.org). Shown even before research runs.
+function SiteContacts({ sd, website }) {
+  const people = sd?.people || []
+  const extra = [...(sd?.telephones || []), ...(sd?.emails || [])]
+  if (!people.length && !extra.length) return null
+  const ROLE = { founder: 'Founder', owner: 'Owner', employee: 'Staff', member: 'Member' }
+  return (
+    <div className="mt-5">
+      <p className="text-sm font-medium text-foreground">Published on their own website</p>
+      <p className="text-xs text-muted-foreground mt-0.5">From the business details built into their site's code (<Source source={website} />).</p>
+      {people.length > 0 && (
+        <ul className="mt-2 divide-y divide-border border-y border-border">
+          {people.map((m) => (
+            <li key={m.name} className="py-3 grid gap-1 sm:grid-cols-[1fr_1fr_1.2fr] sm:gap-6">
+              <p className="text-sm font-medium text-foreground">{m.name}</p>
+              <p className="text-sm text-muted-foreground">{m.job_title || ROLE[m.role] || 'Title not listed'}</p>
+              <p className="text-sm text-muted-foreground break-all">{[m.telephone, m.email].filter(Boolean).join(', ') || 'No direct contact published'}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+      {extra.length > 0 && <p className="text-sm text-muted-foreground mt-2">Business contact: <span className="text-foreground">{extra.join(', ')}</span></p>}
+    </div>
+  )
+}
+
 // ── Website checks ───────────────────────────────────────────────────────
 function CheckList({ items, tone }) {
   const mark = { issue: 'text-error', pass: 'text-success', unknown: 'text-muted-foreground' }[tone]
@@ -272,7 +299,7 @@ export default function LeadAudit() {
 
         <dl className="grid gap-x-6 gap-y-4 grid-cols-2 sm:grid-cols-4 pt-6">
           <Fact label="Phone">{b.phone || <Missing>Not listed</Missing>}</Fact>
-          <Fact label="Email">{b.email || data.contacts?.business_email || <Missing>{data.contacts?.business_email_note || 'Not listed'}</Missing>}</Fact>
+          <Fact label="Email">{b.email || data.contacts?.business_email || d.structured_data?.emails?.[0] || <Missing>{data.contacts?.business_email_note || 'Not listed'}</Missing>}</Fact>
           <Fact label="Website">{b.website ? <Ext href={b.website} /> : <Missing>None</Missing>}</Fact>
           <Fact label="Google rating">
             {b.rating != null ? <span className="inline-flex items-center gap-1"><Star size={12} className="text-warning" />{Number(b.rating).toFixed(1)}{b.reviews != null && <span className="text-muted-foreground">({b.reviews})</span>}</span> : <Missing>Not rated</Missing>}
@@ -281,6 +308,7 @@ export default function LeadAudit() {
 
         <Section title="People and contacts" note="Who runs the business, as published on their website and listings.">
           <Contacts report={data} onResearch={() => research.mutate()} researching={research.isPending} />
+          <SiteContacts sd={d.structured_data} website={b.website} />
         </Section>
 
         <Section title="What to fix" hidden={!issues.length}><CheckList items={issues} tone="issue" /></Section>

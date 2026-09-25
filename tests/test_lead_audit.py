@@ -117,6 +117,8 @@ FOOTER_SITE = (
     "<a href='https://wa.me/971500000000'>WhatsApp</a>"
     "<a href='https://calendly.com/clinic'>Book</a></footer>"
     "<script src='/wp-content/plugins/wp-whatsapp/assets/dist/js/njt-whatsapp.js'></script>"
+    '<script type="application/ld+json">{"@type":"Dentist","name":"Clinic","telephone":"+971 4 000",'
+    '"founder":{"@type":"Person","name":"Dr Lina Haddad","jobTitle":"Founder"}}</script>'
     "</body></html>"
 )
 
@@ -138,6 +140,7 @@ async def test_analyzer_keeps_header_and_footer_signals(monkeypatch):
     assert r["social_profiles"] == ["https://www.facebook.com/clinic"]
     assert r["phones_on_page"] == ["+971500000000"]
     assert {t["name"] for t in r["technology"]} >= {"WordPress", "WhatsApp chat widget", "Calendly"}
+    assert [p["name"] for p in r["structured_data"]["people"]] == ["Dr Lina Haddad"]
 
 
 def test_whatsapp_widget_plugin_counts_as_whatsapp():

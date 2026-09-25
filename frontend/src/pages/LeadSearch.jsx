@@ -153,7 +153,9 @@ export default function FindLeads() {
 
   const schedule = useMutation({
     mutationFn: async () => {
-      await automationApi.saveSettings({ automation_enabled: true, automation_daily_limit: n })
+      let zone = 'UTC'
+      try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC' } catch { /* old browser */ }
+      await automationApi.saveSettings({ automation_enabled: true, automation_daily_limit: n, automation_timezone: zone })
       if (dailyContacts) {
         // Nobody is there to pick leads for research: send every new lead,
         // with the usual management titles for the niche.

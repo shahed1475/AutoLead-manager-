@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     automation_enabled:          bool = False
     automation_daily_limit:      int  = 500
     automation_start_time:       str  = "07:00"
-    automation_timezone:         str  = "America/New_York"
+    automation_timezone:         str  = ""   # empty = this machine's zone (automation/config.py)
     automation_duration_hours:   int  = 4
     automation_per_item_target:  int  = 40
     automation_max_retries:      int  = 2
